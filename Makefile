@@ -2,7 +2,8 @@ ifndef THEOS
 export THEOS=/var/mobile/theos
 endif
 
-ARCHS = arm64 
+ARCHS = arm64
+TARGET = iphone:clang:latest:14.0
 
 DEBUG = 0
 FINALPACKAGE = 1
