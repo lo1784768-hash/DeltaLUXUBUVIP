@@ -1,4 +1,6 @@
+ifndef THEOS
 export THEOS=/var/mobile/theos
+endif
 
 ARCHS = arm64 
 
