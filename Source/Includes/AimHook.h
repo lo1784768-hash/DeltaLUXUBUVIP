@@ -13,10 +13,17 @@
 // render and Aim Head visibly did nothing.
 static void (*orig_Camera_Render)(void *camera);
 
+unsigned long long g_aimHookCallCount = 0;
+bool g_aimHookHasTarget = false;
+
 inline void hooked_Camera_Render(void *camera) {
+    g_aimHookCallCount++;
+    g_aimHookHasTarget = false;
+
     if (Vars.Enable && Vars.AimHead && camera) {
         Vector3 headWorld;
         if (FindAimHeadTarget(camera, headWorld)) {
+            g_aimHookHasTarget = true;
             void *camTransform = game_sdk->Component_GetTransform(camera);
             if (camTransform) {
                 Vector3 camPos = game_sdk->get_position(camTransform);

@@ -70,6 +70,12 @@ public:
 
 extern game_sdk_t *game_sdk;
 
+// Diagnostics for the Aim Head Camera.Render hook (defined/incremented in AimHook.h).
+// Shown on-screen (see get_players() below) so whether the hook fires at all, and
+// whether it finds a target, is visible without needing device-side debugging tools.
+extern unsigned long long g_aimHookCallCount;
+extern bool g_aimHookHasTarget;
+
 // ===== WORLD TO SCREEN HELPER =====
 namespace Camera$$WorldToScreen
 {
@@ -377,6 +383,12 @@ inline void get_players()
         // and gets overwritten before render.
         if (Vars.ShowFOVCircle) {
             [renderer drawFOVCircleAt:SimpleVec2(sW / 2.0f, sH / 2.0f) radius:Vars.AimFOV path:combinedPath];
+        }
+
+        // Temporary diagnostic: proves whether the Camera.Render hook is firing at all,
+        // and whether it's finding a target, without needing device-side debug tools.
+        if (Vars.AimHead) {
+            [renderer drawTextAt:SimpleVec2(sW / 2.0f, 60) text:[NSString stringWithFormat:@"Hook:%llu Target:%@", g_aimHookCallCount, g_aimHookHasTarget ? @"YES" : @"NO"]];
         }
 
         for (int u = 0; u < players->getSize(); u++) {

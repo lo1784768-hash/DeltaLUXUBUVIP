@@ -353,7 +353,10 @@ static MemScanner searchScanner;
     _enableSwitch = [self addToggleCardWithLocKey:@"master_switch" frame:CGRectMake(padX, y, fullW, cardH) action:@selector(toggleEnable:) toView:scroll];
     y += cardH + gap;
 
-    NSArray<NSString *> *gridKeys = @[@"box", @"lines", @"names", @"health", @"distance", @"skeleton", @"enemy_count"];
+    // Show FOV Circle lives here (a screen overlay, like Box/Skeleton) rather than next
+    // to Aim Head in the Mod tab, so the visual ESP circle and the actual aim behavior
+    // read as two distinct things instead of one bundled feature.
+    NSArray<NSString *> *gridKeys = @[@"box", @"lines", @"names", @"health", @"distance", @"skeleton", @"enemy_count", @"show_fov_circle"];
     NSArray<NSValue *> *gridSelectors = @[
         [NSValue valueWithPointer:@selector(toggleBox:)],
         [NSValue valueWithPointer:@selector(toggleLines:)],
@@ -361,7 +364,8 @@ static MemScanner searchScanner;
         [NSValue valueWithPointer:@selector(toggleHealth:)],
         [NSValue valueWithPointer:@selector(toggleDistance:)],
         [NSValue valueWithPointer:@selector(toggleSkeleton:)],
-        [NSValue valueWithPointer:@selector(toggleCount:)]
+        [NSValue valueWithPointer:@selector(toggleCount:)],
+        [NSValue valueWithPointer:@selector(toggleShowFovCircle:)]
     ];
     NSMutableArray<UISwitch *> *gridSwitches = [NSMutableArray array];
 
@@ -380,6 +384,7 @@ static MemScanner searchScanner;
     _distanceSwitch = gridSwitches[4];
     _skeletonSwitch = gridSwitches[5];
     _countSwitch = gridSwitches[6];
+    _showFovCircleSwitch = gridSwitches[7];
 
     NSInteger rowCount = (gridKeys.count + 1) / 2;
     y += rowCount * (cardH + gap);
@@ -416,10 +421,13 @@ static MemScanner searchScanner;
     btnY += cardH + btnGap;
 
     _aimFovLabel = [[UILabel alloc] initWithFrame:CGRectMake(btnX, btnY, btnW, 14)];
-    _aimFovLabel.text = [NSString stringWithFormat:@"FOV: %.0fpx", Vars.AimFOV];
     _aimFovLabel.font = [UIFont systemFontOfSize:10.5f weight:UIFontWeightMedium];
     _aimFovLabel.textColor = COLOR_TEXT_DIM;
     [scroll addSubview:_aimFovLabel];
+    __weak UILabel *weakAimFovLabel = _aimFovLabel;
+    [self addLocalizedRefresher:^{
+        weakAimFovLabel.text = [NSString stringWithFormat:isEnglishMode ? @"Aim radius: %.0fpx" : @"Bán kính ngắm: %.0fpx", Vars.AimFOV];
+    }];
     btnY += 14 + 2;
 
     _aimFovSlider = [[UISlider alloc] initWithFrame:CGRectMake(btnX, btnY, btnW, 20)];
@@ -432,9 +440,6 @@ static MemScanner searchScanner;
     [_aimFovSlider addTarget:self action:@selector(aimFovChanged:) forControlEvents:UIControlEventValueChanged];
     [scroll addSubview:_aimFovSlider];
     btnY += 20 + btnGap;
-
-    _showFovCircleSwitch = [self addToggleCardWithLocKey:@"show_fov_circle" frame:CGRectMake(btnX, btnY, btnW, cardH) action:@selector(toggleShowFovCircle:) toView:scroll];
-    btnY += cardH + btnGap;
 
     _antenaSwitch = [self addToggleCardWithLocKey:@"antena" frame:CGRectMake(btnX, btnY, btnW, cardH) action:@selector(toggleAntena:) toView:scroll];
     btnY += cardH + btnGap;
@@ -582,7 +587,7 @@ static MemScanner searchScanner;
 
 - (void)aimFovChanged:(UISlider *)sender {
     Vars.AimFOV = sender.value;
-    _aimFovLabel.text = [NSString stringWithFormat:@"FOV: %.0fpx", Vars.AimFOV];
+    _aimFovLabel.text = [NSString stringWithFormat:isEnglishMode ? @"Aim radius: %.0fpx" : @"Bán kính ngắm: %.0fpx", Vars.AimFOV];
 }
 
 - (void)toggleAntena:(UISwitch *)sender {
@@ -920,7 +925,7 @@ static MemScanner searchScanner;
 
     if (!MenDeal) return;
 
-    NSArray<UISwitch *> *subSwitches = @[_boxSwitch, _linesSwitch, _nameSwitch, _healthSwitch, _distanceSwitch, _skeletonSwitch, _countSwitch];
+    NSArray<UISwitch *> *subSwitches = @[_boxSwitch, _linesSwitch, _nameSwitch, _healthSwitch, _distanceSwitch, _skeletonSwitch, _countSwitch, _showFovCircleSwitch];
     for (UISwitch *sw in subSwitches) {
         sw.enabled = Vars.Enable;
         sw.superview.alpha = Vars.Enable ? 1.0f : 0.4f;
