@@ -25,6 +25,14 @@
 #define COLOR_TEXT_DIM [UIColor colorWithWhite:0.62 alpha:1.0]
 #define COLOR_BTN_OFF [UIColor colorWithWhite:1.0 alpha:0.05]
 
+// Card surface treatment: a tinted-dark glass panel + hairline border, instead of a
+// flat white-alpha overlay - reads as an intentional dark-glass surface rather than a
+// generic system control. Cards additionally light up (border/accent/icon go cyan) when
+// their switch is ON, via applyCardVisualState: - see addToggleCardWithLocKey:.
+#define COLOR_CARD_BG [UIColor colorWithRed:0.09 green:0.075 blue:0.135 alpha:0.6]
+#define COLOR_CARD_BORDER [UIColor colorWithWhite:1.0 alpha:0.08]
+#define COLOR_ACCENT_IDLE [UIColor colorWithWhite:1.0 alpha:0.14]
+
 // ===== Localization (VI default, EN togglable from the INFO tab) =====
 static BOOL isEnglishMode = NO;
 
@@ -44,6 +52,9 @@ static NSDictionary<NSString *, NSArray<NSString *> *> *LocStrings() {
             @"enemy_count": @[@"Số Địch", @"Enemy Count"],
             @"aim_head": @[@"Ngắm Đầu", @"Aim Head"],
             @"show_fov_circle": @[@"Hiện Vòng FOV", @"Show FOV Circle"],
+            @"section_display": @[@"Hiển Thị", @"Display"],
+            @"section_aim": @[@"Tự Động Ngắm", @"Auto Aim"],
+            @"section_boost": @[@"Tăng Cường", @"Boost"],
             @"antena": @[@"Antena", @"Antena"],
             @"speed_x2": @[@"Tốc Độ x2", @"Speed x2"],
             @"speed_x8": @[@"Tốc Độ x8", @"Speed x8"],
@@ -348,13 +359,13 @@ static MemScanner searchScanner;
     CGFloat colW = (fullW - gap) / 2.0f;
     CGFloat y = 8;
 
-    _enableSwitch = [self addToggleCardWithLocKey:@"master_switch" frame:CGRectMake(padX, y, fullW, cardH) action:@selector(toggleEnable:) toView:scroll];
+    _enableSwitch = [self addToggleCardWithLocKey:@"master_switch" symbol:@"bolt.fill" frame:CGRectMake(padX, y, fullW, cardH) action:@selector(toggleEnable:) toView:scroll];
     y += cardH + gap;
 
     // Back to two separate switches per the user: Show FOV Circle (visual only, this tab)
     // and Aim Head (MOD tab, the only thing with person-detection logic) - they now
     // understand why Aim Head alone drives the snap, they just want the switches split.
-    _showFovCircleSwitch = [self addToggleCardWithLocKey:@"show_fov_circle" frame:CGRectMake(padX, y, fullW, cardH) action:@selector(toggleShowFovCircle:) toView:scroll];
+    _showFovCircleSwitch = [self addToggleCardWithLocKey:@"show_fov_circle" symbol:@"circle.dashed" frame:CGRectMake(padX, y, fullW, cardH) action:@selector(toggleShowFovCircle:) toView:scroll];
     y += cardH + gap;
 
     _fovCircleLabel = [[UILabel alloc] initWithFrame:CGRectMake(padX, y, fullW, 14)];
@@ -376,9 +387,13 @@ static MemScanner searchScanner;
     _fovCircleSlider.thumbTintColor = COLOR_TEXT;
     [_fovCircleSlider addTarget:self action:@selector(fovCircleRadiusChanged:) forControlEvents:UIControlEventValueChanged];
     [scroll addSubview:_fovCircleSlider];
-    y += 20 + gap;
+    y += 20 + gap + 4;
+
+    [self addSectionHeaderWithLocKey:@"section_display" frame:CGRectMake(padX, y, fullW, 12) toView:scroll];
+    y += 12 + 6;
 
     NSArray<NSString *> *gridKeys = @[@"box", @"lines", @"names", @"health", @"distance", @"skeleton", @"enemy_count"];
+    NSArray<NSString *> *gridSymbols = @[@"square.dashed", @"line.diagonal", @"textformat", @"heart.fill", @"ruler", @"figure.walk", @"person.3.fill"];
     NSArray<NSValue *> *gridSelectors = @[
         [NSValue valueWithPointer:@selector(toggleBox:)],
         [NSValue valueWithPointer:@selector(toggleLines:)],
@@ -395,7 +410,7 @@ static MemScanner searchScanner;
         CGFloat bx = padX + col * (colW + gap);
         CGFloat by = y + row * (cardH + gap);
         SEL selector = (SEL)[gridSelectors[i] pointerValue];
-        UISwitch *sw = [self addToggleCardWithLocKey:gridKeys[i] frame:CGRectMake(bx, by, colW, cardH) action:selector toView:scroll];
+        UISwitch *sw = [self addToggleCardWithLocKey:gridKeys[i] symbol:gridSymbols[i] frame:CGRectMake(bx, by, colW, cardH) action:selector toView:scroll];
         [gridSwitches addObject:sw];
     }
     _boxSwitch = gridSwitches[0];
@@ -437,12 +452,15 @@ static MemScanner searchScanner;
     scroll.showsVerticalScrollIndicator = NO;
     CGFloat btnY = 0, cardH = 40, btnGap = 6, btnX = 4, btnW = frame.size.width - 8;
 
-    _aimHeadSwitch = [self addToggleCardWithLocKey:@"aim_head" frame:CGRectMake(btnX, btnY, btnW, cardH) action:@selector(toggleAimHead:) toView:scroll];
+    [self addSectionHeaderWithLocKey:@"section_aim" frame:CGRectMake(btnX + 2, btnY, btnW, 12) toView:scroll];
+    btnY += 12 + 6;
+
+    _aimHeadSwitch = [self addToggleCardWithLocKey:@"aim_head" symbol:@"scope" frame:CGRectMake(btnX, btnY, btnW, cardH) action:@selector(toggleAimHead:) toView:scroll];
     btnY += cardH + btnGap;
 
     // Radius is configured on the ESP tab's Show FOV Circle slider (same Vars.AimFOV) -
     // just a pointer note here, not a duplicate control.
-    UILabel *aimNote = [[UILabel alloc] initWithFrame:CGRectMake(btnX, btnY, btnW, 14)];
+    UILabel *aimNote = [[UILabel alloc] initWithFrame:CGRectMake(btnX + 8, btnY, btnW - 8, 14)];
     aimNote.font = [UIFont systemFontOfSize:10.5f weight:UIFontWeightMedium];
     aimNote.textColor = COLOR_TEXT_DIM;
     aimNote.adjustsFontSizeToFitWidth = YES;
@@ -450,21 +468,24 @@ static MemScanner searchScanner;
     [self addLocalizedRefresher:^{
         aimNote.text = isEnglishMode ? @"Range: FOV circle slider (ESP tab)" : @"Bán kính: xem thanh FOV bên tab ESP";
     }];
-    btnY += 14 + btnGap;
+    btnY += 14 + btnGap + 6;
 
-    _antenaSwitch = [self addToggleCardWithLocKey:@"antena" frame:CGRectMake(btnX, btnY, btnW, cardH) action:@selector(toggleAntena:) toView:scroll];
+    [self addSectionHeaderWithLocKey:@"section_boost" frame:CGRectMake(btnX + 2, btnY, btnW, 12) toView:scroll];
+    btnY += 12 + 6;
+
+    _antenaSwitch = [self addToggleCardWithLocKey:@"antena" symbol:@"antenna.radiowaves.left.and.right" frame:CGRectMake(btnX, btnY, btnW, cardH) action:@selector(toggleAntena:) toView:scroll];
     btnY += cardH + btnGap;
 
-    _speedX2Switch = [self addToggleCardWithLocKey:@"speed_x2" frame:CGRectMake(btnX, btnY, btnW, cardH) action:@selector(toggleSpeedX2:) toView:scroll];
+    _speedX2Switch = [self addToggleCardWithLocKey:@"speed_x2" symbol:@"hare.fill" frame:CGRectMake(btnX, btnY, btnW, cardH) action:@selector(toggleSpeedX2:) toView:scroll];
     btnY += cardH + btnGap;
 
-    _speedX8Switch = [self addToggleCardWithLocKey:@"speed_x8" frame:CGRectMake(btnX, btnY, btnW, cardH) action:@selector(toggleSpeedX8:) toView:scroll];
+    _speedX8Switch = [self addToggleCardWithLocKey:@"speed_x8" symbol:@"flame.fill" frame:CGRectMake(btnX, btnY, btnW, cardH) action:@selector(toggleSpeedX8:) toView:scroll];
     btnY += cardH + btnGap;
 
-    _noRecoilSwitch = [self addToggleCardWithLocKey:@"no_recoil" frame:CGRectMake(btnX, btnY, btnW, cardH) action:@selector(toggleNoRecoil:) toView:scroll];
+    _noRecoilSwitch = [self addToggleCardWithLocKey:@"no_recoil" symbol:@"shield.fill" frame:CGRectMake(btnX, btnY, btnW, cardH) action:@selector(toggleNoRecoil:) toView:scroll];
     btnY += cardH + btnGap;
 
-    _magicBulletSwitch = [self addToggleCardWithLocKey:@"magic_bullet" frame:CGRectMake(btnX, btnY, btnW, cardH) action:@selector(toggleMagicBullet:) toView:scroll];
+    _magicBulletSwitch = [self addToggleCardWithLocKey:@"magic_bullet" symbol:@"wand.and.stars" frame:CGRectMake(btnX, btnY, btnW, cardH) action:@selector(toggleMagicBullet:) toView:scroll];
     btnY += cardH + btnGap;
 
     UIButton *actionBtn = [self createButtonWithLocKey:@"action" frame:CGRectMake(btnX, btnY, btnW, 32)];
@@ -647,8 +668,10 @@ static MemScanner searchScanner;
     UIView *page = [[UIView alloc] initWithFrame:frame];
 
     UIView *row = [[UIView alloc] initWithFrame:CGRectMake(4, 0, frame.size.width - 8, 34)];
-    row.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.03];
-    row.layer.cornerRadius = 6.0f;
+    row.backgroundColor = COLOR_CARD_BG;
+    row.layer.cornerRadius = 10.0f;
+    row.layer.borderWidth = 1.0f;
+    row.layer.borderColor = COLOR_CARD_BORDER.CGColor;
     [page addSubview:row];
 
     UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(10, 0, row.frame.size.width * 0.5f, 34)];
@@ -666,8 +689,10 @@ static MemScanner searchScanner;
     [self addLocalizedRefresher:^{ weakStatusLabel.text = LOC(@"activated"); }];
 
     UIView *langRow = [[UIView alloc] initWithFrame:CGRectMake(4, 42, frame.size.width - 8, 34)];
-    langRow.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.03];
-    langRow.layer.cornerRadius = 6.0f;
+    langRow.backgroundColor = COLOR_CARD_BG;
+    langRow.layer.cornerRadius = 10.0f;
+    langRow.layer.borderWidth = 1.0f;
+    langRow.layer.borderColor = COLOR_CARD_BORDER.CGColor;
     [page addSubview:langRow];
 
     UILabel *langLabel = [[UILabel alloc] initWithFrame:CGRectMake(10, 0, langRow.frame.size.width * 0.4f, 34)];
@@ -680,6 +705,7 @@ static MemScanner searchScanner;
     UISegmentedControl *langControl = [[UISegmentedControl alloc] initWithItems:@[@"VI", @"EN"]];
     langControl.frame = CGRectMake(langRow.frame.size.width * 0.4f + 6, 4, langRow.frame.size.width * 0.6f - 16, 26);
     langControl.selectedSegmentIndex = isEnglishMode ? 1 : 0;
+    [self styleSegmentedControl:langControl];
     [langControl addTarget:self action:@selector(languageChanged:) forControlEvents:UIControlEventValueChanged];
     [langRow addSubview:langControl];
 
@@ -696,11 +722,12 @@ static MemScanner searchScanner;
     _scanTypeControl = [[UISegmentedControl alloc] initWithItems:@[@"I32", @"I64", @"F32"]];
     _scanTypeControl.frame = CGRectMake(4, y, w - 8, 26);
     _scanTypeControl.selectedSegmentIndex = 0;
+    [self styleSegmentedControl:_scanTypeControl];
     [page addSubview:_scanTypeControl];
     y += 26 + 8;
 
     _scanValueField = [[UITextField alloc] initWithFrame:CGRectMake(4, y, w - 8, 30)];
-    _scanValueField.borderStyle = UITextBorderStyleRoundedRect;
+    [self styleDarkTextField:_scanValueField];
     _scanValueField.keyboardType = UIKeyboardTypeNumbersAndPunctuation;
     _scanValueField.returnKeyType = UIReturnKeyDone;
     _scanValueField.delegate = self;
@@ -732,7 +759,7 @@ static MemScanner searchScanner;
     y += 18 + 10;
 
     _scanNewValueField = [[UITextField alloc] initWithFrame:CGRectMake(4, y, w - 8, 30)];
-    _scanNewValueField.borderStyle = UITextBorderStyleRoundedRect;
+    [self styleDarkTextField:_scanNewValueField];
     _scanNewValueField.keyboardType = UIKeyboardTypeNumbersAndPunctuation;
     _scanNewValueField.returnKeyType = UIReturnKeyDone;
     _scanNewValueField.delegate = self;
@@ -869,13 +896,59 @@ static MemScanner searchScanner;
 - (UIButton *)createButtonWithTitle:(NSString *)title frame:(CGRect)frame {
     UIButton *button = [UIButton buttonWithType:UIButtonTypeCustom];
     button.frame = frame;
-    button.backgroundColor = COLOR_BTN_OFF;
-    button.layer.cornerRadius = 6.0f;
+    button.backgroundColor = COLOR_CARD_BG;
+    button.layer.cornerRadius = 8.0f;
+    button.layer.borderWidth = 1.0f;
+    button.layer.borderColor = COLOR_CARD_BORDER.CGColor;
     [button setTitle:title forState:UIControlStateNormal];
     [button setTitleColor:COLOR_TEXT_DIM forState:UIControlStateNormal];
-    button.titleLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightMedium];
+    button.titleLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightBold];
     button.titleLabel.adjustsFontSizeToFitWidth = YES;
+    // Tactile press feedback (scale + fade) instead of the dead flat tap most system
+    // buttons have here by default - small thing, reads as a considered/premium control.
+    [button addTarget:self action:@selector(cardButtonTouchDown:) forControlEvents:UIControlEventTouchDown];
+    [button addTarget:self action:@selector(cardButtonTouchUp:) forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside | UIControlEventTouchCancel];
     return button;
+}
+
+- (void)cardButtonTouchDown:(UIButton *)sender {
+    [UIView animateWithDuration:0.08 animations:^{
+        sender.transform = CGAffineTransformMakeScale(0.96, 0.96);
+        sender.alpha = 0.85;
+    }];
+}
+
+- (void)cardButtonTouchUp:(UIButton *)sender {
+    [UIView animateWithDuration:0.12 animations:^{
+        sender.transform = CGAffineTransformIdentity;
+        sender.alpha = 1.0;
+    }];
+}
+
+// Shared dark-glass styling for the few native controls (segmented controls, text
+// fields) that otherwise render with their light-theme system defaults and stick out
+// against the rest of the purple/cyan UI.
+- (void)styleSegmentedControl:(UISegmentedControl *)control {
+    control.backgroundColor = COLOR_CARD_BG;
+    control.selectedSegmentTintColor = COLOR_CYAN;
+    control.layer.cornerRadius = 8.0f;
+    control.layer.borderWidth = 1.0f;
+    control.layer.borderColor = COLOR_CARD_BORDER.CGColor;
+    UIFont *segFont = [UIFont systemFontOfSize:11 weight:UIFontWeightBold];
+    [control setTitleTextAttributes:@{NSForegroundColorAttributeName: COLOR_TEXT_DIM, NSFontAttributeName: segFont} forState:UIControlStateNormal];
+    [control setTitleTextAttributes:@{NSForegroundColorAttributeName: [UIColor blackColor], NSFontAttributeName: segFont} forState:UIControlStateSelected];
+}
+
+- (void)styleDarkTextField:(UITextField *)field {
+    field.borderStyle = UITextBorderStyleNone;
+    field.backgroundColor = COLOR_CARD_BG;
+    field.textColor = COLOR_TEXT;
+    field.font = [UIFont systemFontOfSize:13 weight:UIFontWeightMedium];
+    field.layer.cornerRadius = 8.0f;
+    field.layer.borderWidth = 1.0f;
+    field.layer.borderColor = COLOR_CARD_BORDER.CGColor;
+    field.leftView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 10, 1)];
+    field.leftViewMode = UITextFieldViewModeAlways;
 }
 
 - (UIButton *)createButtonWithLocKey:(NSString *)key frame:(CGRect)frame {
@@ -902,15 +975,57 @@ static MemScanner searchScanner;
     [self refreshLocalization];
 }
 
-#pragma mark - Toggle cards (label + native switch)
+#pragma mark - Section headers
 
-- (UISwitch *)addToggleCardWithLocKey:(NSString *)key frame:(CGRect)frame action:(SEL)action toView:(UIView *)parent {
+// Small uppercase, letter-spaced dividers to group related cards (Display / Auto Aim /
+// Boost) - the flat, ungrouped list of switches was a big part of what read as "sơ sài".
+- (void)addSectionHeaderWithLocKey:(NSString *)key frame:(CGRect)frame toView:(UIView *)parent {
+    UILabel *header = [[UILabel alloc] initWithFrame:frame];
+    header.font = [UIFont systemFontOfSize:10 weight:UIFontWeightHeavy];
+    header.textColor = COLOR_CYAN;
+    [parent addSubview:header];
+    __weak UILabel *weakHeader = header;
+    [self addLocalizedRefresher:^{
+        NSString *text = [LOC(key) uppercaseString];
+        NSMutableAttributedString *attr = [[NSMutableAttributedString alloc] initWithString:text];
+        [attr addAttribute:NSKernAttributeName value:@(1.3) range:NSMakeRange(0, attr.length)];
+        weakHeader.attributedText = attr;
+    }];
+}
+
+#pragma mark - Toggle cards (icon + label + native switch)
+
+// Tag constants so applyCardVisualState: can find the accent bar / icon inside an
+// arbitrary card without needing dedicated properties for every single toggle.
+static const NSInteger kCardAccentTag = 9001;
+static const NSInteger kCardIconTag = 9002;
+
+- (UISwitch *)addToggleCardWithLocKey:(NSString *)key symbol:(NSString *)symbolName frame:(CGRect)frame action:(SEL)action toView:(UIView *)parent {
     UIView *card = [[UIView alloc] initWithFrame:frame];
-    card.backgroundColor = COLOR_BTN_OFF;
-    card.layer.cornerRadius = 8.0f;
+    card.backgroundColor = COLOR_CARD_BG;
+    card.layer.cornerRadius = 10.0f;
+    card.layer.borderWidth = 1.0f;
+    card.layer.borderColor = COLOR_CARD_BORDER.CGColor;
     [parent addSubview:card];
 
-    UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(10, 0, frame.size.width - 62, frame.size.height)];
+    UIView *accent = [[UIView alloc] initWithFrame:CGRectMake(0, 6, 3, frame.size.height - 12)];
+    accent.layer.cornerRadius = 1.5f;
+    accent.backgroundColor = COLOR_ACCENT_IDLE;
+    accent.tag = kCardAccentTag;
+    accent.userInteractionEnabled = NO;
+    [card addSubview:accent];
+
+    CGFloat iconSize = 15;
+    UIImageView *icon = [[UIImageView alloc] initWithFrame:CGRectMake(12, (frame.size.height - iconSize) / 2.0f, iconSize, iconSize)];
+    icon.image = [[UIImage systemImageNamed:symbolName] imageByApplyingSymbolConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:13 weight:UIImageSymbolWeightSemibold]];
+    icon.contentMode = UIViewContentModeScaleAspectFit;
+    icon.tintColor = COLOR_TEXT_DIM;
+    icon.tag = kCardIconTag;
+    icon.userInteractionEnabled = NO;
+    [card addSubview:icon];
+
+    CGFloat labelX = 12 + iconSize + 8;
+    UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(labelX, 0, frame.size.width - labelX - 62, frame.size.height)];
     label.font = [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold];
     label.textColor = COLOR_TEXT;
     label.adjustsFontSizeToFitWidth = YES;
@@ -921,12 +1036,39 @@ static MemScanner searchScanner;
 
     UISwitch *sw = [[UISwitch alloc] init];
     sw.onTintColor = COLOR_CYAN;
+    // Stock UISwitch off-state (light grey track, plain white knob) reads as a default
+    // system control against this dark glass UI - recolor both states to match.
+    sw.tintColor = [UIColor colorWithWhite:1.0 alpha:0.16];
+    sw.thumbTintColor = [UIColor colorWithWhite:0.94 alpha:1.0];
     CGSize swSize = sw.frame.size;
-    sw.frame = CGRectMake(frame.size.width - swSize.width - 8, (frame.size.height - swSize.height) / 2.0f, swSize.width, swSize.height);
+    sw.frame = CGRectMake(frame.size.width - swSize.width - 10, (frame.size.height - swSize.height) / 2.0f, swSize.width, swSize.height);
     [sw addTarget:self action:action forControlEvents:UIControlEventValueChanged];
+    [sw addTarget:self action:@selector(refreshCardVisualState:) forControlEvents:UIControlEventValueChanged];
     [card addSubview:sw];
 
+    [self applyCardVisualState:sw];
     return sw;
+}
+
+- (void)refreshCardVisualState:(UISwitch *)sender {
+    [self applyCardVisualState:sender];
+}
+
+// Lights up the whole card (border, left accent bar, icon tint) to cyan while its
+// switch is ON, instead of only the tiny native switch changing color - makes active
+// features scannable at a glance instead of every card looking identical.
+- (void)applyCardVisualState:(UISwitch *)sw {
+    UIView *card = sw.superview;
+    if (!card) return;
+    UIView *accent = [card viewWithTag:kCardAccentTag];
+    UIImageView *icon = (UIImageView *)[card viewWithTag:kCardIconTag];
+    BOOL on = sw.isOn;
+    [UIView animateWithDuration:0.2 animations:^{
+        card.layer.borderColor = (on ? [COLOR_CYAN colorWithAlphaComponent:0.5] : COLOR_CARD_BORDER).CGColor;
+        card.backgroundColor = on ? [COLOR_CYAN colorWithAlphaComponent:0.10] : COLOR_CARD_BG;
+        accent.backgroundColor = on ? COLOR_CYAN : COLOR_ACCENT_IDLE;
+        icon.tintColor = on ? COLOR_CYAN : COLOR_TEXT_DIM;
+    }];
 }
 
 - (void)updateMenu {
