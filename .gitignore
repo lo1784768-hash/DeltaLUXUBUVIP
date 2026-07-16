@@ -1,0 +1,6 @@
+.theos/
+packages/
+*.deb
+obj/
+.DS_Store
+.claude/settings.local.json
