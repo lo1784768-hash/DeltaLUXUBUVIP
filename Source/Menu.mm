@@ -828,7 +828,10 @@ void game_sdk_t::init()
     this->get_position = (Vector3(*)(void *))getRealOffset(0x91CA56C);
     this->Component_GetTransform = (void *(*)(void *))getRealOffset(0x91B82E4);
     this->get_camera = (void *(*)())getRealOffset(0x915E9E4);
-    this->WorldToScreenPoint = (Vector3(*)(void *, Vector3))getRealOffset(0x915E2F0);
+    // Named WorldToScreenPoint but Camera$$WorldToScreen::Regular (ESP.h) actually
+    // expects normalized viewport coords (multiplies by screenWidth/Height itself),
+    // so this must bind to Camera.WorldToViewportPoint, not the literal ScreenPoint method.
+    this->WorldToScreenPoint = (Vector3(*)(void *, Vector3))getRealOffset(0x915E364);
     this->GetForward = (Vector3(*)(void *))getRealOffset(0x91CAF64);
     this->get_isLocalTeam = (bool (*)(void *))getRealOffset(0x55C5AC0);
     this->get_IsDieing = (bool (*)(void *))getRealOffset(0x53AA18C);
