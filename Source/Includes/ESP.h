@@ -247,9 +247,9 @@ inline void get_players()
             return;
         }
 
-        // No Fog (auto)
+        // No Fog (auto) -> UnityEngine.RenderSettings.set_fog(bool)
         if (Vars.NoFog) {
-            void *noFogAddr = (void*)getRealOffset(0x850363C);
+            void *noFogAddr = (void*)getRealOffset(0x917AFF8);
             if (noFogAddr) ((void (*)(bool))noFogAddr)(false);
         }
 
@@ -262,7 +262,10 @@ inline void get_players()
         void *local_player = game_sdk->GetLocalPlayer(current_Match);
         if (!local_player) return;
 
-        void *playersListAddr = (void*)getRealOffset(0x4C869DC);
+        // EMKJHAJNPDH(match).GEPFGOHGOJI() -> List<Player>. Two equally-plausible
+        // List<Player>-returning zero-arg candidates existed in the dump; this is the
+        // first one found. If ESP shows nothing/wrong entities, try 0x563CF30 instead.
+        void *playersListAddr = (void*)getRealOffset(0x563CC18);
         if (!playersListAddr) return;
         
         monoList<void **> *players = ((monoList<void **>* (*)(void*))playersListAddr)(current_Match);
