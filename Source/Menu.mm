@@ -13,6 +13,7 @@
 #import "Includes/ESP.h"
 #import "Includes/Encryption.h"
 #import "Includes/ModHacks.h"
+#import "Includes/AimHook.h"
 
 #define kWidth  [UIScreen mainScreen].bounds.size.width
 #define kHeight [UIScreen mainScreen].bounds.size.height
@@ -24,6 +25,55 @@
 #define COLOR_TEXT [UIColor whiteColor]
 #define COLOR_TEXT_DIM [UIColor colorWithWhite:0.62 alpha:1.0]
 #define COLOR_BTN_OFF [UIColor colorWithWhite:1.0 alpha:0.05]
+
+// ===== Localization (VI default, EN togglable from the INFO tab) =====
+static BOOL isEnglishMode = NO;
+
+static NSDictionary<NSString *, NSArray<NSString *> *> *LocStrings() {
+    static NSDictionary *d = nil;
+    static dispatch_once_t token;
+    dispatch_once(&token, ^{
+        d = @{
+            // key: @[ vi, en ]
+            @"master_switch": @[@"Công Tắc Chính", @"Master Switch"],
+            @"box": @[@"Khung", @"Box"],
+            @"lines": @[@"Đường Kẻ", @"Lines"],
+            @"names": @[@"Tên", @"Names"],
+            @"health": @[@"Máu", @"Health"],
+            @"distance": @[@"Khoảng Cách", @"Distance"],
+            @"skeleton": @[@"Khung Xương", @"Skeleton"],
+            @"enemy_count": @[@"Số Địch", @"Enemy Count"],
+            @"aim_head": @[@"Ngắm Đầu", @"Aim Head"],
+            @"show_fov_circle": @[@"Hiện Vòng FOV", @"Show FOV Circle"],
+            @"antena": @[@"Antena", @"Antena"],
+            @"speed_x2": @[@"Tốc Độ x2", @"Speed x2"],
+            @"speed_x8": @[@"Tốc Độ x8", @"Speed x8"],
+            @"no_recoil": @[@"Chống Giật", @"No Recoil"],
+            @"magic_bullet": @[@"Đạn Ma Thuật", @"Magic Bullet"],
+            @"action": @[@"Hành Động", @"Action"],
+            @"status": @[@"Trạng thái", @"Status"],
+            @"activated": @[@"Đã kích hoạt", @"Activated"],
+            @"select_base_action": @[@"CHỌN HÀNH ĐỘNG GỐC", @"SELECT BASE ACTION"],
+            @"select_mod_action": @[@"CHỌN HÀNH ĐỘNG MOD", @"SELECT MOD ACTION"],
+            @"back": @[@"Trở Về", @"Back"],
+            @"find": @[@"Tìm", @"Find"],
+            @"find_next": @[@"Tìm Tiếp", @"Find Next"],
+            @"edit_all": @[@"Sửa Tất Cả", @"Edit All"],
+            @"clear_results": @[@"Xóa Kết Quả", @"Clear Results"],
+            @"current_value_placeholder": @[@"Giá trị hiện tại", @"Current value"],
+            @"new_value_placeholder": @[@"Giá trị mới", @"New value"],
+            @"on": @[@"BẬT", @"ON"],
+            @"off": @[@"TẮT", @"OFF"],
+        };
+    });
+    return d;
+}
+
+static NSString *LOC(NSString *key) {
+    NSArray<NSString *> *pair = LocStrings()[key];
+    if (!pair) return key;
+    return isEnglishMode ? pair[1] : pair[0];
+}
 
 @interface BrazilixMenu : NSObject <UITextFieldDelegate>
 @property (nonatomic, strong) UIView *menuView;
@@ -39,33 +89,28 @@
 @property (nonatomic, strong) NSArray<UIView *> *tabPages;
 
 // ESP tab
-@property (nonatomic, strong) UIButton *enableCheatsButton;
-@property (nonatomic, strong) UIButton *boxESPButton;
-@property (nonatomic, strong) UIButton *linesESPButton;
-@property (nonatomic, strong) UIButton *nameButton;
-@property (nonatomic, strong) UIButton *healthButton;
-@property (nonatomic, strong) UIButton *distanceButton;
-@property (nonatomic, strong) UIButton *skeletonButton;
-@property (nonatomic, strong) UIButton *countButton;
+@property (nonatomic, strong) UISwitch *enableSwitch;
+@property (nonatomic, strong) UISwitch *boxSwitch;
+@property (nonatomic, strong) UISwitch *linesSwitch;
+@property (nonatomic, strong) UISwitch *nameSwitch;
+@property (nonatomic, strong) UISwitch *healthSwitch;
+@property (nonatomic, strong) UISwitch *distanceSwitch;
+@property (nonatomic, strong) UISwitch *skeletonSwitch;
+@property (nonatomic, strong) UISwitch *countSwitch;
 
 // Mod tab
 @property (nonatomic, strong) UIView *modMainView;
 @property (nonatomic, strong) UIView *modGocView;
 @property (nonatomic, strong) UIView *modModView;
-@property (nonatomic, strong) UIButton *aimHeadButton;
+@property (nonatomic, strong) UISwitch *aimHeadSwitch;
+@property (nonatomic, strong) UISwitch *showFovCircleSwitch;
 @property (nonatomic, strong) UISlider *aimFovSlider;
 @property (nonatomic, strong) UILabel *aimFovLabel;
-@property (nonatomic, strong) UIButton *antenaButton;
-@property (nonatomic, strong) UIButton *speedX2Button;
-@property (nonatomic, strong) UIButton *speedX8Button;
-@property (nonatomic, strong) UIButton *noRecoilButton;
-@property (nonatomic, strong) UIButton *magicBulletButton;
-@property (nonatomic, assign) BOOL aimHeadOn;
-@property (nonatomic, assign) BOOL antenaOn;
-@property (nonatomic, assign) BOOL speedX2On;
-@property (nonatomic, assign) BOOL speedX8On;
-@property (nonatomic, assign) BOOL noRecoilOn;
-@property (nonatomic, assign) BOOL magicBulletOn;
+@property (nonatomic, strong) UISwitch *antenaSwitch;
+@property (nonatomic, strong) UISwitch *speedX2Switch;
+@property (nonatomic, strong) UISwitch *speedX8Switch;
+@property (nonatomic, strong) UISwitch *noRecoilSwitch;
+@property (nonatomic, strong) UISwitch *magicBulletSwitch;
 @property (nonatomic, assign) BOOL hasSelectedGoc;
 @property (nonatomic, strong) NSArray<NSString *> *gocNames;
 @property (nonatomic, strong) NSArray<NSString *> *gocHexes;
@@ -84,6 +129,10 @@
 @property (nonatomic, strong) UIButton *scanNextButton;
 @property (nonatomic, strong) UIButton *scanEditButton;
 @property (nonatomic, strong) UIButton *scanClearButton;
+@property (nonatomic, assign) size_t lastScanResultCount;
+
+// Localization
+@property (nonatomic, strong) NSMutableArray<dispatch_block_t> *localizationRefreshers;
 
 // Toast
 @property (nonatomic, strong) UILabel *toastLabel;
@@ -108,6 +157,7 @@ static MemScanner searchScanner;
         static bool sdkInitialized = false;
         if (!sdkInitialized) {
             game_sdk->init();
+            installAimHook();
             sdkInitialized = true;
         }
 
@@ -295,48 +345,44 @@ static MemScanner searchScanner;
     UIScrollView *scroll = [[UIScrollView alloc] initWithFrame:frame];
     scroll.showsVerticalScrollIndicator = NO;
 
-    CGFloat padX = 10, btnH = 32, gap = 8;
+    CGFloat padX = 10, cardH = 40, gap = 6;
     CGFloat fullW = frame.size.width - padX * 2;
     CGFloat colW = (fullW - gap) / 2.0f;
-    CGFloat y = 10;
+    CGFloat y = 8;
 
-    _enableCheatsButton = [self createButtonWithTitle:@"Master Switch" frame:CGRectMake(padX, y, fullW, btnH)];
-    [_enableCheatsButton addTarget:self action:@selector(toggleEnable) forControlEvents:UIControlEventTouchUpInside];
-    [scroll addSubview:_enableCheatsButton];
-    y += btnH + gap;
+    _enableSwitch = [self addToggleCardWithLocKey:@"master_switch" frame:CGRectMake(padX, y, fullW, cardH) action:@selector(toggleEnable:) toView:scroll];
+    y += cardH + gap;
 
-    NSArray<NSString *> *gridTitles = @[@"Box", @"Lines", @"Names", @"Health", @"Distance", @"Skeleton", @"Enemy Count"];
+    NSArray<NSString *> *gridKeys = @[@"box", @"lines", @"names", @"health", @"distance", @"skeleton", @"enemy_count"];
     NSArray<NSValue *> *gridSelectors = @[
-        [NSValue valueWithPointer:@selector(toggleBox)],
-        [NSValue valueWithPointer:@selector(toggleLines)],
-        [NSValue valueWithPointer:@selector(toggleName)],
-        [NSValue valueWithPointer:@selector(toggleHealth)],
-        [NSValue valueWithPointer:@selector(toggleDistance)],
-        [NSValue valueWithPointer:@selector(toggleSkeleton)],
-        [NSValue valueWithPointer:@selector(toggleCount)]
+        [NSValue valueWithPointer:@selector(toggleBox:)],
+        [NSValue valueWithPointer:@selector(toggleLines:)],
+        [NSValue valueWithPointer:@selector(toggleName:)],
+        [NSValue valueWithPointer:@selector(toggleHealth:)],
+        [NSValue valueWithPointer:@selector(toggleDistance:)],
+        [NSValue valueWithPointer:@selector(toggleSkeleton:)],
+        [NSValue valueWithPointer:@selector(toggleCount:)]
     ];
-    NSMutableArray<UIButton *> *gridButtons = [NSMutableArray array];
+    NSMutableArray<UISwitch *> *gridSwitches = [NSMutableArray array];
 
-    for (NSUInteger i = 0; i < gridTitles.count; i++) {
+    for (NSUInteger i = 0; i < gridKeys.count; i++) {
         NSInteger col = i % 2, row = i / 2;
         CGFloat bx = padX + col * (colW + gap);
-        CGFloat by = y + row * (btnH + gap);
-        UIButton *btn = [self createButtonWithTitle:gridTitles[i] frame:CGRectMake(bx, by, colW, btnH)];
+        CGFloat by = y + row * (cardH + gap);
         SEL selector = (SEL)[gridSelectors[i] pointerValue];
-        [btn addTarget:self action:selector forControlEvents:UIControlEventTouchUpInside];
-        [scroll addSubview:btn];
-        [gridButtons addObject:btn];
+        UISwitch *sw = [self addToggleCardWithLocKey:gridKeys[i] frame:CGRectMake(bx, by, colW, cardH) action:selector toView:scroll];
+        [gridSwitches addObject:sw];
     }
-    _boxESPButton = gridButtons[0];
-    _linesESPButton = gridButtons[1];
-    _nameButton = gridButtons[2];
-    _healthButton = gridButtons[3];
-    _distanceButton = gridButtons[4];
-    _skeletonButton = gridButtons[5];
-    _countButton = gridButtons[6];
+    _boxSwitch = gridSwitches[0];
+    _linesSwitch = gridSwitches[1];
+    _nameSwitch = gridSwitches[2];
+    _healthSwitch = gridSwitches[3];
+    _distanceSwitch = gridSwitches[4];
+    _skeletonSwitch = gridSwitches[5];
+    _countSwitch = gridSwitches[6];
 
-    NSInteger rowCount = (gridTitles.count + 1) / 2;
-    y += rowCount * (btnH + gap);
+    NSInteger rowCount = (gridKeys.count + 1) / 2;
+    y += rowCount * (cardH + gap);
 
     scroll.contentSize = CGSizeMake(frame.size.width, y + 10);
     return scroll;
@@ -364,12 +410,10 @@ static MemScanner searchScanner;
 - (UIView *)buildModMainListInFrame:(CGRect)frame {
     UIScrollView *scroll = [[UIScrollView alloc] initWithFrame:frame];
     scroll.showsVerticalScrollIndicator = NO;
-    CGFloat btnY = 0, btnH = 30, btnGap = 6, btnX = 4, btnW = frame.size.width - 8;
+    CGFloat btnY = 0, cardH = 40, btnGap = 6, btnX = 4, btnW = frame.size.width - 8;
 
-    _aimHeadButton = [self createButtonWithTitle:@"Aim Head" frame:CGRectMake(btnX, btnY, btnW, btnH)];
-    [_aimHeadButton addTarget:self action:@selector(toggleAimHead) forControlEvents:UIControlEventTouchUpInside];
-    [scroll addSubview:_aimHeadButton];
-    btnY += btnH + btnGap;
+    _aimHeadSwitch = [self addToggleCardWithLocKey:@"aim_head" frame:CGRectMake(btnX, btnY, btnW, cardH) action:@selector(toggleAimHead:) toView:scroll];
+    btnY += cardH + btnGap;
 
     _aimFovLabel = [[UILabel alloc] initWithFrame:CGRectMake(btnX, btnY, btnW, 14)];
     _aimFovLabel.text = [NSString stringWithFormat:@"FOV: %.0fpx", Vars.AimFOV];
@@ -389,36 +433,29 @@ static MemScanner searchScanner;
     [scroll addSubview:_aimFovSlider];
     btnY += 20 + btnGap;
 
-    _antenaButton = [self createButtonWithTitle:@"Antena" frame:CGRectMake(btnX, btnY, btnW, btnH)];
-    [_antenaButton addTarget:self action:@selector(toggleAntena) forControlEvents:UIControlEventTouchUpInside];
-    [scroll addSubview:_antenaButton];
-    btnY += btnH + btnGap;
+    _showFovCircleSwitch = [self addToggleCardWithLocKey:@"show_fov_circle" frame:CGRectMake(btnX, btnY, btnW, cardH) action:@selector(toggleShowFovCircle:) toView:scroll];
+    btnY += cardH + btnGap;
 
-    _speedX2Button = [self createButtonWithTitle:@"Speed x2" frame:CGRectMake(btnX, btnY, btnW, btnH)];
-    [_speedX2Button addTarget:self action:@selector(toggleSpeedX2) forControlEvents:UIControlEventTouchUpInside];
-    [scroll addSubview:_speedX2Button];
-    btnY += btnH + btnGap;
+    _antenaSwitch = [self addToggleCardWithLocKey:@"antena" frame:CGRectMake(btnX, btnY, btnW, cardH) action:@selector(toggleAntena:) toView:scroll];
+    btnY += cardH + btnGap;
 
-    _speedX8Button = [self createButtonWithTitle:@"Speed x8" frame:CGRectMake(btnX, btnY, btnW, btnH)];
-    [_speedX8Button addTarget:self action:@selector(toggleSpeedX8) forControlEvents:UIControlEventTouchUpInside];
-    [scroll addSubview:_speedX8Button];
-    btnY += btnH + btnGap;
+    _speedX2Switch = [self addToggleCardWithLocKey:@"speed_x2" frame:CGRectMake(btnX, btnY, btnW, cardH) action:@selector(toggleSpeedX2:) toView:scroll];
+    btnY += cardH + btnGap;
 
-    _noRecoilButton = [self createButtonWithTitle:@"No Recoil" frame:CGRectMake(btnX, btnY, btnW, btnH)];
-    [_noRecoilButton addTarget:self action:@selector(toggleNoRecoil) forControlEvents:UIControlEventTouchUpInside];
-    [scroll addSubview:_noRecoilButton];
-    btnY += btnH + btnGap;
+    _speedX8Switch = [self addToggleCardWithLocKey:@"speed_x8" frame:CGRectMake(btnX, btnY, btnW, cardH) action:@selector(toggleSpeedX8:) toView:scroll];
+    btnY += cardH + btnGap;
 
-    _magicBulletButton = [self createButtonWithTitle:@"Magic Bullet" frame:CGRectMake(btnX, btnY, btnW, btnH)];
-    [_magicBulletButton addTarget:self action:@selector(toggleMagicBullet) forControlEvents:UIControlEventTouchUpInside];
-    [scroll addSubview:_magicBulletButton];
-    btnY += btnH + btnGap;
+    _noRecoilSwitch = [self addToggleCardWithLocKey:@"no_recoil" frame:CGRectMake(btnX, btnY, btnW, cardH) action:@selector(toggleNoRecoil:) toView:scroll];
+    btnY += cardH + btnGap;
 
-    UIButton *actionBtn = [self createButtonWithTitle:@"Hành Động" frame:CGRectMake(btnX, btnY, btnW, btnH)];
+    _magicBulletSwitch = [self addToggleCardWithLocKey:@"magic_bullet" frame:CGRectMake(btnX, btnY, btnW, cardH) action:@selector(toggleMagicBullet:) toView:scroll];
+    btnY += cardH + btnGap;
+
+    UIButton *actionBtn = [self createButtonWithLocKey:@"action" frame:CGRectMake(btnX, btnY, btnW, 32)];
     [actionBtn setTitleColor:COLOR_CYAN forState:UIControlStateNormal];
     [actionBtn addTarget:self action:@selector(showGocList) forControlEvents:UIControlEventTouchUpInside];
     [scroll addSubview:actionBtn];
-    btnY += btnH + btnGap;
+    btnY += 32 + btnGap;
 
     scroll.contentSize = CGSizeMake(frame.size.width, btnY + 6);
     return scroll;
@@ -430,10 +467,10 @@ static MemScanner searchScanner;
     CGFloat btnY = 0, btnH = 28, btnGap = 5, btnX = 4, btnW = frame.size.width - 8;
 
     UILabel *header = [[UILabel alloc] initWithFrame:CGRectMake(btnX, btnY, btnW, 16)];
-    header.text = @"CHỌN HÀNH ĐỘNG GỐC";
     header.font = [UIFont systemFontOfSize:9 weight:UIFontWeightBold];
     header.textColor = COLOR_TEXT_DIM;
     [scroll addSubview:header];
+    [self addLocalizedRefresher:^{ header.text = LOC(@"select_base_action"); }];
     btnY += 20;
 
     for (NSInteger i = 0; i < (NSInteger)_gocNames.count; i++) {
@@ -444,7 +481,7 @@ static MemScanner searchScanner;
         btnY += btnH + btnGap;
     }
 
-    UIButton *backBtn = [self createButtonWithTitle:@"Trở Về" frame:CGRectMake(btnX, btnY, btnW, btnH)];
+    UIButton *backBtn = [self createButtonWithLocKey:@"back" frame:CGRectMake(btnX, btnY, btnW, btnH)];
     [backBtn setTitleColor:[UIColor colorWithRed:0.95 green:0.35 blue:0.45 alpha:0.85] forState:UIControlStateNormal];
     [backBtn addTarget:self action:@selector(showModMainFromGoc) forControlEvents:UIControlEventTouchUpInside];
     [scroll addSubview:backBtn];
@@ -460,10 +497,10 @@ static MemScanner searchScanner;
     CGFloat btnY = 0, btnH = 28, btnGap = 5, btnX = 4, btnW = frame.size.width - 8;
 
     UILabel *header = [[UILabel alloc] initWithFrame:CGRectMake(btnX, btnY, btnW, 16)];
-    header.text = @"CHỌN HÀNH ĐỘNG MOD";
     header.font = [UIFont systemFontOfSize:9 weight:UIFontWeightBold];
     header.textColor = COLOR_TEXT_DIM;
     [scroll addSubview:header];
+    [self addLocalizedRefresher:^{ header.text = LOC(@"select_mod_action"); }];
     btnY += 20;
 
     for (NSInteger i = 0; i < (NSInteger)_modNames.count; i++) {
@@ -474,7 +511,7 @@ static MemScanner searchScanner;
         btnY += btnH + btnGap;
     }
 
-    UIButton *backBtn = [self createButtonWithTitle:@"Trở Về" frame:CGRectMake(btnX, btnY, btnW, btnH)];
+    UIButton *backBtn = [self createButtonWithLocKey:@"back" frame:CGRectMake(btnX, btnY, btnW, btnH)];
     [backBtn setTitleColor:[UIColor colorWithRed:0.95 green:0.35 blue:0.45 alpha:0.85] forState:UIControlStateNormal];
     [backBtn addTarget:self action:@selector(showGocListFromMod) forControlEvents:UIControlEventTouchUpInside];
     [scroll addSubview:backBtn];
@@ -507,7 +544,7 @@ static MemScanner searchScanner;
     NSString *hex = _gocHexes[idx];
     NSString *name = _gocNames[idx];
     _hasSelectedGoc = YES;
-    [self showToast:[NSString stringWithFormat:@"Đã chọn gốc: %@", name]];
+    [self showToast:[NSString stringWithFormat:isEnglishMode ? @"Base selected: %@" : @"Đã chọn gốc: %@", name]];
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         ModHacks::selectGocAction(std::string([hex UTF8String]));
     });
@@ -517,7 +554,7 @@ static MemScanner searchScanner;
 
 - (void)modButtonTapped:(UIButton *)sender {
     if (!_hasSelectedGoc) {
-        [self showToast:@"Lỗi: Chưa chọn gốc!"];
+        [self showToast:isEnglishMode ? @"Error: no base selected!" : @"Lỗi: Chưa chọn gốc!"];
         _modModView.hidden = YES;
         _modGocView.hidden = NO;
         return;
@@ -525,7 +562,7 @@ static MemScanner searchScanner;
     NSInteger idx = sender.tag;
     NSString *hex = _modHexes[idx];
     NSString *name = _modNames[idx];
-    [self showToast:[NSString stringWithFormat:@"Mod thành công: %@", name]];
+    [self showToast:[NSString stringWithFormat:isEnglishMode ? @"Mod applied: %@" : @"Mod thành công: %@", name]];
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         ModHacks::applyModAction(std::string([hex UTF8String]));
     });
@@ -533,12 +570,14 @@ static MemScanner searchScanner;
 
 #pragma mark - Mod tab toggle actions
 
-- (void)toggleAimHead {
-    _aimHeadOn = !_aimHeadOn;
-    BOOL state = _aimHeadOn;
-    [self updateButton:_aimHeadButton forState:state];
-    [self showToast:state ? @"Aim Head ON" : @"Aim Head OFF"];
+- (void)toggleAimHead:(UISwitch *)sender {
+    BOOL state = sender.on;
+    [self showToast:[NSString stringWithFormat:@"%@ %@", LOC(@"aim_head"), LOC(state ? @"on" : @"off")]];
     Vars.AimHead = state;
+}
+
+- (void)toggleShowFovCircle:(UISwitch *)sender {
+    Vars.ShowFOVCircle = sender.on;
 }
 
 - (void)aimFovChanged:(UISlider *)sender {
@@ -546,51 +585,41 @@ static MemScanner searchScanner;
     _aimFovLabel.text = [NSString stringWithFormat:@"FOV: %.0fpx", Vars.AimFOV];
 }
 
-- (void)toggleAntena {
-    _antenaOn = !_antenaOn;
-    BOOL state = _antenaOn;
-    [self updateButton:_antenaButton forState:state];
-    [self showToast:state ? @"Antena ON" : @"Antena OFF"];
+- (void)toggleAntena:(UISwitch *)sender {
+    BOOL state = sender.on;
+    [self showToast:[NSString stringWithFormat:@"%@ %@", LOC(@"antena"), LOC(state ? @"on" : @"off")]];
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         ModHacks::antena(state);
     });
 }
 
-- (void)toggleSpeedX2 {
-    _speedX2On = !_speedX2On;
-    BOOL state = _speedX2On;
-    [self updateButton:_speedX2Button forState:state];
-    [self showToast:state ? @"Speed x2 ON" : @"Speed x2 OFF"];
+- (void)toggleSpeedX2:(UISwitch *)sender {
+    BOOL state = sender.on;
+    [self showToast:[NSString stringWithFormat:@"%@ %@", LOC(@"speed_x2"), LOC(state ? @"on" : @"off")]];
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         ModHacks::speedX2(state);
     });
 }
 
-- (void)toggleSpeedX8 {
-    _speedX8On = !_speedX8On;
-    BOOL state = _speedX8On;
-    [self updateButton:_speedX8Button forState:state];
-    [self showToast:state ? @"Speed x8 ON" : @"Speed x8 OFF"];
+- (void)toggleSpeedX8:(UISwitch *)sender {
+    BOOL state = sender.on;
+    [self showToast:[NSString stringWithFormat:@"%@ %@", LOC(@"speed_x8"), LOC(state ? @"on" : @"off")]];
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         ModHacks::speedX8(state);
     });
 }
 
-- (void)toggleNoRecoil {
-    _noRecoilOn = !_noRecoilOn;
-    BOOL state = _noRecoilOn;
-    [self updateButton:_noRecoilButton forState:state];
-    [self showToast:state ? @"No Recoil ON" : @"No Recoil OFF"];
+- (void)toggleNoRecoil:(UISwitch *)sender {
+    BOOL state = sender.on;
+    [self showToast:[NSString stringWithFormat:@"%@ %@", LOC(@"no_recoil"), LOC(state ? @"on" : @"off")]];
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         ModHacks::noRecoil(state);
     });
 }
 
-- (void)toggleMagicBullet {
-    _magicBulletOn = !_magicBulletOn;
-    BOOL state = _magicBulletOn;
-    [self updateButton:_magicBulletButton forState:state];
-    [self showToast:state ? @"Magic Bullet ON" : @"Magic Bullet OFF"];
+- (void)toggleMagicBullet:(UISwitch *)sender {
+    BOOL state = sender.on;
+    [self showToast:[NSString stringWithFormat:@"%@ %@", LOC(@"magic_bullet"), LOC(state ? @"on" : @"off")]];
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         ModHacks::magicBullet(state);
     });
@@ -607,17 +636,36 @@ static MemScanner searchScanner;
     [page addSubview:row];
 
     UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(10, 0, row.frame.size.width * 0.5f, 34)];
-    label.text = @"Trạng thái";
     label.font = [UIFont systemFontOfSize:11 weight:UIFontWeightBold];
     label.textColor = COLOR_TEXT_DIM;
     [row addSubview:label];
+    [self addLocalizedRefresher:^{ label.text = LOC(@"status"); }];
 
     _statusLabel = [[UILabel alloc] initWithFrame:CGRectMake(row.frame.size.width * 0.5f, 0, row.frame.size.width * 0.5f - 10, 34)];
-    _statusLabel.text = @"Đã kích hoạt";
     _statusLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
     _statusLabel.textColor = COLOR_CYAN;
     _statusLabel.textAlignment = NSTextAlignmentRight;
     [row addSubview:_statusLabel];
+    UILabel *weakStatusLabel = _statusLabel;
+    [self addLocalizedRefresher:^{ weakStatusLabel.text = LOC(@"activated"); }];
+
+    UIView *langRow = [[UIView alloc] initWithFrame:CGRectMake(4, 42, frame.size.width - 8, 34)];
+    langRow.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.03];
+    langRow.layer.cornerRadius = 6.0f;
+    [page addSubview:langRow];
+
+    UILabel *langLabel = [[UILabel alloc] initWithFrame:CGRectMake(10, 0, langRow.frame.size.width * 0.4f, 34)];
+    langLabel.text = @"Ngôn ngữ / Language";
+    langLabel.font = [UIFont systemFontOfSize:10.5f weight:UIFontWeightBold];
+    langLabel.textColor = COLOR_TEXT_DIM;
+    langLabel.adjustsFontSizeToFitWidth = YES;
+    [langRow addSubview:langLabel];
+
+    UISegmentedControl *langControl = [[UISegmentedControl alloc] initWithItems:@[@"VI", @"EN"]];
+    langControl.frame = CGRectMake(langRow.frame.size.width * 0.4f + 6, 4, langRow.frame.size.width * 0.6f - 16, 26);
+    langControl.selectedSegmentIndex = isEnglishMode ? 1 : 0;
+    [langControl addTarget:self action:@selector(languageChanged:) forControlEvents:UIControlEventValueChanged];
+    [langRow addSubview:langControl];
 
     return page;
 }
@@ -636,48 +684,53 @@ static MemScanner searchScanner;
     y += 26 + 8;
 
     _scanValueField = [[UITextField alloc] initWithFrame:CGRectMake(4, y, w - 8, 30)];
-    _scanValueField.placeholder = @"Giá trị hiện tại";
     _scanValueField.borderStyle = UITextBorderStyleRoundedRect;
     _scanValueField.keyboardType = UIKeyboardTypeNumbersAndPunctuation;
     _scanValueField.returnKeyType = UIReturnKeyDone;
     _scanValueField.delegate = self;
     [page addSubview:_scanValueField];
+    UITextField *weakScanValueField = _scanValueField;
+    [self addLocalizedRefresher:^{ weakScanValueField.placeholder = LOC(@"current_value_placeholder"); }];
     y += 30 + 6;
 
     CGFloat halfW = (w - 8 - 6) / 2.0f;
-    _scanFindButton = [self createButtonWithTitle:@"Tìm" frame:CGRectMake(4, y, halfW, 30)];
+    _scanFindButton = [self createButtonWithLocKey:@"find" frame:CGRectMake(4, y, halfW, 30)];
     [_scanFindButton addTarget:self action:@selector(scanFindTapped) forControlEvents:UIControlEventTouchUpInside];
     [page addSubview:_scanFindButton];
 
-    _scanNextButton = [self createButtonWithTitle:@"Tìm Tiếp" frame:CGRectMake(4 + halfW + 6, y, halfW, 30)];
+    _scanNextButton = [self createButtonWithLocKey:@"find_next" frame:CGRectMake(4 + halfW + 6, y, halfW, 30)];
     [_scanNextButton addTarget:self action:@selector(scanNextTapped) forControlEvents:UIControlEventTouchUpInside];
     [page addSubview:_scanNextButton];
     y += 30 + 8;
 
     _scanResultLabel = [[UILabel alloc] initWithFrame:CGRectMake(4, y, w - 8, 18)];
-    _scanResultLabel.text = @"Số kết quả: 0";
     _scanResultLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightMedium];
     _scanResultLabel.textColor = COLOR_CYAN;
     _scanResultLabel.textAlignment = NSTextAlignmentCenter;
     [page addSubview:_scanResultLabel];
+    UILabel *weakScanResultLabel = _scanResultLabel;
+    [self addLocalizedRefresher:^{
+        weakScanResultLabel.text = [NSString stringWithFormat:isEnglishMode ? @"Results: %zu" : @"Số kết quả: %zu", self.lastScanResultCount];
+    }];
     y += 18 + 10;
 
     _scanNewValueField = [[UITextField alloc] initWithFrame:CGRectMake(4, y, w - 8, 30)];
-    _scanNewValueField.placeholder = @"Giá trị mới";
     _scanNewValueField.borderStyle = UITextBorderStyleRoundedRect;
     _scanNewValueField.keyboardType = UIKeyboardTypeNumbersAndPunctuation;
     _scanNewValueField.returnKeyType = UIReturnKeyDone;
     _scanNewValueField.delegate = self;
     [page addSubview:_scanNewValueField];
+    UITextField *weakScanNewValueField = _scanNewValueField;
+    [self addLocalizedRefresher:^{ weakScanNewValueField.placeholder = LOC(@"new_value_placeholder"); }];
     y += 30 + 6;
 
-    _scanEditButton = [self createButtonWithTitle:@"Sửa Tất Cả" frame:CGRectMake(4, y, w - 8, 30)];
+    _scanEditButton = [self createButtonWithLocKey:@"edit_all" frame:CGRectMake(4, y, w - 8, 30)];
     [_scanEditButton setTitleColor:COLOR_CYAN forState:UIControlStateNormal];
     [_scanEditButton addTarget:self action:@selector(scanEditAllTapped) forControlEvents:UIControlEventTouchUpInside];
     [page addSubview:_scanEditButton];
     y += 30 + 6;
 
-    _scanClearButton = [self createButtonWithTitle:@"Xóa Kết Quả" frame:CGRectMake(4, y, w - 8, 30)];
+    _scanClearButton = [self createButtonWithLocKey:@"clear_results" frame:CGRectMake(4, y, w - 8, 30)];
     [_scanClearButton setTitleColor:[UIColor colorWithRed:0.95 green:0.35 blue:0.45 alpha:0.85] forState:UIControlStateNormal];
     [_scanClearButton addTarget:self action:@selector(scanClearTapped) forControlEvents:UIControlEventTouchUpInside];
     [page addSubview:_scanClearButton];
@@ -693,15 +746,16 @@ static MemScanner searchScanner;
 }
 
 - (void)updateScanResultLabel:(size_t)count {
+    _lastScanResultCount = count;
     dispatch_async(dispatch_get_main_queue(), ^{
-        self.scanResultLabel.text = [NSString stringWithFormat:@"Số kết quả: %zu", count];
+        self.scanResultLabel.text = [NSString stringWithFormat:isEnglishMode ? @"Results: %zu" : @"Số kết quả: %zu", count];
     });
 }
 
 - (void)scanFindTapped {
     NSString *value = _scanValueField.text;
     NSString *type = [self scanSelectedType];
-    if (value.length == 0) { [self showToast:@"Nhập giá trị trước"]; return; }
+    if (value.length == 0) { [self showToast:isEnglishMode ? @"Enter a value first" : @"Nhập giá trị trước"]; return; }
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         size_t count = searchScanner.searchNumber(std::string([value UTF8String]), std::string([type UTF8String]));
         [self updateScanResultLabel:count];
@@ -711,7 +765,7 @@ static MemScanner searchScanner;
 - (void)scanNextTapped {
     NSString *value = _scanValueField.text;
     NSString *type = [self scanSelectedType];
-    if (value.length == 0) { [self showToast:@"Nhập giá trị trước"]; return; }
+    if (value.length == 0) { [self showToast:isEnglishMode ? @"Enter a value first" : @"Nhập giá trị trước"]; return; }
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         size_t count = searchScanner.nextScan(std::string([value UTF8String]), std::string([type UTF8String]));
         [self updateScanResultLabel:count];
@@ -721,18 +775,18 @@ static MemScanner searchScanner;
 - (void)scanEditAllTapped {
     NSString *value = _scanNewValueField.text;
     NSString *type = [self scanSelectedType];
-    if (value.length == 0) { [self showToast:@"Nhập giá trị mới trước"]; return; }
+    if (value.length == 0) { [self showToast:isEnglishMode ? @"Enter a new value first" : @"Nhập giá trị mới trước"]; return; }
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         bool ok = searchScanner.editAll(std::string([value UTF8String]), std::string([type UTF8String]));
         dispatch_async(dispatch_get_main_queue(), ^{
-            [self showToast:ok ? @"Đã sửa xong" : @"Không có kết quả để sửa"];
+            [self showToast:ok ? (isEnglishMode ? @"Edit done" : @"Đã sửa xong") : (isEnglishMode ? @"No results to edit" : @"Không có kết quả để sửa")];
         });
     });
 }
 
 - (void)scanClearTapped {
     searchScanner.clearResults();
-    _scanResultLabel.text = @"Số kết quả: 0";
+    [self updateScanResultLabel:0];
 }
 
 - (BOOL)textFieldShouldReturn:(UITextField *)textField {
@@ -807,6 +861,57 @@ static MemScanner searchScanner;
     return button;
 }
 
+- (UIButton *)createButtonWithLocKey:(NSString *)key frame:(CGRect)frame {
+    UIButton *button = [self createButtonWithTitle:LOC(key) frame:frame];
+    __weak UIButton *weakBtn = button;
+    [self addLocalizedRefresher:^{ [weakBtn setTitle:LOC(key) forState:UIControlStateNormal]; }];
+    return button;
+}
+
+#pragma mark - Localization
+
+- (void)addLocalizedRefresher:(dispatch_block_t)block {
+    if (!_localizationRefreshers) _localizationRefreshers = [NSMutableArray array];
+    [_localizationRefreshers addObject:[block copy]];
+    block();
+}
+
+- (void)refreshLocalization {
+    for (dispatch_block_t block in _localizationRefreshers) block();
+}
+
+- (void)languageChanged:(UISegmentedControl *)sender {
+    isEnglishMode = (sender.selectedSegmentIndex == 1);
+    [self refreshLocalization];
+}
+
+#pragma mark - Toggle cards (label + native switch)
+
+- (UISwitch *)addToggleCardWithLocKey:(NSString *)key frame:(CGRect)frame action:(SEL)action toView:(UIView *)parent {
+    UIView *card = [[UIView alloc] initWithFrame:frame];
+    card.backgroundColor = COLOR_BTN_OFF;
+    card.layer.cornerRadius = 8.0f;
+    [parent addSubview:card];
+
+    UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(10, 0, frame.size.width - 62, frame.size.height)];
+    label.font = [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold];
+    label.textColor = COLOR_TEXT;
+    label.adjustsFontSizeToFitWidth = YES;
+    label.minimumScaleFactor = 0.7f;
+    [card addSubview:label];
+    __weak UILabel *weakLabel = label;
+    [self addLocalizedRefresher:^{ weakLabel.text = LOC(key); }];
+
+    UISwitch *sw = [[UISwitch alloc] init];
+    sw.onTintColor = COLOR_CYAN;
+    CGSize swSize = sw.frame.size;
+    sw.frame = CGRectMake(frame.size.width - swSize.width - 8, (frame.size.height - swSize.height) / 2.0f, swSize.width, swSize.height);
+    [sw addTarget:self action:action forControlEvents:UIControlEventValueChanged];
+    [card addSubview:sw];
+
+    return sw;
+}
+
 - (void)updateMenu {
     _menuView.hidden = !MenDeal;
 
@@ -814,39 +919,22 @@ static MemScanner searchScanner;
 
     if (!MenDeal) return;
 
-    [self updateButton:_enableCheatsButton forState:Vars.Enable];
-
-    NSArray *buttons = @[_boxESPButton, _linesESPButton, _nameButton, _healthButton, _distanceButton, _skeletonButton, _countButton];
-    NSArray *states = @[@(Vars.Box), @(Vars.lines), @(Vars.Name), @(Vars.Health), @(Vars.Distance), @(Vars.skeleton), @(Vars.counts)];
-
-    for (int i = 0; i < buttons.count; i++) {
-        UIButton *btn = buttons[i];
-        BOOL state = [states[i] boolValue];
-        btn.alpha = Vars.Enable ? 1.0f : 0.4f;
-        btn.userInteractionEnabled = Vars.Enable;
-        [self updateButton:btn forState:state];
-    }
-}
-
-- (void)updateButton:(UIButton *)button forState:(BOOL)state {
-    if (state) {
-        button.backgroundColor = [COLOR_PURPLE colorWithAlphaComponent:0.22];
-        [button setTitleColor:COLOR_CYAN forState:UIControlStateNormal];
-    } else {
-        button.backgroundColor = COLOR_BTN_OFF;
-        [button setTitleColor:COLOR_TEXT_DIM forState:UIControlStateNormal];
+    NSArray<UISwitch *> *subSwitches = @[_boxSwitch, _linesSwitch, _nameSwitch, _healthSwitch, _distanceSwitch, _skeletonSwitch, _countSwitch];
+    for (UISwitch *sw in subSwitches) {
+        sw.enabled = Vars.Enable;
+        sw.superview.alpha = Vars.Enable ? 1.0f : 0.4f;
     }
 }
 
 #pragma mark - ESP Toggle Actions
-- (void)toggleEnable { Vars.Enable = !Vars.Enable; }
-- (void)toggleBox { if (Vars.Enable) Vars.Box = !Vars.Box; }
-- (void)toggleLines { if (Vars.Enable) Vars.lines = !Vars.lines; }
-- (void)toggleName { if (Vars.Enable) Vars.Name = !Vars.Name; }
-- (void)toggleHealth { if (Vars.Enable) Vars.Health = !Vars.Health; }
-- (void)toggleDistance { if (Vars.Enable) Vars.Distance = !Vars.Distance; }
-- (void)toggleSkeleton { if (Vars.Enable) Vars.skeleton = !Vars.skeleton; }
-- (void)toggleCount { if (Vars.Enable) Vars.counts = !Vars.counts; }
+- (void)toggleEnable:(UISwitch *)sender { Vars.Enable = sender.on; }
+- (void)toggleBox:(UISwitch *)sender { Vars.Box = sender.on; }
+- (void)toggleLines:(UISwitch *)sender { Vars.lines = sender.on; }
+- (void)toggleName:(UISwitch *)sender { Vars.Name = sender.on; }
+- (void)toggleHealth:(UISwitch *)sender { Vars.Health = sender.on; }
+- (void)toggleDistance:(UISwitch *)sender { Vars.Distance = sender.on; }
+- (void)toggleSkeleton:(UISwitch *)sender { Vars.skeleton = sender.on; }
+- (void)toggleCount:(UISwitch *)sender { Vars.counts = sender.on; }
 
 - (void)closeMenu { MenDeal = false; }
 

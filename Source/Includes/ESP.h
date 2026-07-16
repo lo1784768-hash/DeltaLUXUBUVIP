@@ -34,6 +34,7 @@ struct Vars_t
     bool NoFog = true;
     bool AimHead = false;
     float AimFOV = 250.0f;
+    bool ShowFOVCircle = false;
 } Vars;
 
 // ===== GAME SDK =====
@@ -72,18 +73,19 @@ extern game_sdk_t *game_sdk;
 // ===== WORLD TO SCREEN HELPER =====
 namespace Camera$$WorldToScreen
 {
-    inline SimpleVec2 Regular(Vector3 pos)
+    // Parameterized on an explicit camera so callers that already have one (e.g. the
+    // Camera.Render hook driving Aim Head) don't need a redundant get_camera() lookup.
+    inline SimpleVec2 FromCamera(void *cam, Vector3 pos)
     {
-        auto cam = game_sdk->get_camera();
         if (!cam) return SimpleVec2(0, 0);
         Vector3 worldPoint = game_sdk->WorldToScreenPoint(cam, pos);
-        
+
         if (worldPoint.z < 0.01f) return SimpleVec2(0, 0);
 
         CGRect screenBounds = [UIScreen mainScreen].nativeBounds;
         CGFloat screenWidth = screenBounds.size.width / [UIScreen mainScreen].nativeScale;
         CGFloat screenHeight = screenBounds.size.height / [UIScreen mainScreen].nativeScale;
-        
+
         if (screenWidth < screenHeight) {
             CGFloat temp = screenWidth;
             screenWidth = screenHeight;
@@ -92,8 +94,13 @@ namespace Camera$$WorldToScreen
 
         float lx = screenWidth * worldPoint.x;
         float ly = screenHeight * (1.0f - worldPoint.y);
-        
+
         return SimpleVec2(lx, ly);
+    }
+
+    inline SimpleVec2 Regular(Vector3 pos)
+    {
+        return FromCamera(game_sdk->get_camera(), pos);
     }
 }
 
@@ -112,6 +119,65 @@ inline Vector3 GetBonePosition(void *player, void *(*transformGetter)(void *)) {
     return tf ? game_sdk->get_position(tf) : Vector3();
 }
 
+// ===== AIM HEAD TARGETING =====
+// Shared by the ESP FOV circle (cosmetic) and the Camera.Render hook (the actual aim
+// write) so both agree on exactly which enemy counts as "in FOV". Self-contained -
+// re-fetches match/local player/players list itself rather than relying on state from
+// the separate get_players() display-link loop, since the two run on different call paths.
+inline bool FindAimHeadTarget(void *camera, Vector3 &outHeadWorldPos)
+{
+    if (!camera) return false;
+
+    void *current_Match = game_sdk->Curent_Match();
+    if (!current_Match) return false;
+
+    void *local_player = game_sdk->GetLocalPlayer(current_Match);
+    if (!local_player) return false;
+
+    void *playersListAddr = (void*)getRealOffset(0x563CC18);
+    if (!playersListAddr) return false;
+
+    monoList<void **> *players = ((monoList<void **>* (*)(void*))playersListAddr)(current_Match);
+    if (!players || !players->getItems()) return false;
+
+    Vector3 localPos = getPosition(local_player);
+
+    CGRect screenBounds = [UIScreen mainScreen].nativeBounds;
+    CGFloat sW = screenBounds.size.width / [UIScreen mainScreen].nativeScale;
+    CGFloat sH = screenBounds.size.height / [UIScreen mainScreen].nativeScale;
+    if (sW < sH) { CGFloat t = sW; sW = sH; sH = t; }
+
+    bool found = false;
+    float bestScreenDist = Vars.AimFOV;
+
+    for (int u = 0; u < players->getSize(); u++) {
+        void *enemy = players->getItems()[u];
+        if (!enemy || enemy == local_player) continue;
+        if (!game_sdk->Component_GetTransform(enemy)) continue;
+        if (game_sdk->get_IsDieing(enemy) || game_sdk->get_isLocalTeam(enemy)) continue;
+
+        Vector3 pos = getPosition(enemy);
+        if (Vector3::Distance(pos, localPos) > 150.0f) continue;
+
+        Vector3 headWorld = GetBonePosition(enemy, game_sdk->_GetHeadPositions);
+        if (headWorld == Vector3()) headWorld = pos + Vector3(0, 1.6f, 0);
+
+        SimpleVec2 headScreen = Camera$$WorldToScreen::FromCamera(camera, headWorld);
+        if (headScreen.x == 0 && headScreen.y == 0) continue;
+
+        float dx = headScreen.x - sW / 2.0f;
+        float dy = headScreen.y - sH / 2.0f;
+        float screenDist = sqrtf(dx * dx + dy * dy);
+        if (screenDist < bestScreenDist) {
+            bestScreenDist = screenDist;
+            outHeadWorldPos = headWorld;
+            found = true;
+        }
+    }
+
+    return found;
+}
+
 // ===== OPTIMIZED ESP RENDERER =====
 @interface ESPRenderer : NSObject
 @property (nonatomic, strong) CAShapeLayer *espLayer;
@@ -126,6 +192,7 @@ inline Vector3 GetBonePosition(void *player, void *(*transformGetter)(void *)) {
 - (void)clearDrawings;
 - (void)drawBoxFrom:(SimpleVec2)min to:(SimpleVec2)max path:(UIBezierPath *)path;
 - (void)drawLineFrom:(SimpleVec2)from to:(SimpleVec2)to path:(UIBezierPath *)path;
+- (void)drawFOVCircleAt:(SimpleVec2)center radius:(float)radius path:(UIBezierPath *)path;
 - (void)drawTextAt:(SimpleVec2)position text:(NSString*)text;
 - (void)drawHealthBarAt:(SimpleVec2)min to:(SimpleVec2)max multiplier:(float)multiplier;
 @end
@@ -185,6 +252,15 @@ inline Vector3 GetBonePosition(void *player, void *(*transformGetter)(void *)) {
     if (!path) return;
     [path moveToPoint:CGPointMake(from.x, from.y)];
     [path addLineToPoint:CGPointMake(to.x, to.y)];
+}
+
+- (void)drawFOVCircleAt:(SimpleVec2)center radius:(float)radius path:(UIBezierPath *)path {
+    if (!path) return;
+    [path appendPath:[UIBezierPath bezierPathWithArcCenter:CGPointMake(center.x, center.y)
+                                                     radius:radius
+                                                 startAngle:0
+                                                   endAngle:M_PI * 2
+                                                  clockwise:YES]];
 }
 
 - (void)drawTextAt:(SimpleVec2)position text:(NSString*)text {
@@ -295,11 +371,13 @@ inline void get_players()
 
         SimpleVec2 lineStart(sW / 2.0f, sH - 15.0f);
 
-        // Aim Head: track the enemy head closest to the crosshair (screen center),
-        // within Vars.AimFOV on-screen radius so it only snaps to something already near where the player is aiming.
-        bool haveAimTarget = false;
-        float aimBestScreenDist = Vars.AimFOV;
-        Vector3 aimHeadPos;
+        // Aim Head FOV circle: purely cosmetic here. The actual aim write happens in the
+        // Camera.Render hook (AimHook.h) via FindAimHeadTarget, since a separate
+        // CADisplayLink loop like this one races the game's own per-frame camera update
+        // and gets overwritten before render.
+        if (Vars.ShowFOVCircle) {
+            [renderer drawFOVCircleAt:SimpleVec2(sW / 2.0f, sH / 2.0f) radius:Vars.AimFOV path:combinedPath];
+        }
 
         for (int u = 0; u < players->getSize(); u++) {
             void *enemy = players->getItems()[u];
@@ -325,22 +403,6 @@ inline void get_players()
 
             if (Vars.Box) {
                 [renderer drawBoxFrom:SimpleVec2(bot_pos.x - width/2, top_pos.y) to:SimpleVec2(bot_pos.x + width/2, bot_pos.y) path:combinedPath];
-            }
-
-            if (Vars.AimHead) {
-                Vector3 headWorld = GetBonePosition(enemy, game_sdk->_GetHeadPositions);
-                if (headWorld == Vector3()) headWorld = pos + Vector3(0, 1.6f, 0);
-                SimpleVec2 headScreen = Camera$$WorldToScreen::Regular(headWorld);
-                if (!(headScreen.x == 0 && headScreen.y == 0)) {
-                    float dx = headScreen.x - sW / 2.0f;
-                    float dy = headScreen.y - sH / 2.0f;
-                    float screenDist = sqrtf(dx * dx + dy * dy);
-                    if (screenDist < aimBestScreenDist) {
-                        aimBestScreenDist = screenDist;
-                        aimHeadPos = headWorld;
-                        haveAimTarget = true;
-                    }
-                }
             }
 
             if (Vars.lines) {
@@ -396,16 +458,6 @@ inline void get_players()
 
         if (Vars.counts) {
             [renderer drawTextAt:SimpleVec2(sW / 2, 40) text:[NSString stringWithFormat:@"Enemies: %d", totalEnemies]];
-        }
-
-        if (Vars.AimHead && haveAimTarget) {
-            void *camera = game_sdk->get_camera();
-            void *camTransform = camera ? game_sdk->Component_GetTransform(camera) : nullptr;
-            if (camTransform) {
-                Vector3 camPos = game_sdk->get_position(camTransform);
-                Vector3 dir = Vector3::Normalized(aimHeadPos - camPos);
-                game_sdk->set_forward(camTransform, dir);
-            }
         }
 
         renderer.espLayer.path = combinedPath.CGPath;
