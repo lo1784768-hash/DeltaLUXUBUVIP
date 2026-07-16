@@ -33,7 +33,8 @@ struct Vars_t
     bool counts = false;
     bool NoFog = true;
     bool AimHead = false;
-    float AimFOV = 250.0f;
+    float AimHeadRange = 250.0f; // Aim Head's own snap radius (MOD tab) - independent of the ESP FOV circle
+    float AimFOV = 250.0f;       // ESP FOV circle's radius only (ESP tab) - purely cosmetic
     bool ShowFOVCircle = false;
 } Vars;
 
@@ -154,7 +155,7 @@ inline bool FindAimHeadTarget(void *camera, Vector3 &outHeadWorldPos)
     if (sW < sH) { CGFloat t = sW; sW = sH; sH = t; }
 
     bool found = false;
-    float bestScreenDist = Vars.AimFOV;
+    float bestScreenDist = Vars.AimHeadRange;
 
     for (int u = 0; u < players->getSize(); u++) {
         void *enemy = players->getItems()[u];

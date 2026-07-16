@@ -97,15 +97,17 @@ static NSString *LOC(NSString *key) {
 @property (nonatomic, strong) UISwitch *distanceSwitch;
 @property (nonatomic, strong) UISwitch *skeletonSwitch;
 @property (nonatomic, strong) UISwitch *countSwitch;
+@property (nonatomic, strong) UISwitch *showFovCircleSwitch;
+@property (nonatomic, strong) UISlider *fovCircleSlider;
+@property (nonatomic, strong) UILabel *fovCircleLabel;
 
 // Mod tab
 @property (nonatomic, strong) UIView *modMainView;
 @property (nonatomic, strong) UIView *modGocView;
 @property (nonatomic, strong) UIView *modModView;
 @property (nonatomic, strong) UISwitch *aimHeadSwitch;
-@property (nonatomic, strong) UISwitch *showFovCircleSwitch;
-@property (nonatomic, strong) UISlider *aimFovSlider;
-@property (nonatomic, strong) UILabel *aimFovLabel;
+@property (nonatomic, strong) UISlider *aimRangeSlider;
+@property (nonatomic, strong) UILabel *aimRangeLabel;
 @property (nonatomic, strong) UISwitch *antenaSwitch;
 @property (nonatomic, strong) UISwitch *speedX2Switch;
 @property (nonatomic, strong) UISwitch *speedX8Switch;
@@ -353,10 +355,34 @@ static MemScanner searchScanner;
     _enableSwitch = [self addToggleCardWithLocKey:@"master_switch" frame:CGRectMake(padX, y, fullW, cardH) action:@selector(toggleEnable:) toView:scroll];
     y += cardH + gap;
 
-    // Show FOV Circle lives here (a screen overlay, like Box/Skeleton) rather than next
-    // to Aim Head in the Mod tab, so the visual ESP circle and the actual aim behavior
-    // read as two distinct things instead of one bundled feature.
-    NSArray<NSString *> *gridKeys = @[@"box", @"lines", @"names", @"health", @"distance", @"skeleton", @"enemy_count", @"show_fov_circle"];
+    // Show FOV Circle + its own radius slider live entirely in the ESP tab (a screen
+    // overlay, independent of Vars.AimHeadRange in the MOD tab) - Aim Head and the FOV
+    // circle no longer share a value, per the user's explicit request.
+    _showFovCircleSwitch = [self addToggleCardWithLocKey:@"show_fov_circle" frame:CGRectMake(padX, y, fullW, cardH) action:@selector(toggleShowFovCircle:) toView:scroll];
+    y += cardH + gap;
+
+    _fovCircleLabel = [[UILabel alloc] initWithFrame:CGRectMake(padX, y, fullW, 14)];
+    _fovCircleLabel.font = [UIFont systemFontOfSize:10.5f weight:UIFontWeightMedium];
+    _fovCircleLabel.textColor = COLOR_TEXT_DIM;
+    [scroll addSubview:_fovCircleLabel];
+    __weak UILabel *weakFovCircleLabel = _fovCircleLabel;
+    [self addLocalizedRefresher:^{
+        weakFovCircleLabel.text = [NSString stringWithFormat:isEnglishMode ? @"FOV circle radius: %.0fpx" : @"Bán kính vòng FOV: %.0fpx", Vars.AimFOV];
+    }];
+    y += 14 + 2;
+
+    _fovCircleSlider = [[UISlider alloc] initWithFrame:CGRectMake(padX, y, fullW, 20)];
+    _fovCircleSlider.minimumValue = 50.0f;
+    _fovCircleSlider.maximumValue = 400.0f;
+    _fovCircleSlider.value = Vars.AimFOV;
+    _fovCircleSlider.minimumTrackTintColor = COLOR_CYAN;
+    _fovCircleSlider.maximumTrackTintColor = [UIColor colorWithWhite:1.0 alpha:0.12];
+    _fovCircleSlider.thumbTintColor = COLOR_TEXT;
+    [_fovCircleSlider addTarget:self action:@selector(fovCircleRadiusChanged:) forControlEvents:UIControlEventValueChanged];
+    [scroll addSubview:_fovCircleSlider];
+    y += 20 + gap;
+
+    NSArray<NSString *> *gridKeys = @[@"box", @"lines", @"names", @"health", @"distance", @"skeleton", @"enemy_count"];
     NSArray<NSValue *> *gridSelectors = @[
         [NSValue valueWithPointer:@selector(toggleBox:)],
         [NSValue valueWithPointer:@selector(toggleLines:)],
@@ -364,8 +390,7 @@ static MemScanner searchScanner;
         [NSValue valueWithPointer:@selector(toggleHealth:)],
         [NSValue valueWithPointer:@selector(toggleDistance:)],
         [NSValue valueWithPointer:@selector(toggleSkeleton:)],
-        [NSValue valueWithPointer:@selector(toggleCount:)],
-        [NSValue valueWithPointer:@selector(toggleShowFovCircle:)]
+        [NSValue valueWithPointer:@selector(toggleCount:)]
     ];
     NSMutableArray<UISwitch *> *gridSwitches = [NSMutableArray array];
 
@@ -384,7 +409,6 @@ static MemScanner searchScanner;
     _distanceSwitch = gridSwitches[4];
     _skeletonSwitch = gridSwitches[5];
     _countSwitch = gridSwitches[6];
-    _showFovCircleSwitch = gridSwitches[7];
 
     NSInteger rowCount = (gridKeys.count + 1) / 2;
     y += rowCount * (cardH + gap);
@@ -420,25 +444,25 @@ static MemScanner searchScanner;
     _aimHeadSwitch = [self addToggleCardWithLocKey:@"aim_head" frame:CGRectMake(btnX, btnY, btnW, cardH) action:@selector(toggleAimHead:) toView:scroll];
     btnY += cardH + btnGap;
 
-    _aimFovLabel = [[UILabel alloc] initWithFrame:CGRectMake(btnX, btnY, btnW, 14)];
-    _aimFovLabel.font = [UIFont systemFontOfSize:10.5f weight:UIFontWeightMedium];
-    _aimFovLabel.textColor = COLOR_TEXT_DIM;
-    [scroll addSubview:_aimFovLabel];
-    __weak UILabel *weakAimFovLabel = _aimFovLabel;
+    _aimRangeLabel = [[UILabel alloc] initWithFrame:CGRectMake(btnX, btnY, btnW, 14)];
+    _aimRangeLabel.font = [UIFont systemFontOfSize:10.5f weight:UIFontWeightMedium];
+    _aimRangeLabel.textColor = COLOR_TEXT_DIM;
+    [scroll addSubview:_aimRangeLabel];
+    __weak UILabel *weakAimRangeLabel = _aimRangeLabel;
     [self addLocalizedRefresher:^{
-        weakAimFovLabel.text = [NSString stringWithFormat:isEnglishMode ? @"Aim radius: %.0fpx" : @"Bán kính ngắm: %.0fpx", Vars.AimFOV];
+        weakAimRangeLabel.text = [NSString stringWithFormat:isEnglishMode ? @"Aim radius: %.0fpx" : @"Bán kính ngắm: %.0fpx", Vars.AimHeadRange];
     }];
     btnY += 14 + 2;
 
-    _aimFovSlider = [[UISlider alloc] initWithFrame:CGRectMake(btnX, btnY, btnW, 20)];
-    _aimFovSlider.minimumValue = 50.0f;
-    _aimFovSlider.maximumValue = 400.0f;
-    _aimFovSlider.value = Vars.AimFOV;
-    _aimFovSlider.minimumTrackTintColor = COLOR_CYAN;
-    _aimFovSlider.maximumTrackTintColor = [UIColor colorWithWhite:1.0 alpha:0.12];
-    _aimFovSlider.thumbTintColor = COLOR_TEXT;
-    [_aimFovSlider addTarget:self action:@selector(aimFovChanged:) forControlEvents:UIControlEventValueChanged];
-    [scroll addSubview:_aimFovSlider];
+    _aimRangeSlider = [[UISlider alloc] initWithFrame:CGRectMake(btnX, btnY, btnW, 20)];
+    _aimRangeSlider.minimumValue = 50.0f;
+    _aimRangeSlider.maximumValue = 400.0f;
+    _aimRangeSlider.value = Vars.AimHeadRange;
+    _aimRangeSlider.minimumTrackTintColor = COLOR_CYAN;
+    _aimRangeSlider.maximumTrackTintColor = [UIColor colorWithWhite:1.0 alpha:0.12];
+    _aimRangeSlider.thumbTintColor = COLOR_TEXT;
+    [_aimRangeSlider addTarget:self action:@selector(aimRangeChanged:) forControlEvents:UIControlEventValueChanged];
+    [scroll addSubview:_aimRangeSlider];
     btnY += 20 + btnGap;
 
     _antenaSwitch = [self addToggleCardWithLocKey:@"antena" frame:CGRectMake(btnX, btnY, btnW, cardH) action:@selector(toggleAntena:) toView:scroll];
@@ -581,13 +605,20 @@ static MemScanner searchScanner;
     Vars.AimHead = state;
 }
 
+- (void)aimRangeChanged:(UISlider *)sender {
+    Vars.AimHeadRange = sender.value;
+    _aimRangeLabel.text = [NSString stringWithFormat:isEnglishMode ? @"Aim radius: %.0fpx" : @"Bán kính ngắm: %.0fpx", Vars.AimHeadRange];
+}
+
+#pragma mark - ESP tab FOV circle actions
+
 - (void)toggleShowFovCircle:(UISwitch *)sender {
     Vars.ShowFOVCircle = sender.on;
 }
 
-- (void)aimFovChanged:(UISlider *)sender {
+- (void)fovCircleRadiusChanged:(UISlider *)sender {
     Vars.AimFOV = sender.value;
-    _aimFovLabel.text = [NSString stringWithFormat:isEnglishMode ? @"Aim radius: %.0fpx" : @"Bán kính ngắm: %.0fpx", Vars.AimFOV];
+    _fovCircleLabel.text = [NSString stringWithFormat:isEnglishMode ? @"FOV circle radius: %.0fpx" : @"Bán kính vòng FOV: %.0fpx", Vars.AimFOV];
 }
 
 - (void)toggleAntena:(UISwitch *)sender {
