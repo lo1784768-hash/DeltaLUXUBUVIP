@@ -240,7 +240,7 @@ game_sdk_t *game_sdk = new game_sdk_t();
 
     [mainWindow addSubview:_toastLabel];
 
-    __weak typeof(self) weakSelf = self;
+    __weak __typeof__(self) weakSelf = self;
     [UIView animateWithDuration:0.25 animations:^{
         weakSelf.toastLabel.alpha = 1.0f;
     } completion:^(BOOL finished) {
