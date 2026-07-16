@@ -27,15 +27,15 @@
 
 @interface BrazilixMenu : NSObject <UITextFieldDelegate>
 @property (nonatomic, strong) UIView *menuView;
-@property (nonatomic, strong) UILabel *titleLabel;
 @property (nonatomic, strong) CAGradientLayer *borderGradient;
 @property (nonatomic, strong) CADisplayLink *displayLink;
 @property (nonatomic, assign) CGPoint lastPoint;
 
-// Tabs
-@property (nonatomic, strong) UIView *tabBar;
-@property (nonatomic, strong) NSArray<UIButton *> *tabButtons;
-@property (nonatomic, strong) NSArray<UIView *> *tabUnderlines;
+// Sidebar nav (left column: ESP / MOD / INFO / SCAN)
+@property (nonatomic, strong) UIView *sidebarView;
+@property (nonatomic, strong) NSArray<UIImageView *> *navIcons;
+@property (nonatomic, strong) NSArray<UILabel *> *navLabels;
+@property (nonatomic, strong) NSArray<UIView *> *navAccentBars;
 @property (nonatomic, strong) NSArray<UIView *> *tabPages;
 
 // ESP tab
@@ -53,6 +53,8 @@
 @property (nonatomic, strong) UIView *modGocView;
 @property (nonatomic, strong) UIView *modModView;
 @property (nonatomic, strong) UIButton *aimHeadButton;
+@property (nonatomic, strong) UISlider *aimFovSlider;
+@property (nonatomic, strong) UILabel *aimFovLabel;
 @property (nonatomic, strong) UIButton *antenaButton;
 @property (nonatomic, strong) UIButton *speedX2Button;
 @property (nonatomic, strong) UIButton *speedX8Button;
@@ -127,8 +129,9 @@ static MemScanner searchScanner;
     _modNames = @[@"AK LV7", @"XM8 LV7", @"UMP LV7", @"AN94 LV7", @"MP40 LV7", @"MP40 LV8", @"M1014 LV8", @"M1887 LV7"];
     _modHexes = @[@"909000063", @"909000085", @"909000098", @"909035012", @"909000075", @"909040010", @"909039011", @"909035007"];
 
-    CGFloat menuWidth = 260;
-    CGFloat menuHeight = 380;
+    CGFloat menuWidth = 400;
+    CGFloat menuHeight = 250;
+    CGFloat sidebarWidth = 72;
     CGFloat x = (kWidth - menuWidth) * 0.5f;
     CGFloat y = (kHeight - menuHeight) * 0.5f;
 
@@ -147,16 +150,9 @@ static MemScanner searchScanner;
     [mainWindow addSubview:_menuView];
     [self installAnimatedBorder];
 
-    _titleLabel = [[UILabel alloc] initWithFrame:CGRectMake(0, 8, menuWidth, 22)];
-    _titleLabel.text = @"DELTA";
-    _titleLabel.textColor = COLOR_PURPLE;
-    _titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightHeavy];
-    _titleLabel.textAlignment = NSTextAlignmentCenter;
-    [_menuView addSubview:_titleLabel];
+    [self setupSidebarInView:_menuView width:sidebarWidth height:menuHeight];
 
-    [self setupTabBarInView:_menuView width:menuWidth];
-
-    CGRect contentFrame = CGRectMake(0, 66, menuWidth, menuHeight - 66 - 8);
+    CGRect contentFrame = CGRectMake(sidebarWidth, 0, menuWidth - sidebarWidth, menuHeight);
     UIView *espPage = [self buildESPPageInFrame:contentFrame];
     UIView *modPage = [self buildModPageInFrame:contentFrame];
     UIView *infoPage = [self buildInfoPageInFrame:contentFrame];
@@ -200,45 +196,96 @@ static MemScanner searchScanner;
     _borderGradient = gradient;
 }
 
-#pragma mark - Tab bar
+#pragma mark - Sidebar
 
-- (void)setupTabBarInView:(UIView *)parent width:(CGFloat)width {
-    _tabBar = [[UIView alloc] initWithFrame:CGRectMake(0, 32, width, 30)];
-    [parent addSubview:_tabBar];
+- (void)setupSidebarInView:(UIView *)parent width:(CGFloat)width height:(CGFloat)height {
+    _sidebarView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, height)];
+    _sidebarView.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.025];
+    [parent addSubview:_sidebarView];
 
-    NSArray<NSString *> *titles = @[@"ESP", @"MOD", @"INFO", @"SCAN"];
-    CGFloat tabW = width / titles.count;
-    NSMutableArray<UIButton *> *buttons = [NSMutableArray array];
-    NSMutableArray<UIView *> *underlines = [NSMutableArray array];
+    UIView *separator = [[UIView alloc] initWithFrame:CGRectMake(width - 1, 0, 1, height)];
+    separator.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.07];
+    [_sidebarView addSubview:separator];
 
-    for (NSInteger i = 0; i < (NSInteger)titles.count; i++) {
-        UIButton *tabBtn = [UIButton buttonWithType:UIButtonTypeCustom];
-        tabBtn.frame = CGRectMake(i * tabW, 0, tabW, 30);
-        tabBtn.tag = i;
-        [tabBtn setTitle:titles[i] forState:UIControlStateNormal];
-        tabBtn.titleLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightBold];
-        [tabBtn setTitleColor:(i == 0 ? COLOR_TEXT : COLOR_TEXT_DIM) forState:UIControlStateNormal];
-        [tabBtn addTarget:self action:@selector(selectTab:) forControlEvents:UIControlEventTouchUpInside];
-        [_tabBar addSubview:tabBtn];
-        [buttons addObject:tabBtn];
+    CGFloat brandSize = 34;
+    UIView *brandContainer = [[UIView alloc] initWithFrame:CGRectMake((width - brandSize) / 2.0f, 10, brandSize, brandSize)];
+    brandContainer.layer.cornerRadius = brandSize / 2.0f;
+    brandContainer.clipsToBounds = YES;
+    brandContainer.backgroundColor = [COLOR_PURPLE colorWithAlphaComponent:0.15];
+    [_sidebarView addSubview:brandContainer];
 
-        UIView *underline = [[UIView alloc] initWithFrame:CGRectMake(i * tabW + 14, 27, tabW - 28, 2)];
-        underline.backgroundColor = COLOR_CYAN;
-        underline.hidden = (i != 0);
-        [_tabBar addSubview:underline];
-        [underlines addObject:underline];
+    UIImage *logoImg = [UIImage imageWithContentsOfFile:@"/Library/Application Support/DeltaESP/LogoDelta.png"];
+    if (logoImg) {
+        UIImageView *logoView = [[UIImageView alloc] initWithFrame:brandContainer.bounds];
+        logoView.image = logoImg;
+        logoView.contentMode = UIViewContentModeScaleAspectFill;
+        [brandContainer addSubview:logoView];
+    } else {
+        UILabel *fallback = [[UILabel alloc] initWithFrame:brandContainer.bounds];
+        fallback.text = @"Δ";
+        fallback.textAlignment = NSTextAlignmentCenter;
+        fallback.textColor = COLOR_PURPLE;
+        fallback.font = [UIFont systemFontOfSize:17 weight:UIFontWeightHeavy];
+        [brandContainer addSubview:fallback];
     }
 
-    _tabButtons = buttons;
-    _tabUnderlines = underlines;
+    NSArray<NSString *> *titles = @[@"ESP", @"MOD", @"INFO", @"SCAN"];
+    NSArray<NSString *> *symbols = @[@"scope", @"wrench.and.screwdriver.fill", @"info.circle.fill", @"viewfinder"];
+
+    CGFloat startY = 52;
+    CGFloat itemH = 46, itemGap = 3;
+    NSMutableArray<UIImageView *> *icons = [NSMutableArray array];
+    NSMutableArray<UILabel *> *labels = [NSMutableArray array];
+    NSMutableArray<UIView *> *accents = [NSMutableArray array];
+
+    for (NSInteger i = 0; i < (NSInteger)titles.count; i++) {
+        CGFloat itemY = startY + i * (itemH + itemGap);
+
+        UIButton *navBtn = [UIButton buttonWithType:UIButtonTypeCustom];
+        navBtn.frame = CGRectMake(0, itemY, width, itemH);
+        navBtn.tag = i;
+        [navBtn addTarget:self action:@selector(selectTab:) forControlEvents:UIControlEventTouchUpInside];
+        [_sidebarView addSubview:navBtn];
+
+        UIView *accent = [[UIView alloc] initWithFrame:CGRectMake(0, 4, 3, itemH - 8)];
+        accent.layer.cornerRadius = 1.5f;
+        accent.backgroundColor = COLOR_CYAN;
+        accent.hidden = (i != 0);
+        accent.userInteractionEnabled = NO;
+        [navBtn addSubview:accent];
+        [accents addObject:accent];
+
+        UIImageView *icon = [[UIImageView alloc] initWithFrame:CGRectMake((width - 18) / 2.0f, 6, 18, 18)];
+        icon.image = [[UIImage systemImageNamed:symbols[i]] imageByApplyingSymbolConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:15 weight:UIImageSymbolWeightBold]];
+        icon.contentMode = UIViewContentModeScaleAspectFit;
+        icon.tintColor = (i == 0 ? COLOR_CYAN : COLOR_TEXT_DIM);
+        icon.userInteractionEnabled = NO;
+        [navBtn addSubview:icon];
+        [icons addObject:icon];
+
+        UILabel *lbl = [[UILabel alloc] initWithFrame:CGRectMake(0, 27, width, 13)];
+        lbl.text = titles[i];
+        lbl.font = [UIFont systemFontOfSize:9 weight:UIFontWeightBold];
+        lbl.textAlignment = NSTextAlignmentCenter;
+        lbl.textColor = (i == 0 ? COLOR_TEXT : COLOR_TEXT_DIM);
+        lbl.userInteractionEnabled = NO;
+        [navBtn addSubview:lbl];
+        [labels addObject:lbl];
+    }
+
+    _navIcons = icons;
+    _navLabels = labels;
+    _navAccentBars = accents;
 }
 
 - (void)selectTab:(UIButton *)sender {
     NSInteger idx = sender.tag;
-    for (NSInteger i = 0; i < (NSInteger)_tabButtons.count; i++) {
-        [_tabButtons[i] setTitleColor:(i == idx ? COLOR_TEXT : COLOR_TEXT_DIM) forState:UIControlStateNormal];
-        _tabUnderlines[i].hidden = (i != idx);
-        _tabPages[i].hidden = (i != idx);
+    for (NSInteger i = 0; i < (NSInteger)_navIcons.count; i++) {
+        BOOL active = (i == idx);
+        _navIcons[i].tintColor = active ? COLOR_CYAN : COLOR_TEXT_DIM;
+        _navLabels[i].textColor = active ? COLOR_TEXT : COLOR_TEXT_DIM;
+        _navAccentBars[i].hidden = !active;
+        _tabPages[i].hidden = !active;
     }
 }
 
@@ -248,49 +295,50 @@ static MemScanner searchScanner;
     UIScrollView *scroll = [[UIScrollView alloc] initWithFrame:frame];
     scroll.showsVerticalScrollIndicator = NO;
 
-    CGFloat btnY = 0, btnH = 32, btnGap = 6, btnX = 12, btnW = frame.size.width - 24;
+    CGFloat padX = 10, btnH = 32, gap = 8;
+    CGFloat fullW = frame.size.width - padX * 2;
+    CGFloat colW = (fullW - gap) / 2.0f;
+    CGFloat y = 10;
 
-    _enableCheatsButton = [self createButtonWithTitle:@"Master Switch" frame:CGRectMake(btnX, btnY, btnW, btnH)];
+    _enableCheatsButton = [self createButtonWithTitle:@"Master Switch" frame:CGRectMake(padX, y, fullW, btnH)];
     [_enableCheatsButton addTarget:self action:@selector(toggleEnable) forControlEvents:UIControlEventTouchUpInside];
     [scroll addSubview:_enableCheatsButton];
-    btnY += btnH + btnGap;
+    y += btnH + gap;
 
-    _boxESPButton = [self createButtonWithTitle:@"Box" frame:CGRectMake(btnX, btnY, btnW, btnH)];
-    [_boxESPButton addTarget:self action:@selector(toggleBox) forControlEvents:UIControlEventTouchUpInside];
-    [scroll addSubview:_boxESPButton];
-    btnY += btnH + btnGap;
+    NSArray<NSString *> *gridTitles = @[@"Box", @"Lines", @"Names", @"Health", @"Distance", @"Skeleton", @"Enemy Count"];
+    NSArray<NSValue *> *gridSelectors = @[
+        [NSValue valueWithPointer:@selector(toggleBox)],
+        [NSValue valueWithPointer:@selector(toggleLines)],
+        [NSValue valueWithPointer:@selector(toggleName)],
+        [NSValue valueWithPointer:@selector(toggleHealth)],
+        [NSValue valueWithPointer:@selector(toggleDistance)],
+        [NSValue valueWithPointer:@selector(toggleSkeleton)],
+        [NSValue valueWithPointer:@selector(toggleCount)]
+    ];
+    NSMutableArray<UIButton *> *gridButtons = [NSMutableArray array];
 
-    _linesESPButton = [self createButtonWithTitle:@"Lines" frame:CGRectMake(btnX, btnY, btnW, btnH)];
-    [_linesESPButton addTarget:self action:@selector(toggleLines) forControlEvents:UIControlEventTouchUpInside];
-    [scroll addSubview:_linesESPButton];
-    btnY += btnH + btnGap;
+    for (NSUInteger i = 0; i < gridTitles.count; i++) {
+        NSInteger col = i % 2, row = i / 2;
+        CGFloat bx = padX + col * (colW + gap);
+        CGFloat by = y + row * (btnH + gap);
+        UIButton *btn = [self createButtonWithTitle:gridTitles[i] frame:CGRectMake(bx, by, colW, btnH)];
+        SEL selector = (SEL)[gridSelectors[i] pointerValue];
+        [btn addTarget:self action:selector forControlEvents:UIControlEventTouchUpInside];
+        [scroll addSubview:btn];
+        [gridButtons addObject:btn];
+    }
+    _boxESPButton = gridButtons[0];
+    _linesESPButton = gridButtons[1];
+    _nameButton = gridButtons[2];
+    _healthButton = gridButtons[3];
+    _distanceButton = gridButtons[4];
+    _skeletonButton = gridButtons[5];
+    _countButton = gridButtons[6];
 
-    _nameButton = [self createButtonWithTitle:@"Names" frame:CGRectMake(btnX, btnY, btnW, btnH)];
-    [_nameButton addTarget:self action:@selector(toggleName) forControlEvents:UIControlEventTouchUpInside];
-    [scroll addSubview:_nameButton];
-    btnY += btnH + btnGap;
+    NSInteger rowCount = (gridTitles.count + 1) / 2;
+    y += rowCount * (btnH + gap);
 
-    _healthButton = [self createButtonWithTitle:@"Health" frame:CGRectMake(btnX, btnY, btnW, btnH)];
-    [_healthButton addTarget:self action:@selector(toggleHealth) forControlEvents:UIControlEventTouchUpInside];
-    [scroll addSubview:_healthButton];
-    btnY += btnH + btnGap;
-
-    _distanceButton = [self createButtonWithTitle:@"Distance" frame:CGRectMake(btnX, btnY, btnW, btnH)];
-    [_distanceButton addTarget:self action:@selector(toggleDistance) forControlEvents:UIControlEventTouchUpInside];
-    [scroll addSubview:_distanceButton];
-    btnY += btnH + btnGap;
-
-    _skeletonButton = [self createButtonWithTitle:@"Skeleton" frame:CGRectMake(btnX, btnY, btnW, btnH)];
-    [_skeletonButton addTarget:self action:@selector(toggleSkeleton) forControlEvents:UIControlEventTouchUpInside];
-    [scroll addSubview:_skeletonButton];
-    btnY += btnH + btnGap;
-
-    _countButton = [self createButtonWithTitle:@"Enemy Count" frame:CGRectMake(btnX, btnY, btnW, btnH)];
-    [_countButton addTarget:self action:@selector(toggleCount) forControlEvents:UIControlEventTouchUpInside];
-    [scroll addSubview:_countButton];
-    btnY += btnH + btnGap;
-
-    scroll.contentSize = CGSizeMake(frame.size.width, btnY + 10);
+    scroll.contentSize = CGSizeMake(frame.size.width, y + 10);
     return scroll;
 }
 
@@ -322,6 +370,24 @@ static MemScanner searchScanner;
     [_aimHeadButton addTarget:self action:@selector(toggleAimHead) forControlEvents:UIControlEventTouchUpInside];
     [scroll addSubview:_aimHeadButton];
     btnY += btnH + btnGap;
+
+    _aimFovLabel = [[UILabel alloc] initWithFrame:CGRectMake(btnX, btnY, btnW, 14)];
+    _aimFovLabel.text = [NSString stringWithFormat:@"FOV: %.0fpx", Vars.AimFOV];
+    _aimFovLabel.font = [UIFont systemFontOfSize:10.5f weight:UIFontWeightMedium];
+    _aimFovLabel.textColor = COLOR_TEXT_DIM;
+    [scroll addSubview:_aimFovLabel];
+    btnY += 14 + 2;
+
+    _aimFovSlider = [[UISlider alloc] initWithFrame:CGRectMake(btnX, btnY, btnW, 20)];
+    _aimFovSlider.minimumValue = 50.0f;
+    _aimFovSlider.maximumValue = 400.0f;
+    _aimFovSlider.value = Vars.AimFOV;
+    _aimFovSlider.minimumTrackTintColor = COLOR_CYAN;
+    _aimFovSlider.maximumTrackTintColor = [UIColor colorWithWhite:1.0 alpha:0.12];
+    _aimFovSlider.thumbTintColor = COLOR_TEXT;
+    [_aimFovSlider addTarget:self action:@selector(aimFovChanged:) forControlEvents:UIControlEventValueChanged];
+    [scroll addSubview:_aimFovSlider];
+    btnY += 20 + btnGap;
 
     _antenaButton = [self createButtonWithTitle:@"Antena" frame:CGRectMake(btnX, btnY, btnW, btnH)];
     [_antenaButton addTarget:self action:@selector(toggleAntena) forControlEvents:UIControlEventTouchUpInside];
@@ -473,6 +539,11 @@ static MemScanner searchScanner;
     [self updateButton:_aimHeadButton forState:state];
     [self showToast:state ? @"Aim Head ON" : @"Aim Head OFF"];
     Vars.AimHead = state;
+}
+
+- (void)aimFovChanged:(UISlider *)sender {
+    Vars.AimFOV = sender.value;
+    _aimFovLabel.text = [NSString stringWithFormat:@"FOV: %.0fpx", Vars.AimFOV];
 }
 
 - (void)toggleAntena {

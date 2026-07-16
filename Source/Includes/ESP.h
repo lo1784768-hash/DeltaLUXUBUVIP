@@ -33,6 +33,7 @@ struct Vars_t
     bool counts = false;
     bool NoFog = true;
     bool AimHead = false;
+    float AimFOV = 250.0f;
 } Vars;
 
 // ===== GAME SDK =====
@@ -295,10 +296,9 @@ inline void get_players()
         SimpleVec2 lineStart(sW / 2.0f, sH - 15.0f);
 
         // Aim Head: track the enemy head closest to the crosshair (screen center),
-        // within a fixed on-screen radius so it only snaps to something already near where the player is aiming.
-        const float kAimFOV = 250.0f;
+        // within Vars.AimFOV on-screen radius so it only snaps to something already near where the player is aiming.
         bool haveAimTarget = false;
-        float aimBestScreenDist = kAimFOV;
+        float aimBestScreenDist = Vars.AimFOV;
         Vector3 aimHeadPos;
 
         for (int u = 0; u < players->getSize(); u++) {
