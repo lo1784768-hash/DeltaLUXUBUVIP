@@ -11,7 +11,7 @@ FOR_RELEASE = 1
 
 include $(THEOS)/makefiles/common.mk
 
-TWEAK_NAME = Brazilix
+TWEAK_NAME = Delta
 
 $(TWEAK_NAME)_FRAMEWORKS = UIKit Foundation QuartzCore CoreGraphics AudioToolbox
 

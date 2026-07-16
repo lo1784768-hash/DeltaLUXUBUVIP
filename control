@@ -1,9 +1,9 @@
-Package: com.brazilix.pro.tweak
-Name: Brazilix Pro Tweak
+Package: com.delta.pro.tweak
+Name: Delta Pro Tweak
 Depends: mobilesubstrate
 Version: 1.0
 Architecture: iphoneos-arm
-Description: Brazilix Pro - Professional ESP & Game Utility for Free Fire
-Maintainer: Brazilix
-Author: Brazilix
+Description: Delta Pro - Professional ESP & Game Utility for Free Fire
+Maintainer: Delta
+Author: Delta
 Section: Games
