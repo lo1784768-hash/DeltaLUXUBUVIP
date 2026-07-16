@@ -370,8 +370,8 @@ static MemScanner searchScanner;
     y += 14 + 2;
 
     _fovCircleSlider = [[UISlider alloc] initWithFrame:CGRectMake(padX, y, fullW, 20)];
-    _fovCircleSlider.minimumValue = 50.0f;
-    _fovCircleSlider.maximumValue = 400.0f;
+    _fovCircleSlider.minimumValue = 40.0f;
+    _fovCircleSlider.maximumValue = 200.0f;
     _fovCircleSlider.value = Vars.AimFOV;
     _fovCircleSlider.minimumTrackTintColor = COLOR_CYAN;
     _fovCircleSlider.maximumTrackTintColor = [UIColor colorWithWhite:1.0 alpha:0.12];

@@ -33,7 +33,11 @@ struct Vars_t
     bool counts = false;
     bool NoFog = true;
     bool AimHead = false;
-    float AimFOV = 250.0f; // shared: ESP tab's FOV circle radius IS Aim Head's snap radius
+    // Shared: ESP tab's FOV circle radius IS Aim Head's snap radius. Kept modest (default
+    // well under half a typical screen width) so the drawn circle stays fully on-screen -
+    // at the old default of 250 (slider allowed up to 400) the circle was mostly clipped
+    // off both side edges on a ~400pt-wide screen, easy to mistake for "doesn't do anything".
+    float AimFOV = 120.0f;
     bool ShowFOVCircle = false;
 } Vars;
 
@@ -400,6 +404,19 @@ inline void get_players()
                 game_sdk->set_forward(camTransform, dir);
             }
             [renderer drawTextAt:SimpleVec2(sW / 2.0f, 60) text:[NSString stringWithFormat:@"Frame:%llu RenderHook:%llu Target:%@", frameAimWriteCount, g_aimHookCallCount, haveTarget ? @"YES" : @"NO"]];
+
+            // Diagnostic: the exact world Y of the head bone Aim Head is targeting, plus a
+            // visible marker at its computed screen position - independent of the Skeleton
+            // toggle. If HeadY reads ~0.00 (ground level) instead of a sensible head height,
+            // the _GetHeadPositions bone getter isn't returning a real head transform and
+            // Aim Head is snapping toward the character's feet/root instead of its head.
+            if (haveTarget) {
+                [renderer drawTextAt:SimpleVec2(sW / 2.0f, 96) text:[NSString stringWithFormat:@"HeadY: %.2f", aimHeadWorld.y]];
+                SimpleVec2 headScreen = Camera$$WorldToScreen::FromCamera(camera, aimHeadWorld);
+                if (!(headScreen.x == 0 && headScreen.y == 0)) {
+                    [renderer drawBoxFrom:SimpleVec2(headScreen.x - 5, headScreen.y - 5) to:SimpleVec2(headScreen.x + 5, headScreen.y + 5) path:combinedPath];
+                }
+            }
 
             // Diagnostic: prints the camera's CURRENT forward vector every frame, whether or
             // not a target is found. Look around manually with no enemy nearby (Target:NO) and
