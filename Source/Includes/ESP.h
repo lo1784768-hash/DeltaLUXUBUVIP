@@ -429,7 +429,13 @@ inline void get_players()
                 Vector3 eyePos = game_sdk->get_position(camTransform);
                 Vector3 dir = Vector3::Normalized(aimHeadWorld - eyePos);
                 Quaternion look = Quaternion::LookRotation(dir, Vector3(0, 1, 0));
-                game_sdk->set_aim(local_player, look, true);
+                // sendToServer=false: this is called every frame (~60/s) while a target is
+                // in range. The reference (AimHead.md) only ever calls this while actually
+                // firing/scoped, gated by AimWhen - calling it unconditionally every frame
+                // with sendToServer=true likely floods a network RPC / trips server-side
+                // anti-cheat rate limiting, which lines up with the crash. false keeps the
+                // rotation change local-only.
+                game_sdk->set_aim(local_player, look, false);
             }
             [renderer drawTextAt:SimpleVec2(sW / 2.0f, 60) text:[NSString stringWithFormat:@"Frame:%llu Target:%@", frameAimWriteCount, haveTarget ? @"YES" : @"NO"]];
 
