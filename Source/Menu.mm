@@ -13,7 +13,6 @@
 #import "Includes/ESP.h"
 #import "Includes/Encryption.h"
 #import "Includes/ModHacks.h"
-#import "Includes/AimHook.h"
 
 #define kWidth  [UIScreen mainScreen].bounds.size.width
 #define kHeight [UIScreen mainScreen].bounds.size.height
@@ -157,7 +156,6 @@ static MemScanner searchScanner;
         static bool sdkInitialized = false;
         if (!sdkInitialized) {
             game_sdk->init();
-            installAimHook();
             sdkInitialized = true;
         }
 
@@ -1012,14 +1010,27 @@ void game_sdk_t::init()
     // Transform.set_forward(Vector3) - same Transform class as get_position/GetForward above (verified via dump.cs).
     // Setting this internally does rotation = Quaternion.LookRotation(value), so no manual quaternion math is needed for aim.
     this->set_forward = (void (*)(void *, Vector3))getRealOffset(0x91CB024);
+    // COW.GamePlay.Player.SetAimRotation(Quaternion, bool = true) - non-virtual instance
+    // method on Player itself (found next to other Player-specific state methods like
+    // get_InFallingState/get_InSwapWeaponCD). The reference in AimHead.md calls the
+    // equivalent of this "set_aim(LocalPlayer, Quaternion)" to actually move the aim -
+    // writing the camera's Transform directly (set_forward above) never worked for Aim
+    // Head, which lines up with the game reading aim from the player's own state instead.
+    this->set_aim = (void (*)(void *, Quaternion, bool))getRealOffset(0x53C4534);
     this->get_isLocalTeam = (bool (*)(void *))getRealOffset(0x55C5AC0);
     this->get_IsDieing = (bool (*)(void *))getRealOffset(0x53AA18C);
     this->get_MaxHP = (int (*)(void *))getRealOffset(0x5435A3C);
     this->GetHp = (int (*)(void *))getRealOffset(0x543592C);
     this->name = (monoString * (*)(void *player))getRealOffset(0x53BE8E0);
 
-    this->_GetHeadPositions = (void *(*)(void *))getRealOffset(0x54547E0);
-    this->_newHipMods = (void *(*)(void *))getRealOffset(0x5454990);
+    // GetHeadTF/GetHipTF are virtual (vtable slots 231/232) and Player overrides both -
+    // 0x54547E0/0x5454990 are the BASE class's implementation. Calling those directly
+    // (no vtable dispatch) ran the wrong code for actual Player instances, which is why
+    // HeadY read ~0.87-0.89 (waist height) no matter what. 0x60DDEF0/0x60DDF6C are
+    // Player's own overrides (found in dump.cs right next to Player-specific methods
+    // like IsLocalTeammate/GetHitDamagePos), which is what the vtable actually resolves to.
+    this->_GetHeadPositions = (void *(*)(void *))getRealOffset(0x60DDEF0);
+    this->_newHipMods = (void *(*)(void *))getRealOffset(0x60DDF6C);
     this->_GetLeftAnkleTF = (void *(*)(void *))getRealOffset(0x5454DE0);
     this->_GetRightAnkleTF = (void *(*)(void *))getRealOffset(0x5454EEC);
     this->_GetLeftToeTF = (void *(*)(void *))getRealOffset(0x5454FF8);

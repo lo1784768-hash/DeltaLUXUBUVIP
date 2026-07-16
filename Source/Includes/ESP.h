@@ -6,6 +6,7 @@
 #import "UnityTypes.h"
 #import "Vector3.h"
 #import "Vector2.h"
+#import "Quaternion.h"
 #import "MemoryUtils.h"
 
 // ===== BASIC STRUCTURES =====
@@ -55,6 +56,12 @@ public:
     Vector3 (*WorldToScreenPoint)(void *, Vector3);
     Vector3 (*GetForward)(void *player);
     void (*set_forward)(void *transform, Vector3 direction);
+    // Player.SetAimRotation(Quaternion, bool) - sets the LOCAL PLAYER's own aim rotation
+    // directly, rather than the camera's transform. Found via a working aimbot reference
+    // (AimHead.md) that uses this exact pattern; writing to the camera's transform never
+    // had any visible effect, which now makes sense if the game reads aim direction from
+    // the player's own aim state (this function) rather than deriving it from the camera.
+    void (*set_aim)(void *player, Quaternion rotation, bool sendToServer);
     bool (*get_isLocalTeam)(void *player);
     bool (*get_IsDieing)(void *player);
     int (*get_MaxHP)(void *player);
@@ -75,17 +82,11 @@ public:
 
 extern game_sdk_t *game_sdk;
 
-// Diagnostics for the Aim Head Camera.Render hook (defined/incremented in AimHook.h).
-// Shown on-screen (see get_players() below) so whether the hook fires at all, and
-// whether it finds a target, is visible without needing device-side debugging tools.
-extern unsigned long long g_aimHookCallCount;
-extern bool g_aimHookHasTarget;
-
 // ===== WORLD TO SCREEN HELPER =====
 namespace Camera$$WorldToScreen
 {
-    // Parameterized on an explicit camera so callers that already have one (e.g. the
-    // Camera.Render hook driving Aim Head) don't need a redundant get_camera() lookup.
+    // Parameterized on an explicit camera so callers that already have one (e.g.
+    // FindAimHeadTarget below) don't need a redundant get_camera() lookup.
     inline SimpleVec2 FromCamera(void *cam, Vector3 pos)
     {
         if (!cam) return SimpleVec2(0, 0);
@@ -170,12 +171,13 @@ inline bool FindAimHeadTarget(void *camera, Vector3 &outHeadWorldPos)
         Vector3 pos = getPosition(enemy);
         if (Vector3::Distance(pos, localPos) > 150.0f) continue;
 
-        // _GetHeadPositions (GetHeadTF) measured on-device at ~0.87-0.89 above the character's
-        // own root - about half a person's height (waist/hip), not a head - and stayed there
-        // even after gating on ">1m above root", so it isn't returning a usable head
-        // transform for aiming purposes here. Using the simple root+1.6m estimate instead,
-        // unconditionally, until a real head bone offset is found.
-        Vector3 headWorld = pos + Vector3(0, 1.6f, 0);
+        // _GetHeadPositions previously called Player's BASE class's virtual GetHeadTF
+        // implementation (no vtable dispatch), not the Player-specific override actually
+        // used at runtime - that's why it read waist height. Now bound to the real
+        // override, so trust it again; keep the root+1.6m estimate only as a fallback for
+        // the null/zero case (e.g. transform not yet ready).
+        Vector3 headWorld = GetBonePosition(enemy, game_sdk->_GetHeadPositions);
+        if (headWorld == Vector3()) headWorld = pos + Vector3(0, 1.6f, 0);
 
         SimpleVec2 headScreen = Camera$$WorldToScreen::FromCamera(camera, headWorld);
         if (headScreen.x == 0 && headScreen.y == 0) continue;
@@ -196,6 +198,7 @@ inline bool FindAimHeadTarget(void *camera, Vector3 &outHeadWorldPos)
 // ===== OPTIMIZED ESP RENDERER =====
 @interface ESPRenderer : NSObject
 @property (nonatomic, strong) CAShapeLayer *espLayer;
+@property (nonatomic, strong) CAShapeLayer *fovCircleLayer;
 @property (nonatomic, strong) UIView *containerView;
 @property (nonatomic, strong) NSMutableArray<CATextLayer *> *textPool;
 @property (nonatomic, strong) NSMutableArray<CALayer *> *healthPool;
@@ -207,7 +210,7 @@ inline bool FindAimHeadTarget(void *camera, Vector3 &outHeadWorldPos)
 - (void)clearDrawings;
 - (void)drawBoxFrom:(SimpleVec2)min to:(SimpleVec2)max path:(UIBezierPath *)path;
 - (void)drawLineFrom:(SimpleVec2)from to:(SimpleVec2)to path:(UIBezierPath *)path;
-- (void)drawFOVCircleAt:(SimpleVec2)center radius:(float)radius path:(UIBezierPath *)path;
+- (void)drawFOVCircleAt:(SimpleVec2)center radius:(float)radius detected:(BOOL)detected;
 - (void)drawTextAt:(SimpleVec2)position text:(NSString*)text;
 - (void)drawHealthBarAt:(SimpleVec2)min to:(SimpleVec2)max multiplier:(float)multiplier;
 @end
@@ -231,6 +234,15 @@ inline bool FindAimHeadTarget(void *camera, Vector3 &outHeadWorldPos)
         _espLayer.fillColor = [UIColor clearColor].CGColor;
         _espLayer.strokeColor = kUnifiedRedColor;
         _espLayer.lineWidth = 1.2f;
+
+        // Separate layer (not part of combinedPath) so its stroke color can flip
+        // independently of the main ESP color - used to show "person detected in FOV".
+        _fovCircleLayer = [CAShapeLayer layer];
+        _fovCircleLayer.name = @"FOV_Circle_Layer";
+        _fovCircleLayer.fillColor = [UIColor clearColor].CGColor;
+        _fovCircleLayer.lineWidth = 1.4f;
+        _fovCircleLayer.hidden = YES;
+
         _textPool = [NSMutableArray new];
         _healthPool = [NSMutableArray new];
     }
@@ -242,14 +254,17 @@ inline bool FindAimHeadTarget(void *camera, Vector3 &outHeadWorldPos)
     if (!_containerView || _containerView != view) {
         _containerView = view;
         [_containerView.layer addSublayer:_espLayer];
+        [_containerView.layer addSublayer:_fovCircleLayer];
     }
     _espLayer.frame = view.bounds;
+    _fovCircleLayer.frame = view.bounds;
     _textUsedCount = 0;
     _healthUsedCount = 0;
 }
 
 - (void)clearDrawings {
     _espLayer.path = nil;
+    _fovCircleLayer.hidden = YES;
     for (CATextLayer *layer in _textPool) layer.hidden = YES;
     for (CALayer *layer in _healthPool) layer.hidden = YES;
 }
@@ -269,13 +284,16 @@ inline bool FindAimHeadTarget(void *camera, Vector3 &outHeadWorldPos)
     [path addLineToPoint:CGPointMake(to.x, to.y)];
 }
 
-- (void)drawFOVCircleAt:(SimpleVec2)center radius:(float)radius path:(UIBezierPath *)path {
-    if (!path) return;
-    [path appendPath:[UIBezierPath bezierPathWithArcCenter:CGPointMake(center.x, center.y)
-                                                     radius:radius
-                                                 startAngle:0
-                                                   endAngle:M_PI * 2
-                                                  clockwise:YES]];
+- (void)drawFOVCircleAt:(SimpleVec2)center radius:(float)radius detected:(BOOL)detected {
+    if (!_containerView) return;
+    UIBezierPath *circle = [UIBezierPath bezierPathWithArcCenter:CGPointMake(center.x, center.y)
+                                                            radius:radius
+                                                        startAngle:0
+                                                          endAngle:M_PI * 2
+                                                         clockwise:YES];
+    _fovCircleLayer.path = circle.CGPath;
+    _fovCircleLayer.strokeColor = detected ? kUnifiedRedColor : kHealthGreenColor;
+    _fovCircleLayer.hidden = NO;
 }
 
 - (void)drawTextAt:(SimpleVec2)position text:(NSString*)text {
@@ -386,29 +404,34 @@ inline void get_players()
 
         SimpleVec2 lineStart(sW / 2.0f, sH - 15.0f);
 
+        // Shared target search: used both to color the FOV circle (person detected inside
+        // it, independent of Aim Head) and to drive the actual Aim Head snap below.
+        void *camera = (Vars.ShowFOVCircle || Vars.AimHead) ? game_sdk->get_camera() : nullptr;
+        Vector3 aimHeadWorld;
+        bool haveTarget = camera && FindAimHeadTarget(camera, aimHeadWorld);
+
         if (Vars.ShowFOVCircle) {
-            [renderer drawFOVCircleAt:SimpleVec2(sW / 2.0f, sH / 2.0f) radius:Vars.AimFOV path:combinedPath];
+            [renderer drawFOVCircleAt:SimpleVec2(sW / 2.0f, sH / 2.0f) radius:Vars.AimFOV detected:haveTarget];
         }
 
-        // Aim Head write: the Camera.Render hook (AimHook.h) confirmed via g_aimHookCallCount
-        // staying at 0 that Unity never calls that method automatically for normal per-frame
-        // rendering (it's a manual-render-only API) - so it's a dead hook. Writing from here
-        // instead, on the same CADisplayLink loop that already reliably drives ESP every
-        // frame, so the write is at least guaranteed to execute (whether it visibly sticks
-        // against the game's own per-frame camera update is what the debug line below is for).
+        // Aim Head write: calls Player.SetAimRotation directly on local_player (see
+        // game_sdk_t::init() in Menu.mm) instead of writing the camera's Transform. Writing
+        // the camera never had any visible effect across many attempts (a separate
+        // CADisplayLink write, then a Camera.Render hook that turned out to never even
+        // fire) - the working aimbot reference in AimHead.md set the PLAYER's own aim
+        // rotation instead, which lines up with all of that: the game likely reads aim
+        // direction from the player's aim state, not from the camera's transform at all.
         static unsigned long long frameAimWriteCount = 0;
         if (Vars.AimHead) {
             frameAimWriteCount++;
-            void *camera = game_sdk->get_camera();
             void *camTransform = camera ? game_sdk->Component_GetTransform(camera) : nullptr;
-            Vector3 aimHeadWorld;
-            bool haveTarget = camera && FindAimHeadTarget(camera, aimHeadWorld);
             if (haveTarget && camTransform) {
-                Vector3 camPos = game_sdk->get_position(camTransform);
-                Vector3 dir = Vector3::Normalized(aimHeadWorld - camPos);
-                game_sdk->set_forward(camTransform, dir);
+                Vector3 eyePos = game_sdk->get_position(camTransform);
+                Vector3 dir = Vector3::Normalized(aimHeadWorld - eyePos);
+                Quaternion look = Quaternion::LookRotation(dir, Vector3(0, 1, 0));
+                game_sdk->set_aim(local_player, look, true);
             }
-            [renderer drawTextAt:SimpleVec2(sW / 2.0f, 60) text:[NSString stringWithFormat:@"Frame:%llu RenderHook:%llu Target:%@", frameAimWriteCount, g_aimHookCallCount, haveTarget ? @"YES" : @"NO"]];
+            [renderer drawTextAt:SimpleVec2(sW / 2.0f, 60) text:[NSString stringWithFormat:@"Frame:%llu Target:%@", frameAimWriteCount, haveTarget ? @"YES" : @"NO"]];
 
             // Diagnostic: the exact world Y of the head bone Aim Head is targeting, plus a
             // visible marker at its computed screen position - independent of the Skeleton
