@@ -64,6 +64,7 @@ static NSDictionary<NSString *, NSArray<NSString *> *> *LocStrings() {
             @"speed_x8": @[@"Tốc Độ x8", @"Speed x8"],
             @"no_recoil": @[@"Chống Giật", @"No Recoil"],
             @"magic_bullet": @[@"Đạn Ma Thuật", @"Magic Bullet"],
+            @"spin_bot": @[@"Xoay Nhân Vật (SpinBot)", @"Character Spin (SpinBot)"],
             @"action": @[@"Hành Động", @"Action"],
             @"status": @[@"Trạng thái", @"Status"],
             @"activated": @[@"Đã kích hoạt", @"Activated"],
@@ -128,6 +129,9 @@ static NSString *LOC(NSString *key) {
 @property (nonatomic, strong) UISwitch *speedX8Switch;
 @property (nonatomic, strong) UISwitch *noRecoilSwitch;
 @property (nonatomic, strong) UISwitch *magicBulletSwitch;
+@property (nonatomic, strong) UISwitch *spinBotSwitch;
+@property (nonatomic, strong) UISlider *spinSpeedSlider;
+@property (nonatomic, strong) UILabel *spinSpeedLabel;
 @property (nonatomic, assign) BOOL hasSelectedGoc;
 @property (nonatomic, strong) NSArray<NSString *> *gocNames;
 @property (nonatomic, strong) NSArray<NSString *> *gocHexes;
@@ -522,6 +526,30 @@ static MemScanner searchScanner;
     _magicBulletSwitch = [self addToggleCardWithLocKey:@"magic_bullet" symbol:@"wand.and.stars" frame:CGRectMake(btnX, btnY, btnW, cardH) action:@selector(toggleMagicBullet:) toView:scroll];
     btnY += cardH + btnGap;
 
+    _spinBotSwitch = [self addToggleCardWithLocKey:@"spin_bot" symbol:@"arrow.triangle.2.circlepath" frame:CGRectMake(btnX, btnY, btnW, cardH) action:@selector(toggleSpinBot:) toView:scroll];
+    btnY += cardH + btnGap;
+
+    _spinSpeedLabel = [[UILabel alloc] initWithFrame:CGRectMake(btnX + 8, btnY, btnW - 8, 14)];
+    _spinSpeedLabel.font = [UIFont systemFontOfSize:10.5f weight:UIFontWeightMedium];
+    _spinSpeedLabel.textColor = COLOR_TEXT_DIM;
+    [scroll addSubview:_spinSpeedLabel];
+    __weak UILabel *weakSpinSpeedLabel = _spinSpeedLabel;
+    [self addLocalizedRefresher:^{
+        weakSpinSpeedLabel.text = [NSString stringWithFormat:isEnglishMode ? @"Spin speed: %.0f°/s" : @"Tốc độ xoay: %.0f°/s", Vars.SpinSpeed];
+    }];
+    btnY += 14 + 2;
+
+    _spinSpeedSlider = [[UISlider alloc] initWithFrame:CGRectMake(btnX, btnY, btnW, 20)];
+    _spinSpeedSlider.minimumValue = 30.0f;
+    _spinSpeedSlider.maximumValue = 720.0f;
+    _spinSpeedSlider.value = Vars.SpinSpeed;
+    _spinSpeedSlider.minimumTrackTintColor = COLOR_CYAN;
+    _spinSpeedSlider.maximumTrackTintColor = [UIColor colorWithWhite:1.0 alpha:0.12];
+    _spinSpeedSlider.thumbTintColor = COLOR_TEXT;
+    [_spinSpeedSlider addTarget:self action:@selector(spinSpeedChanged:) forControlEvents:UIControlEventValueChanged];
+    [scroll addSubview:_spinSpeedSlider];
+    btnY += 20 + btnGap;
+
     UIButton *actionBtn = [self createButtonWithLocKey:@"action" frame:CGRectMake(btnX, btnY, btnW, 32)];
     [actionBtn setTitleColor:COLOR_CYAN forState:UIControlStateNormal];
     [actionBtn addTarget:self action:@selector(showGocList) forControlEvents:UIControlEventTouchUpInside];
@@ -720,6 +748,17 @@ static MemScanner searchScanner;
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         ModHacks::magicBullet(state);
     });
+}
+
+- (void)toggleSpinBot:(UISwitch *)sender {
+    BOOL state = sender.on;
+    [self showToast:[NSString stringWithFormat:@"%@ %@", LOC(@"spin_bot"), LOC(state ? @"on" : @"off")]];
+    Vars.SpinBot = state;
+}
+
+- (void)spinSpeedChanged:(UISlider *)sender {
+    Vars.SpinSpeed = sender.value;
+    _spinSpeedLabel.text = [NSString stringWithFormat:isEnglishMode ? @"Spin speed: %.0f°/s" : @"Tốc độ xoay: %.0f°/s", Vars.SpinSpeed];
 }
 
 #pragma mark - Info tab page

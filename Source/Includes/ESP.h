@@ -19,8 +19,13 @@ struct SimpleVec2 {
 
 // Unified Red Color Constant (iOS 9+ Compatible)
 #define kUnifiedRedColor [UIColor redColor].CGColor
-// Health bar foreground - green, kept distinct from kUnifiedRedColor for visibility
+// Health bar foreground bands - green/yellow/red by HP fraction (see drawHealthBarAt:),
+// instead of a single fixed green, so the bar reads at a glance like the game's own UI.
 #define kHealthGreenColor [UIColor colorWithRed:0.15 green:0.9 blue:0.3 alpha:1.0].CGColor
+#define kHealthYellowColor [UIColor colorWithRed:0.95 green:0.8 blue:0.15 alpha:1.0].CGColor
+#define kHealthRedColor [UIColor colorWithRed:0.95 green:0.2 blue:0.2 alpha:1.0].CGColor
+#define kHealthYellowThreshold 0.3f
+#define kHealthGreenThreshold 0.6f
 
 // ===== SIMPLIFIED VARIABLES =====
 struct Vars_t
@@ -59,6 +64,11 @@ struct Vars_t
     // up to 400) it was mostly clipped off both side edges on a ~400pt-wide screen.
     float AimFOV = 120.0f;
     bool ShowFOVCircle = false;
+    // Continuously rotates the local player's own character (not the camera/aim) - see
+    // ProcessSpinBot below. SpinSpeed is degrees per second, adjustable via the Mod tab
+    // slider (how fast/slow the character spins).
+    bool SpinBot = false;
+    float SpinSpeed = 180.0f;
 } Vars;
 
 // ===== GAME SDK =====
@@ -253,6 +263,36 @@ inline bool FindAimHeadTarget(void *camera, Vector3 &outHeadWorldPos, float heig
     return found;
 }
 
+// ===== SPIN BOT =====
+// Continuously rotates the local player's own character model - a different Transform
+// than the camera/aim (set_forward here targets Component_GetTransform(local_player),
+// not the camera), so this is unrelated to Aim Head/Aim Nhe Tam above and to why
+// set_forward never worked for aiming (the game reads aim from Player.SetAimRotation,
+// not the camera's transform - see game_sdk_t::init() - but the character model's own
+// facing still follows its own Transform directly).
+inline void ProcessSpinBot(void *local_player)
+{
+    if (!Vars.SpinBot || !local_player) return;
+
+    void *transform = game_sdk->Component_GetTransform(local_player);
+    if (!transform) return;
+
+    // Frame-rate independent: accumulate by real elapsed time rather than a fixed
+    // per-frame step, so SpinSpeed (deg/sec) means the same thing regardless of fps.
+    static CFTimeInterval lastTime = 0;
+    CFTimeInterval now = CACurrentMediaTime();
+    CFTimeInterval dt = (lastTime > 0) ? (now - lastTime) : 0.0;
+    lastTime = now;
+    if (dt > 0.25) dt = 0.25; // clamp huge gaps (e.g. app was backgrounded)
+
+    static float angleDeg = 0.0f;
+    angleDeg += Vars.SpinSpeed * (float)dt;
+    if (angleDeg >= 360.0f) angleDeg -= 360.0f;
+
+    float rad = angleDeg * (float)M_PI / 180.0f;
+    game_sdk->set_forward(transform, Vector3(sinf(rad), 0, cosf(rad)));
+}
+
 // ===== OPTIMIZED ESP RENDERER =====
 @interface ESPRenderer : NSObject
 @property (nonatomic, strong) CAShapeLayer *espLayer;
@@ -364,25 +404,40 @@ inline bool FindAimHeadTarget(void *camera, Vector3 &outHeadWorldPos, float heig
     CALayer *bgLayer;
     CALayer *fgLayer;
     int index = _healthUsedCount * 2;
-    
+
     if (index + 1 < _healthPool.count) {
         bgLayer = _healthPool[index];
         fgLayer = _healthPool[index + 1];
     } else {
         bgLayer = [CALayer layer];
-        bgLayer.backgroundColor = [UIColor colorWithWhite:0.2 alpha:0.8].CGColor;
+        bgLayer.backgroundColor = [UIColor colorWithWhite:0.05 alpha:0.85].CGColor;
+        // Thin dark outline so the bar reads clearly over any background (grass, sky,
+        // other players) instead of just a soft-edged color sliver.
+        bgLayer.borderWidth = 1.0f;
+        bgLayer.borderColor = [UIColor colorWithWhite:0.0 alpha:0.9].CGColor;
         [_containerView.layer addSublayer:bgLayer];
         [_healthPool addObject:bgLayer];
-        
+
         fgLayer = [CALayer layer];
         fgLayer.backgroundColor = kHealthGreenColor;
         [_containerView.layer addSublayer:fgLayer];
         [_healthPool addObject:fgLayer];
     }
-    
+
+    // Green/yellow/red bands instead of a single fixed green - readable at a glance.
+    if (multiplier < kHealthYellowThreshold) {
+        fgLayer.backgroundColor = kHealthRedColor;
+    } else if (multiplier < kHealthGreenThreshold) {
+        fgLayer.backgroundColor = kHealthYellowColor;
+    } else {
+        fgLayer.backgroundColor = kHealthGreenColor;
+    }
+
+    // Widened from 2pt to 3pt - noticeably sharper/more visible without crowding the box.
+    float barWidth = 3.0f;
     float height = max.y - min.y;
-    bgLayer.frame = CGRectMake(min.x, min.y, 2, height);
-    fgLayer.frame = CGRectMake(min.x, max.y - (height * multiplier), 2, height * multiplier);
+    bgLayer.frame = CGRectMake(min.x, min.y, barWidth, height);
+    fgLayer.frame = CGRectMake(min.x, max.y - (height * multiplier), barWidth, height * multiplier);
     bgLayer.hidden = NO;
     fgLayer.hidden = NO;
     _healthUsedCount++;
@@ -418,6 +473,8 @@ inline void get_players()
         void *local_player = game_sdk->GetLocalPlayer(current_Match);
         if (!local_player) return;
 
+        ProcessSpinBot(local_player);
+
         // EMKJHAJNPDH(match).GEPFGOHGOJI() -> List<Player>. Two equally-plausible
         // List<Player>-returning zero-arg candidates existed in the dump; this is the
         // first one found. If ESP shows nothing/wrong entities, try 0x563CF30 instead.
@@ -429,6 +486,16 @@ inline void get_players()
 
         UIWindow *keyWindow = [UIApplication sharedApplication].keyWindow;
         if (!keyWindow) return;
+
+        // Health bar / box / line layers are bare CALayers (not view-backed), so every
+        // .frame/.path assignment below implicitly animates (~0.25s default) unless
+        // disabled. At 60fps that queues a new implicit animation on top of the last
+        // one every single frame, which is what made the health bar visibly lag/judder
+        // behind the target - most noticeable during recoil while firing, since the
+        // enemy's screen position is changing fastest right then. Disabling actions for
+        // this whole per-frame update makes every layer move snap immediately instead.
+        [CATransaction begin];
+        [CATransaction setDisableActions:YES];
 
         ESPRenderer *renderer = [ESPRenderer sharedInstance];
         [renderer renderOnView:keyWindow];
@@ -444,7 +511,9 @@ inline void get_players()
         CGFloat sH = screenBounds.size.height / [UIScreen mainScreen].nativeScale;
         if (sW < sH) { CGFloat t = sW; sW = sH; sH = t; }
 
-        SimpleVec2 lineStart(sW / 2.0f, sH - 15.0f);
+        // Tracer line now starts from the top of the screen instead of the bottom, per
+        // user request.
+        SimpleVec2 lineStart(sW / 2.0f, 15.0f);
 
         if (Vars.ShowFOVCircle) {
             [renderer drawFOVCircleAt:SimpleVec2(sW / 2.0f, sH / 2.0f) radius:Vars.AimFOV path:combinedPath];
@@ -562,5 +631,7 @@ inline void get_players()
         }
 
         renderer.espLayer.path = combinedPath.CGPath;
+
+        [CATransaction commit];
     });
 }
