@@ -57,6 +57,7 @@ static NSDictionary<NSString *, NSArray<NSString *> *> *LocStrings() {
             @"section_boost": @[@"Tăng Cường", @"Boost"],
             @"aim_mode_always": @[@"Luôn Bật", @"Always"],
             @"aim_mode_fire": @[@"Khi Bắn/Ngắm", @"Fire/Scope"],
+            @"aim_prefer_low_hp": @[@"Ưu Tiên Máu Vàng/Đỏ (Ngẫu Nhiên)", @"Prefer Yellow/Red HP (Random)"],
             @"antena": @[@"Antena", @"Antena"],
             @"speed_x2": @[@"Tốc Độ x2", @"Speed x2"],
             @"speed_x8": @[@"Tốc Độ x8", @"Speed x8"],
@@ -87,7 +88,7 @@ static NSString *LOC(NSString *key) {
     return isEnglishMode ? pair[1] : pair[0];
 }
 
-@interface BrazilixMenu : NSObject <UITextFieldDelegate>
+@interface DeltaMenu : NSObject <UITextFieldDelegate>
 @property (nonatomic, strong) UIView *menuView;
 @property (nonatomic, strong) CAGradientLayer *borderGradient;
 @property (nonatomic, strong) CADisplayLink *displayLink;
@@ -119,6 +120,7 @@ static NSString *LOC(NSString *key) {
 @property (nonatomic, strong) UIView *modModView;
 @property (nonatomic, strong) UISwitch *aimHeadSwitch;
 @property (nonatomic, strong) UISegmentedControl *aimModeControl;
+@property (nonatomic, strong) UISwitch *aimPreferLowHPSwitch;
 @property (nonatomic, strong) UISwitch *antenaSwitch;
 @property (nonatomic, strong) UISwitch *speedX2Switch;
 @property (nonatomic, strong) UISwitch *speedX8Switch;
@@ -151,9 +153,9 @@ static NSString *LOC(NSString *key) {
 @property (nonatomic, strong) UILabel *toastLabel;
 @end
 
-@implementation BrazilixMenu
+@implementation DeltaMenu
 
-static BrazilixMenu *extraInfo;
+static DeltaMenu *extraInfo;
 static BOOL MenDeal;
 UIWindow *mainWindow;
 game_sdk_t *game_sdk = new game_sdk_t();
@@ -165,7 +167,7 @@ static MemScanner searchScanner;
 + (void)load {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         mainWindow = [UIApplication sharedApplication].keyWindow;
-        extraInfo = [BrazilixMenu new];
+        extraInfo = [DeltaMenu new];
 
         static bool sdkInitialized = false;
         if (!sdkInitialized) {
@@ -476,6 +478,12 @@ static MemScanner searchScanner;
     }];
     btnY += 26 + btnGap;
 
+    // Ignores "closest to crosshair" and randomly snaps to an already-wounded enemy
+    // (yellow/red health) in range instead - falls back to the normal target if nobody
+    // in range is hurt yet.
+    _aimPreferLowHPSwitch = [self addToggleCardWithLocKey:@"aim_prefer_low_hp" symbol:@"shuffle" frame:CGRectMake(btnX, btnY, btnW, cardH) action:@selector(toggleAimPreferLowHP:) toView:scroll];
+    btnY += cardH + btnGap;
+
     // Radius is configured on the ESP tab's Show FOV Circle slider (same Vars.AimFOV) -
     // just a pointer note here, not a duplicate control.
     UILabel *aimNote = [[UILabel alloc] initWithFrame:CGRectMake(btnX + 8, btnY, btnW - 8, 14)];
@@ -633,6 +641,10 @@ static MemScanner searchScanner;
 
 - (void)aimModeChanged:(UISegmentedControl *)sender {
     Vars.AimHeadMode = (int)sender.selectedSegmentIndex;
+}
+
+- (void)toggleAimPreferLowHP:(UISwitch *)sender {
+    Vars.AimPreferLowHP = sender.on;
 }
 
 - (void)toggleShowFovCircle:(UISwitch *)sender {

@@ -2,6 +2,7 @@
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
 #import <QuartzCore/QuartzCore.h>
+#import <stdlib.h>
 
 #import "UnityTypes.h"
 #import "Vector3.h"
@@ -39,6 +40,11 @@ struct Vars_t
     // mirrors the AimWhen gate from the AimHead.md reference. Lets the user pick between
     // the more "magnetic"/always-on feel and a less conspicuous, input-gated one.
     int AimHeadMode = 0;
+    // When true, FindAimHeadTarget ignores "closest to crosshair" and instead picks
+    // randomly among enemies below kWoundedHpFraction (yellow/red health bar, i.e.
+    // already hurt) that are in FOV/range - falls back to the normal closest-to-
+    // crosshair target if nobody in range is currently wounded.
+    bool AimPreferLowHP = false;
     // Shared: ESP tab's FOV circle radius IS Aim Head's snap radius, but the two stay
     // separate switches - Show FOV Circle just draws the circle, Aim Head does the actual
     // person-detection + snap. Radius kept modest (well under half a typical screen width)
@@ -141,6 +147,11 @@ inline Vector3 GetBonePosition(void *player, void *(*transformGetter)(void *)) {
     return tf ? game_sdk->get_position(tf) : Vector3();
 }
 
+// Roughly matches Free Fire's own health-bar color bands (green above this, yellow/red
+// below it) - used by AimPreferLowHP to decide who counts as "already wounded".
+#define kWoundedHpFraction 0.6f
+#define kMaxWoundedCandidates 64
+
 // ===== AIM HEAD TARGETING =====
 // Shared by the ESP FOV circle (cosmetic) and the Camera.Render hook (the actual aim
 // write) so both agree on exactly which enemy counts as "in FOV". Self-contained -
@@ -172,6 +183,11 @@ inline bool FindAimHeadTarget(void *camera, Vector3 &outHeadWorldPos)
     bool found = false;
     float bestScreenDist = Vars.AimFOV;
 
+    // Collected in the same pass as the closest-to-crosshair search below, so
+    // AimPreferLowHP costs nothing extra when it's off (the array just stays empty).
+    Vector3 woundedHeads[kMaxWoundedCandidates];
+    int woundedCount = 0;
+
     for (int u = 0; u < players->getSize(); u++) {
         void *enemy = players->getItems()[u];
         if (!enemy || enemy == local_player) continue;
@@ -194,11 +210,28 @@ inline bool FindAimHeadTarget(void *camera, Vector3 &outHeadWorldPos)
         float dx = headScreen.x - sW / 2.0f;
         float dy = headScreen.y - sH / 2.0f;
         float screenDist = sqrtf(dx * dx + dy * dy);
+        if (screenDist >= Vars.AimFOV) continue;
+
         if (screenDist < bestScreenDist) {
             bestScreenDist = screenDist;
             outHeadWorldPos = headWorld;
             found = true;
         }
+
+        if (Vars.AimPreferLowHP && woundedCount < kMaxWoundedCandidates) {
+            int maxHp = game_sdk->get_MaxHP(enemy);
+            int hp = game_sdk->GetHp(enemy);
+            if (maxHp > 0 && (float)hp / (float)maxHp < kWoundedHpFraction) {
+                woundedHeads[woundedCount++] = headWorld;
+            }
+        }
+    }
+
+    // Random pick among the wounded takes priority over "closest to crosshair" - that's
+    // the whole point of the mode. Falls back to the normal target if nobody's hurt.
+    if (Vars.AimPreferLowHP && woundedCount > 0) {
+        outHeadWorldPos = woundedHeads[arc4random_uniform((uint32_t)woundedCount)];
+        return true;
     }
 
     return found;
