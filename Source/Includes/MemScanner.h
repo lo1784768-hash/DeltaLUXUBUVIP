@@ -49,6 +49,29 @@ public:
         return results.size();
     }
 
+    // Cheat-Engine-style "next scan": re-reads only the addresses already in the
+    // result set (no new memory is scanned) and keeps the ones whose current value
+    // now matches. Cheap, and what makes iterative search -> play -> search useful.
+    size_t nextScan(const std::string &value, const std::string &type)
+    {
+        double lo, hi;
+        parseRange(value, lo, hi);
+        size_t typeSize = sizeOf(type);
+        mach_port_t port = mach_task_self();
+
+        std::vector<vm_address_t> narrowed;
+        for (vm_address_t addr : results) {
+            uint8_t buf[8];
+            vm_size_t outSize = 0;
+            if (vm_read_overwrite(port, addr, typeSize, (vm_address_t)buf, &outSize) == KERN_SUCCESS
+                && outSize >= typeSize && matches(buf, type, lo, hi)) {
+                narrowed.push_back(addr);
+            }
+        }
+        results = narrowed;
+        return results.size();
+    }
+
     bool editAll(const std::string &value, const std::string &type)
     {
         if (results.empty()) return false;
