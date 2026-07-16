@@ -106,8 +106,6 @@ static NSString *LOC(NSString *key) {
 @property (nonatomic, strong) UIView *modGocView;
 @property (nonatomic, strong) UIView *modModView;
 @property (nonatomic, strong) UISwitch *aimHeadSwitch;
-@property (nonatomic, strong) UISlider *aimRangeSlider;
-@property (nonatomic, strong) UILabel *aimRangeLabel;
 @property (nonatomic, strong) UISwitch *antenaSwitch;
 @property (nonatomic, strong) UISwitch *speedX2Switch;
 @property (nonatomic, strong) UISwitch *speedX8Switch;
@@ -355,9 +353,9 @@ static MemScanner searchScanner;
     _enableSwitch = [self addToggleCardWithLocKey:@"master_switch" frame:CGRectMake(padX, y, fullW, cardH) action:@selector(toggleEnable:) toView:scroll];
     y += cardH + gap;
 
-    // Show FOV Circle + its own radius slider live entirely in the ESP tab (a screen
-    // overlay, independent of Vars.AimHeadRange in the MOD tab) - Aim Head and the FOV
-    // circle no longer share a value, per the user's explicit request.
+    // Show FOV Circle + its Vars.AimFOV radius slider live entirely in the ESP tab.
+    // This same radius is what Aim Head (MOD tab) snaps within - the circle IS the
+    // aim range, visualized - per the user's explicit request that they share one value.
     _showFovCircleSwitch = [self addToggleCardWithLocKey:@"show_fov_circle" frame:CGRectMake(padX, y, fullW, cardH) action:@selector(toggleShowFovCircle:) toView:scroll];
     y += cardH + gap;
 
@@ -444,26 +442,17 @@ static MemScanner searchScanner;
     _aimHeadSwitch = [self addToggleCardWithLocKey:@"aim_head" frame:CGRectMake(btnX, btnY, btnW, cardH) action:@selector(toggleAimHead:) toView:scroll];
     btnY += cardH + btnGap;
 
-    _aimRangeLabel = [[UILabel alloc] initWithFrame:CGRectMake(btnX, btnY, btnW, 14)];
-    _aimRangeLabel.font = [UIFont systemFontOfSize:10.5f weight:UIFontWeightMedium];
-    _aimRangeLabel.textColor = COLOR_TEXT_DIM;
-    [scroll addSubview:_aimRangeLabel];
-    __weak UILabel *weakAimRangeLabel = _aimRangeLabel;
+    // The snap radius is the same Vars.AimFOV the ESP tab's FOV circle slider controls
+    // (per the user: the FOV circle's radius IS the aim radius) - no separate slider here.
+    UILabel *aimNote = [[UILabel alloc] initWithFrame:CGRectMake(btnX, btnY, btnW, 14)];
+    aimNote.font = [UIFont systemFontOfSize:10.5f weight:UIFontWeightMedium];
+    aimNote.textColor = COLOR_TEXT_DIM;
+    aimNote.adjustsFontSizeToFitWidth = YES;
+    [scroll addSubview:aimNote];
     [self addLocalizedRefresher:^{
-        weakAimRangeLabel.text = [NSString stringWithFormat:isEnglishMode ? @"Aim radius: %.0fpx" : @"Bán kính ngắm: %.0fpx", Vars.AimHeadRange];
+        aimNote.text = isEnglishMode ? @"Range: FOV circle slider (ESP tab)" : @"Bán kính: xem thanh FOV bên tab ESP";
     }];
-    btnY += 14 + 2;
-
-    _aimRangeSlider = [[UISlider alloc] initWithFrame:CGRectMake(btnX, btnY, btnW, 20)];
-    _aimRangeSlider.minimumValue = 50.0f;
-    _aimRangeSlider.maximumValue = 400.0f;
-    _aimRangeSlider.value = Vars.AimHeadRange;
-    _aimRangeSlider.minimumTrackTintColor = COLOR_CYAN;
-    _aimRangeSlider.maximumTrackTintColor = [UIColor colorWithWhite:1.0 alpha:0.12];
-    _aimRangeSlider.thumbTintColor = COLOR_TEXT;
-    [_aimRangeSlider addTarget:self action:@selector(aimRangeChanged:) forControlEvents:UIControlEventValueChanged];
-    [scroll addSubview:_aimRangeSlider];
-    btnY += 20 + btnGap;
+    btnY += 14 + btnGap;
 
     _antenaSwitch = [self addToggleCardWithLocKey:@"antena" frame:CGRectMake(btnX, btnY, btnW, cardH) action:@selector(toggleAntena:) toView:scroll];
     btnY += cardH + btnGap;
@@ -603,11 +592,6 @@ static MemScanner searchScanner;
     BOOL state = sender.on;
     [self showToast:[NSString stringWithFormat:@"%@ %@", LOC(@"aim_head"), LOC(state ? @"on" : @"off")]];
     Vars.AimHead = state;
-}
-
-- (void)aimRangeChanged:(UISlider *)sender {
-    Vars.AimHeadRange = sender.value;
-    _aimRangeLabel.text = [NSString stringWithFormat:isEnglishMode ? @"Aim radius: %.0fpx" : @"Bán kính ngắm: %.0fpx", Vars.AimHeadRange];
 }
 
 #pragma mark - ESP tab FOV circle actions

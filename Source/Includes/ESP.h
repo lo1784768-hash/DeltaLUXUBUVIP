@@ -33,8 +33,7 @@ struct Vars_t
     bool counts = false;
     bool NoFog = true;
     bool AimHead = false;
-    float AimHeadRange = 250.0f; // Aim Head's own snap radius (MOD tab) - independent of the ESP FOV circle
-    float AimFOV = 250.0f;       // ESP FOV circle's radius only (ESP tab) - purely cosmetic
+    float AimFOV = 250.0f; // shared: ESP tab's FOV circle radius IS Aim Head's snap radius
     bool ShowFOVCircle = false;
 } Vars;
 
@@ -155,7 +154,7 @@ inline bool FindAimHeadTarget(void *camera, Vector3 &outHeadWorldPos)
     if (sW < sH) { CGFloat t = sW; sW = sH; sH = t; }
 
     bool found = false;
-    float bestScreenDist = Vars.AimHeadRange;
+    float bestScreenDist = Vars.AimFOV;
 
     for (int u = 0; u < players->getSize(); u++) {
         void *enemy = players->getItems()[u];
@@ -378,18 +377,31 @@ inline void get_players()
 
         SimpleVec2 lineStart(sW / 2.0f, sH - 15.0f);
 
-        // Aim Head FOV circle: purely cosmetic here. The actual aim write happens in the
-        // Camera.Render hook (AimHook.h) via FindAimHeadTarget, since a separate
-        // CADisplayLink loop like this one races the game's own per-frame camera update
-        // and gets overwritten before render.
         if (Vars.ShowFOVCircle) {
             [renderer drawFOVCircleAt:SimpleVec2(sW / 2.0f, sH / 2.0f) radius:Vars.AimFOV path:combinedPath];
         }
 
-        // Temporary diagnostic: proves whether the Camera.Render hook is firing at all,
-        // and whether it's finding a target, without needing device-side debug tools.
+        // Aim Head write: the Camera.Render hook (AimHook.h) confirmed via g_aimHookCallCount
+        // staying at 0 that Unity never calls that method automatically for normal per-frame
+        // rendering (it's a manual-render-only API) - so it's a dead hook. Writing from here
+        // instead, on the same CADisplayLink loop that already reliably drives ESP every
+        // frame, so the write is at least guaranteed to execute (whether it visibly sticks
+        // against the game's own per-frame camera update is what the debug line below is for).
+        static unsigned long long frameAimWriteCount = 0;
         if (Vars.AimHead) {
-            [renderer drawTextAt:SimpleVec2(sW / 2.0f, 60) text:[NSString stringWithFormat:@"Hook:%llu Target:%@", g_aimHookCallCount, g_aimHookHasTarget ? @"YES" : @"NO"]];
+            frameAimWriteCount++;
+            void *camera = game_sdk->get_camera();
+            Vector3 aimHeadWorld;
+            bool haveTarget = camera && FindAimHeadTarget(camera, aimHeadWorld);
+            if (haveTarget) {
+                void *camTransform = game_sdk->Component_GetTransform(camera);
+                if (camTransform) {
+                    Vector3 camPos = game_sdk->get_position(camTransform);
+                    Vector3 dir = Vector3::Normalized(aimHeadWorld - camPos);
+                    game_sdk->set_forward(camTransform, dir);
+                }
+            }
+            [renderer drawTextAt:SimpleVec2(sW / 2.0f, 60) text:[NSString stringWithFormat:@"Frame:%llu RenderHook:%llu Target:%@", frameAimWriteCount, g_aimHookCallCount, haveTarget ? @"YES" : @"NO"]];
         }
 
         for (int u = 0; u < players->getSize(); u++) {
