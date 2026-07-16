@@ -541,7 +541,7 @@ static MemScanner searchScanner;
 
     _spinSpeedSlider = [[UISlider alloc] initWithFrame:CGRectMake(btnX, btnY, btnW, 20)];
     _spinSpeedSlider.minimumValue = 30.0f;
-    _spinSpeedSlider.maximumValue = 720.0f;
+    _spinSpeedSlider.maximumValue = 3600.0f;
     _spinSpeedSlider.value = Vars.SpinSpeed;
     _spinSpeedSlider.minimumTrackTintColor = COLOR_CYAN;
     _spinSpeedSlider.maximumTrackTintColor = [UIColor colorWithWhite:1.0 alpha:0.12];
