@@ -32,13 +32,14 @@ struct Vars_t
     bool skeleton = false;
     bool counts = false;
     bool NoFog = true;
+    // One toggle: Aim Head both draws the FOV circle and performs the snap, using the
+    // same radius - having a separate "show FOV circle" switch was confusing (the circle
+    // looked dead without also flipping Aim Head on). Radius kept modest (well under half a
+    // typical screen width) so the drawn circle stays fully on-screen - at the old default
+    // of 250 (slider allowed up to 400) it was mostly clipped off both side edges on a
+    // ~400pt-wide screen, easy to mistake for "doesn't do anything".
     bool AimHead = false;
-    // Shared: ESP tab's FOV circle radius IS Aim Head's snap radius. Kept modest (default
-    // well under half a typical screen width) so the drawn circle stays fully on-screen -
-    // at the old default of 250 (slider allowed up to 400) the circle was mostly clipped
-    // off both side edges on a ~400pt-wide screen, easy to mistake for "doesn't do anything".
     float AimFOV = 120.0f;
-    bool ShowFOVCircle = false;
 } Vars;
 
 // ===== GAME SDK =====
@@ -169,8 +170,15 @@ inline bool FindAimHeadTarget(void *camera, Vector3 &outHeadWorldPos)
         Vector3 pos = getPosition(enemy);
         if (Vector3::Distance(pos, localPos) > 150.0f) continue;
 
+        // _GetHeadPositions (GetHeadTF) was measured on-device reading ~0.87 above the
+        // character's own root - about half a person's height, i.e. waist/hip level, not a
+        // head. Rather than trust it blindly, only use it when it's at least 1m above the
+        // character's own root (a real head has to be); otherwise fall back to the simple
+        // root+1.6m estimate, which is what was actually landing the shot near the head
+        // before this bone getter was wired in.
         Vector3 headWorld = GetBonePosition(enemy, game_sdk->_GetHeadPositions);
-        if (headWorld == Vector3()) headWorld = pos + Vector3(0, 1.6f, 0);
+        bool headBoneLooksValid = !(headWorld == Vector3()) && headWorld.y > pos.y + 1.0f;
+        if (!headBoneLooksValid) headWorld = pos + Vector3(0, 1.6f, 0);
 
         SimpleVec2 headScreen = Camera$$WorldToScreen::FromCamera(camera, headWorld);
         if (headScreen.x == 0 && headScreen.y == 0) continue;
@@ -381,7 +389,7 @@ inline void get_players()
 
         SimpleVec2 lineStart(sW / 2.0f, sH - 15.0f);
 
-        if (Vars.ShowFOVCircle) {
+        if (Vars.AimHead) {
             [renderer drawFOVCircleAt:SimpleVec2(sW / 2.0f, sH / 2.0f) radius:Vars.AimFOV path:combinedPath];
         }
 
