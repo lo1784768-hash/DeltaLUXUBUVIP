@@ -263,19 +263,27 @@ inline bool FindAimHeadTarget(void *camera, Vector3 &outHeadWorldPos, float heig
     return found;
 }
 
+// Player.m_CurrentRotateDirection (dump.cs OB54, instance field offset - NOT a
+// getRealOffset/ASLR-relative address, this is added directly to the object pointer).
+#define kPlayerCurrentRotateDirectionOffset 0x1EAC
+
 // ===== SPIN BOT =====
-// Continuously rotates the local player's own character model - a different Transform
-// than the camera/aim (set_forward here targets Component_GetTransform(local_player),
-// not the camera), so this is unrelated to Aim Head/Aim Nhe Tam above and to why
-// set_forward never worked for aiming (the game reads aim from Player.SetAimRotation,
-// not the camera's transform - see game_sdk_t::init() - but the character model's own
-// facing still follows its own Transform directly).
+// v1 wrote set_forward directly on the player's own Transform, which only visibly
+// spun while standing completely still - while moving/firing/jumping, the movement
+// system's own per-frame rotation update (Player.UpdateRotation /
+// UpdateRightAxisAndDoRotation, both found near this field in dump.cs) recomputes and
+// overwrites the Transform's rotation from movement/aim input every frame, fighting our
+// write (same category of bug as Camera.Render/set_forward never affecting aim - see
+// game_sdk_t::init()). This v2 instead writes m_CurrentRotateDirection, the field that
+// system itself reads as its "desired facing" input, hoping its own smoothing (see
+// MAX_ROTATION_DELTA/ROTATION_EXPONENT on Player) then carries our direction into the
+// actual Transform cooperatively instead of us fighting it. Unverified on-device -
+// mirrors the set_aim fix in spirit, but the previous attempt at this same kind of
+// "guess the right field/offset" swap (the head bone override) crashed the game, so
+// this needs real testing and may need another iteration or a full revert.
 inline void ProcessSpinBot(void *local_player)
 {
     if (!Vars.SpinBot || !local_player) return;
-
-    void *transform = game_sdk->Component_GetTransform(local_player);
-    if (!transform) return;
 
     // Frame-rate independent: accumulate by real elapsed time rather than a fixed
     // per-frame step, so SpinSpeed (deg/sec) means the same thing regardless of fps.
@@ -290,7 +298,8 @@ inline void ProcessSpinBot(void *local_player)
     if (angleDeg >= 360.0f) angleDeg -= 360.0f;
 
     float rad = angleDeg * (float)M_PI / 180.0f;
-    game_sdk->set_forward(transform, Vector3(sinf(rad), 0, cosf(rad)));
+    Vector3 dir(sinf(rad), 0, cosf(rad));
+    *(Vector3 *)((char *)local_player + kPlayerCurrentRotateDirectionOffset) = dir;
 }
 
 // ===== OPTIMIZED ESP RENDERER =====
