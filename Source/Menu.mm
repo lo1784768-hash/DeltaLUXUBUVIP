@@ -708,9 +708,10 @@ static MemScanner searchScanner;
     _scanResultLabel.textColor = COLOR_CYAN;
     _scanResultLabel.textAlignment = NSTextAlignmentCenter;
     [page addSubview:_scanResultLabel];
-    UILabel *weakScanResultLabel = _scanResultLabel;
+    __weak UILabel *weakScanResultLabel = _scanResultLabel;
+    __weak __typeof__(self) weakSelf = self;
     [self addLocalizedRefresher:^{
-        weakScanResultLabel.text = [NSString stringWithFormat:isEnglishMode ? @"Results: %zu" : @"Số kết quả: %zu", self.lastScanResultCount];
+        weakScanResultLabel.text = [NSString stringWithFormat:isEnglishMode ? @"Results: %zu" : @"Số kết quả: %zu", weakSelf.lastScanResultCount];
     }];
     y += 18 + 10;
 
