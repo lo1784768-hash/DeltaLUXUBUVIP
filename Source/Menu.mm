@@ -34,7 +34,6 @@
 @property (nonatomic, strong) UIButton *skeletonButton;
 @property (nonatomic, strong) UIButton *countButton;
 @property (nonatomic, strong) UILabel *titleLabel;
-@property (nonatomic, strong) UILabel *toastLabel;
 @property (nonatomic, strong) CADisplayLink *displayLink;
 @property (nonatomic, assign) CGPoint lastPoint;
 @end
@@ -209,54 +208,6 @@ game_sdk_t *game_sdk = new game_sdk_t();
 
 - (void)closeMenu { MenDeal = false; }
 
-#pragma mark - Toast
-- (void)showToast:(NSString *)message {
-    if (_toastLabel) {
-        [_toastLabel removeFromSuperview];
-        _toastLabel = nil;
-    }
-
-    UIFont *font = [UIFont systemFontOfSize:14 weight:UIFontWeightMedium];
-    CGSize textSize = [message sizeWithAttributes:@{NSFontAttributeName: font}];
-    CGFloat paddingH = 20;
-    CGFloat paddingV = 12;
-    CGFloat toastW = textSize.width + paddingH * 2;
-    CGFloat toastH = textSize.height + paddingV * 2;
-    CGFloat x = (kWidth - toastW) * 0.5f;
-    CGFloat y = kHeight * 0.15f;
-
-    _toastLabel = [[UILabel alloc] initWithFrame:CGRectMake(x, y, toastW, toastH)];
-    _toastLabel.text = message;
-    _toastLabel.font = font;
-    _toastLabel.textColor = COLOR_TEXT;
-    _toastLabel.textAlignment = NSTextAlignmentCenter;
-    _toastLabel.backgroundColor = COLOR_BG;
-    _toastLabel.layer.cornerRadius = 10.0f;
-    _toastLabel.clipsToBounds = YES;
-    _toastLabel.layer.borderWidth = 0.5f;
-    _toastLabel.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.2].CGColor;
-    _toastLabel.alpha = 0.0f;
-    _toastLabel.userInteractionEnabled = NO;
-
-    [mainWindow addSubview:_toastLabel];
-
-    __weak __typeof__(self) weakSelf = self;
-    [UIView animateWithDuration:0.25 animations:^{
-        weakSelf.toastLabel.alpha = 1.0f;
-    } completion:^(BOOL finished) {
-        [UIView animateWithDuration:0.25 delay:1.5 options:0 animations:^{
-            weakSelf.toastLabel.alpha = 0.0f;
-        } completion:^(BOOL finished2) {
-            [weakSelf.toastLabel removeFromSuperview];
-            weakSelf.toastLabel = nil;
-        }];
-    }];
-}
-
-- (void)showDeltaReadyToast {
-    [self showToast:@"Xin Chào Menu Delta Đã Sẵn Sàng"];
-}
-
 #pragma mark - Gesture Handling
 - (void)initTapGes {
     UITapGestureRecognizer *tap1 = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(openMenu)];
@@ -268,12 +219,6 @@ game_sdk_t *game_sdk = new game_sdk_t();
     tap2.numberOfTapsRequired = 2;
     tap2.numberOfTouchesRequired = 2;
     [mainWindow addGestureRecognizer:tap2];
-
-    UITapGestureRecognizer *tap3 = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(showDeltaReadyToast)];
-    tap3.numberOfTapsRequired = 1;
-    tap3.numberOfTouchesRequired = 2;
-    [tap3 requireGestureRecognizerToFail:tap2];
-    [mainWindow addGestureRecognizer:tap3];
 }
 
 - (void)openMenu {
