@@ -171,13 +171,12 @@ inline bool FindAimHeadTarget(void *camera, Vector3 &outHeadWorldPos)
         Vector3 pos = getPosition(enemy);
         if (Vector3::Distance(pos, localPos) > 150.0f) continue;
 
-        // _GetHeadPositions previously called Player's BASE class's virtual GetHeadTF
-        // implementation (no vtable dispatch), not the Player-specific override actually
-        // used at runtime - that's why it read waist height. Now bound to the real
-        // override, so trust it again; keep the root+1.6m estimate only as a fallback for
-        // the null/zero case (e.g. transform not yet ready).
-        Vector3 headWorld = GetBonePosition(enemy, game_sdk->_GetHeadPositions);
-        if (headWorld == Vector3()) headWorld = pos + Vector3(0, 1.6f, 0);
+        // Not calling _GetHeadPositions here at all: the "corrected" Player override offset
+        // crashed on-device (reverted in game_sdk_t::init()), and the original base-class
+        // offset only ever read waist height. Root+1.6m is less precise but stable - this
+        // whole path (FindAimHeadTarget) is shared by both Aim Head and the FOV circle's
+        // detection check, so a crash here takes down both.
+        Vector3 headWorld = pos + Vector3(0, 1.6f, 0);
 
         SimpleVec2 headScreen = Camera$$WorldToScreen::FromCamera(camera, headWorld);
         if (headScreen.x == 0 && headScreen.y == 0) continue;
