@@ -12,18 +12,6 @@ inline MemScanner &scanner() {
     return instance;
 }
 
-inline void hsCo(bool on) {
-    MemScanner &s = scanner();
-    s.clearResults();
-    if (on) {
-        s.searchNumber("96688289", "I32");
-        s.editAll("2018908708", "I32");
-    } else {
-        s.searchNumber("2018908708", "I32");
-        s.editAll("96688289", "I32");
-    }
-}
-
 inline void antena(bool on) {
     MemScanner &s = scanner();
     s.clearResults();

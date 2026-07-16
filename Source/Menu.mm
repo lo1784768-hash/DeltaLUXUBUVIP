@@ -52,13 +52,13 @@
 @property (nonatomic, strong) UIView *modMainView;
 @property (nonatomic, strong) UIView *modGocView;
 @property (nonatomic, strong) UIView *modModView;
-@property (nonatomic, strong) UIButton *hsCoButton;
+@property (nonatomic, strong) UIButton *aimHeadButton;
 @property (nonatomic, strong) UIButton *antenaButton;
 @property (nonatomic, strong) UIButton *speedX2Button;
 @property (nonatomic, strong) UIButton *speedX8Button;
 @property (nonatomic, strong) UIButton *noRecoilButton;
 @property (nonatomic, strong) UIButton *magicBulletButton;
-@property (nonatomic, assign) BOOL hsCoOn;
+@property (nonatomic, assign) BOOL aimHeadOn;
 @property (nonatomic, assign) BOOL antenaOn;
 @property (nonatomic, assign) BOOL speedX2On;
 @property (nonatomic, assign) BOOL speedX8On;
@@ -318,9 +318,9 @@ static MemScanner searchScanner;
     scroll.showsVerticalScrollIndicator = NO;
     CGFloat btnY = 0, btnH = 30, btnGap = 6, btnX = 4, btnW = frame.size.width - 8;
 
-    _hsCoButton = [self createButtonWithTitle:@"Hs Cổ" frame:CGRectMake(btnX, btnY, btnW, btnH)];
-    [_hsCoButton addTarget:self action:@selector(toggleHsCo) forControlEvents:UIControlEventTouchUpInside];
-    [scroll addSubview:_hsCoButton];
+    _aimHeadButton = [self createButtonWithTitle:@"Aim Head" frame:CGRectMake(btnX, btnY, btnW, btnH)];
+    [_aimHeadButton addTarget:self action:@selector(toggleAimHead) forControlEvents:UIControlEventTouchUpInside];
+    [scroll addSubview:_aimHeadButton];
     btnY += btnH + btnGap;
 
     _antenaButton = [self createButtonWithTitle:@"Antena" frame:CGRectMake(btnX, btnY, btnW, btnH)];
@@ -467,14 +467,12 @@ static MemScanner searchScanner;
 
 #pragma mark - Mod tab toggle actions
 
-- (void)toggleHsCo {
-    _hsCoOn = !_hsCoOn;
-    BOOL state = _hsCoOn;
-    [self updateButton:_hsCoButton forState:state];
-    [self showToast:state ? @"Hs Cổ ON" : @"Hs Cổ OFF"];
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        ModHacks::hsCo(state);
-    });
+- (void)toggleAimHead {
+    _aimHeadOn = !_aimHeadOn;
+    BOOL state = _aimHeadOn;
+    [self updateButton:_aimHeadButton forState:state];
+    [self showToast:state ? @"Aim Head ON" : @"Aim Head OFF"];
+    Vars.AimHead = state;
 }
 
 - (void)toggleAntena {
@@ -833,6 +831,9 @@ void game_sdk_t::init()
     // so this must bind to Camera.WorldToViewportPoint, not the literal ScreenPoint method.
     this->WorldToScreenPoint = (Vector3(*)(void *, Vector3))getRealOffset(0x915E364);
     this->GetForward = (Vector3(*)(void *))getRealOffset(0x91CAF64);
+    // Transform.set_forward(Vector3) - same Transform class as get_position/GetForward above (verified via dump.cs).
+    // Setting this internally does rotation = Quaternion.LookRotation(value), so no manual quaternion math is needed for aim.
+    this->set_forward = (void (*)(void *, Vector3))getRealOffset(0x91CB024);
     this->get_isLocalTeam = (bool (*)(void *))getRealOffset(0x55C5AC0);
     this->get_IsDieing = (bool (*)(void *))getRealOffset(0x53AA18C);
     this->get_MaxHP = (int (*)(void *))getRealOffset(0x5435A3C);

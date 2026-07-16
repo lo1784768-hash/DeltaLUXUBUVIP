@@ -17,6 +17,8 @@ struct SimpleVec2 {
 
 // Unified Red Color Constant (iOS 9+ Compatible)
 #define kUnifiedRedColor [UIColor redColor].CGColor
+// Health bar foreground - green, kept distinct from kUnifiedRedColor for visibility
+#define kHealthGreenColor [UIColor colorWithRed:0.15 green:0.9 blue:0.3 alpha:1.0].CGColor
 
 // ===== SIMPLIFIED VARIABLES =====
 struct Vars_t
@@ -30,6 +32,7 @@ struct Vars_t
     bool skeleton = false;
     bool counts = false;
     bool NoFog = true;
+    bool AimHead = false;
 } Vars;
 
 // ===== GAME SDK =====
@@ -44,6 +47,7 @@ public:
     void *(*get_camera)();
     Vector3 (*WorldToScreenPoint)(void *, Vector3);
     Vector3 (*GetForward)(void *player);
+    void (*set_forward)(void *transform, Vector3 direction);
     bool (*get_isLocalTeam)(void *player);
     bool (*get_IsDieing)(void *player);
     int (*get_MaxHP)(void *player);
@@ -219,7 +223,7 @@ inline Vector3 GetBonePosition(void *player, void *(*transformGetter)(void *)) {
         [_healthPool addObject:bgLayer];
         
         fgLayer = [CALayer layer];
-        fgLayer.backgroundColor = kUnifiedRedColor;
+        fgLayer.backgroundColor = kHealthGreenColor;
         [_containerView.layer addSublayer:fgLayer];
         [_healthPool addObject:fgLayer];
     }
@@ -290,6 +294,13 @@ inline void get_players()
 
         SimpleVec2 lineStart(sW / 2.0f, sH - 15.0f);
 
+        // Aim Head: track the enemy head closest to the crosshair (screen center),
+        // within a fixed on-screen radius so it only snaps to something already near where the player is aiming.
+        const float kAimFOV = 250.0f;
+        bool haveAimTarget = false;
+        float aimBestScreenDist = kAimFOV;
+        Vector3 aimHeadPos;
+
         for (int u = 0; u < players->getSize(); u++) {
             void *enemy = players->getItems()[u];
             if (!enemy || enemy == local_player) continue;
@@ -314,6 +325,22 @@ inline void get_players()
 
             if (Vars.Box) {
                 [renderer drawBoxFrom:SimpleVec2(bot_pos.x - width/2, top_pos.y) to:SimpleVec2(bot_pos.x + width/2, bot_pos.y) path:combinedPath];
+            }
+
+            if (Vars.AimHead) {
+                Vector3 headWorld = GetBonePosition(enemy, game_sdk->_GetHeadPositions);
+                if (headWorld == Vector3()) headWorld = pos + Vector3(0, 1.6f, 0);
+                SimpleVec2 headScreen = Camera$$WorldToScreen::Regular(headWorld);
+                if (!(headScreen.x == 0 && headScreen.y == 0)) {
+                    float dx = headScreen.x - sW / 2.0f;
+                    float dy = headScreen.y - sH / 2.0f;
+                    float screenDist = sqrtf(dx * dx + dy * dy);
+                    if (screenDist < aimBestScreenDist) {
+                        aimBestScreenDist = screenDist;
+                        aimHeadPos = headWorld;
+                        haveAimTarget = true;
+                    }
+                }
             }
 
             if (Vars.lines) {
@@ -369,6 +396,16 @@ inline void get_players()
 
         if (Vars.counts) {
             [renderer drawTextAt:SimpleVec2(sW / 2, 40) text:[NSString stringWithFormat:@"Enemies: %d", totalEnemies]];
+        }
+
+        if (Vars.AimHead && haveAimTarget) {
+            void *camera = game_sdk->get_camera();
+            void *camTransform = camera ? game_sdk->Component_GetTransform(camera) : nullptr;
+            if (camTransform) {
+                Vector3 camPos = game_sdk->get_position(camTransform);
+                Vector3 dir = Vector3::Normalized(aimHeadPos - camPos);
+                game_sdk->set_forward(camTransform, dir);
+            }
         }
 
         renderer.espLayer.path = combinedPath.CGPath;
