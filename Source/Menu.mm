@@ -51,6 +51,7 @@ static NSDictionary<NSString *, NSArray<NSString *> *> *LocStrings() {
             @"skeleton": @[@"Khung Xương", @"Skeleton"],
             @"enemy_count": @[@"Số Địch", @"Enemy Count"],
             @"aim_head": @[@"Ngắm Đầu", @"Aim Head"],
+            @"aim_nhe_tam": @[@"Aim Nhẹ Tâm", @"Soft Center Aim"],
             @"show_fov_circle": @[@"Hiện Vòng FOV", @"Show FOV Circle"],
             @"section_display": @[@"Hiển Thị", @"Display"],
             @"section_aim": @[@"Tự Động Ngắm", @"Auto Aim"],
@@ -119,6 +120,7 @@ static NSString *LOC(NSString *key) {
 @property (nonatomic, strong) UIView *modGocView;
 @property (nonatomic, strong) UIView *modModView;
 @property (nonatomic, strong) UISwitch *aimHeadSwitch;
+@property (nonatomic, strong) UISwitch *aimNheTamSwitch;
 @property (nonatomic, strong) UISegmentedControl *aimModeControl;
 @property (nonatomic, strong) UISwitch *aimPreferLowHPSwitch;
 @property (nonatomic, strong) UISwitch *antenaSwitch;
@@ -463,6 +465,12 @@ static MemScanner searchScanner;
     _aimHeadSwitch = [self addToggleCardWithLocKey:@"aim_head" symbol:@"scope" frame:CGRectMake(btnX, btnY, btnW, cardH) action:@selector(toggleAimHead:) toView:scroll];
     btnY += cardH + btnGap;
 
+    // A second, independent aim point (higher offset than Aim Head) - mutually exclusive
+    // with Aim Head since both drive the same set_aim call (see toggleAimHead:/
+    // toggleAimNheTam: below), but shares the same mode/prefer-low-HP settings.
+    _aimNheTamSwitch = [self addToggleCardWithLocKey:@"aim_nhe_tam" symbol:@"dot.circle.fill" frame:CGRectMake(btnX, btnY, btnW, cardH) action:@selector(toggleAimNheTam:) toView:scroll];
+    btnY += cardH + btnGap;
+
     // Two ways to run Aim Head: always snap while a target's in FOV, or only while the
     // player is actually firing/scoped (less conspicuous, matches AimHead.md's AimWhen).
     _aimModeControl = [[UISegmentedControl alloc] initWithItems:@[@"", @""]];
@@ -637,6 +645,24 @@ static MemScanner searchScanner;
     BOOL state = sender.on;
     [self showToast:[NSString stringWithFormat:@"%@ %@", LOC(@"aim_head"), LOC(state ? @"on" : @"off")]];
     Vars.AimHead = state;
+    // Mutually exclusive with Aim Nhe Tam - both write the same set_aim call every
+    // frame, so having both on would just have them fight over height/target.
+    if (state && Vars.AimNheTam) {
+        Vars.AimNheTam = false;
+        _aimNheTamSwitch.on = NO;
+        [self applyCardVisualState:_aimNheTamSwitch];
+    }
+}
+
+- (void)toggleAimNheTam:(UISwitch *)sender {
+    BOOL state = sender.on;
+    [self showToast:[NSString stringWithFormat:@"%@ %@", LOC(@"aim_nhe_tam"), LOC(state ? @"on" : @"off")]];
+    Vars.AimNheTam = state;
+    if (state && Vars.AimHead) {
+        Vars.AimHead = false;
+        _aimHeadSwitch.on = NO;
+        [self applyCardVisualState:_aimHeadSwitch];
+    }
 }
 
 - (void)aimModeChanged:(UISegmentedControl *)sender {

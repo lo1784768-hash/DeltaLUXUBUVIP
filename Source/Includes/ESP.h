@@ -35,6 +35,13 @@ struct Vars_t
     bool counts = false;
     bool NoFog = true;
     bool AimHead = false;
+    // A second, independent aim toggle - same targeting (closest-to-crosshair in FOV,
+    // same Always/Fire-Scope mode and AimPreferLowHP below) but a higher vertical offset
+    // (see kAimNheTamHeightOffset in ESP.h) than Aim Head's. Mutually exclusive with
+    // AimHead at the UI level (toggling one off the other) since both drive the same
+    // Player.SetAimRotation call - running both at once would just fight each other
+    // every frame between the two heights/targets.
+    bool AimNheTam = false;
     // 0 = Always (snap every frame a target is in FOV, current behavior), 1 = only while
     // actually firing or scoped (checked via game_sdk->get_IsFiring/get_IsSighting) -
     // mirrors the AimWhen gate from the AimHead.md reference. Lets the user pick between
@@ -152,12 +159,21 @@ inline Vector3 GetBonePosition(void *player, void *(*transformGetter)(void *)) {
 #define kWoundedHpFraction 0.6f
 #define kMaxWoundedCandidates 64
 
+// Vertical offset from root used as the aim point, for each of the two independent aim
+// toggles (AimHead / AimNheTam - see Vars_t). Both are geometric estimates, not read
+// from a bone (the actual head-bone getter crashes on-device, see game_sdk_t::init()).
+// 1.6m was Aim Head's original value, found to overshoot above the head, so Aim Head
+// was tuned down to 1.3m - Aim Nhe Tam intentionally reuses the old 1.6m as its own
+// distinct, higher aim point rather than being a regression of that fix.
+#define kAimHeadHeightOffset 1.3f
+#define kAimNheTamHeightOffset 1.6f
+
 // ===== AIM HEAD TARGETING =====
 // Shared by the ESP FOV circle (cosmetic) and the Camera.Render hook (the actual aim
 // write) so both agree on exactly which enemy counts as "in FOV". Self-contained -
 // re-fetches match/local player/players list itself rather than relying on state from
 // the separate get_players() display-link loop, since the two run on different call paths.
-inline bool FindAimHeadTarget(void *camera, Vector3 &outHeadWorldPos)
+inline bool FindAimHeadTarget(void *camera, Vector3 &outHeadWorldPos, float heightOffset = kAimHeadHeightOffset)
 {
     if (!camera) return false;
 
@@ -199,10 +215,10 @@ inline bool FindAimHeadTarget(void *camera, Vector3 &outHeadWorldPos)
 
         // Not calling _GetHeadPositions here at all: the "corrected" Player override offset
         // crashed on-device (reverted in game_sdk_t::init()), and the original base-class
-        // offset only ever read waist height. Root+1.3m is less precise but stable - on-device
-        // testing with +1.6m aimed noticeably above the head, so this is a first correction;
-        // report back "still high"/"now low" if it needs further tuning.
-        Vector3 headWorld = pos + Vector3(0, 1.3f, 0);
+        // offset only ever read waist height. This flat root+offset estimate is less
+        // precise but stable - see kAimHeadHeightOffset/kAimNheTamHeightOffset above for
+        // which value each caller passes in.
+        Vector3 headWorld = pos + Vector3(0, heightOffset, 0);
 
         SimpleVec2 headScreen = Camera$$WorldToScreen::FromCamera(camera, headWorld);
         if (headScreen.x == 0 && headScreen.y == 0) continue;
@@ -437,18 +453,23 @@ inline void get_players()
         // Aim Head write: calls Player.SetAimRotation directly on local_player (see
         // game_sdk_t::init() in Menu.mm) instead of writing the camera's Transform - the
         // game reads aim direction from the player's own aim state, not the camera.
-        // Only runs the (moderately expensive) target search when Aim Head is actually on,
-        // not just because the FOV circle is showing.
+        // Aim Head and Aim Nhe Tam are mutually exclusive at the UI level (toggling one
+        // off the other - see toggleAimHead:/toggleAimNheTam: in Menu.mm), so at most one
+        // of these is ever true; they only differ in aim-point height.
+        // Only runs the (moderately expensive) target search when one of them is on, not
+        // just because the FOV circle is showing.
         // Mode 1 (Fire/Scope only) also skips the target search entirely when neither is
         // true - besides matching what the user actually asked for, it's strictly less
         // per-frame work than Mode 0, not more.
-        bool aimHeadShouldRun = Vars.AimHead &&
+        bool aimFeatureOn = Vars.AimHead || Vars.AimNheTam;
+        bool aimHeadShouldRun = aimFeatureOn &&
             (Vars.AimHeadMode == 0 || game_sdk->get_IsFiring(local_player) || game_sdk->get_IsSighting(local_player));
         if (aimHeadShouldRun) {
             void *camera = game_sdk->get_camera();
             void *camTransform = camera ? game_sdk->Component_GetTransform(camera) : nullptr;
             Vector3 aimHeadWorld;
-            if (camera && camTransform && FindAimHeadTarget(camera, aimHeadWorld)) {
+            float heightOffset = Vars.AimNheTam ? kAimNheTamHeightOffset : kAimHeadHeightOffset;
+            if (camera && camTransform && FindAimHeadTarget(camera, aimHeadWorld, heightOffset)) {
                 Vector3 eyePos = game_sdk->get_position(camTransform);
                 Vector3 dir = Vector3::Normalized(aimHeadWorld - eyePos);
                 Quaternion look = Quaternion::LookRotation(dir, Vector3(0, 1, 0));
