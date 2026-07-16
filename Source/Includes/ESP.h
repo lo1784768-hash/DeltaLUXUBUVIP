@@ -21,7 +21,7 @@ struct SimpleVec2 {
 // ===== SIMPLIFIED VARIABLES =====
 struct Vars_t
 {
-    bool Enable = true;
+    bool Enable = false;
     bool lines = false;
     bool Box = false;
     bool Name = false;
