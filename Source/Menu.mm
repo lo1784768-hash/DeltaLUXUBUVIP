@@ -90,7 +90,7 @@ static NSString *LOC(NSString *key) {
     return isEnglishMode ? pair[1] : pair[0];
 }
 
-@interface DeltaMenu : NSObject <UITextFieldDelegate>
+@interface DeltaMenu : NSObject <UITextFieldDelegate, UIGestureRecognizerDelegate>
 @property (nonatomic, strong) UIView *menuView;
 @property (nonatomic, strong) CAGradientLayer *borderGradient;
 @property (nonatomic, strong) CADisplayLink *displayLink;
@@ -215,6 +215,13 @@ static MemScanner searchScanner;
     _menuView.userInteractionEnabled = YES;
 
     UIPanGestureRecognizer *panGesture = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(handlePan:)];
+    // Without this delegate, dragging the FOV/spin-speed sliders (or any control) near
+    // the low end kept fighting this same pan gesture on the whole menu - a
+    // UIPanGestureRecognizer on an ancestor view recognizes essentially immediately and
+    // cancels the touch delivered to a child UISlider's own drag tracking by default, so
+    // the slider's value either barely moved or never left its starting value before the
+    // window-drag took over, which looked like it kept "snapping back to default".
+    panGesture.delegate = self;
     [_menuView addGestureRecognizer:panGesture];
 
     [mainWindow addSubview:_menuView];
@@ -990,6 +997,24 @@ static MemScanner searchScanner;
         _lastPoint = _menuView.center;
     }
     _menuView.center = CGPointMake(_lastPoint.x + translation.x, _lastPoint.y + translation.y);
+}
+
+// Let sliders/switches/buttons/segmented controls/text fields handle their own touches
+// - only start dragging the whole menu when the touch begins somewhere else (a card's
+// background, the sidebar, empty space), not on an interactive control.
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldReceiveTouch:(UITouch *)touch {
+    UIView *view = touch.view;
+    while (view && view != _menuView) {
+        if ([view isKindOfClass:[UISlider class]] ||
+            [view isKindOfClass:[UISwitch class]] ||
+            [view isKindOfClass:[UIButton class]] ||
+            [view isKindOfClass:[UISegmentedControl class]] ||
+            [view isKindOfClass:[UITextField class]]) {
+            return NO;
+        }
+        view = view.superview;
+    }
+    return YES;
 }
 
 - (UIButton *)createButtonWithTitle:(NSString *)title frame:(CGRect)frame {

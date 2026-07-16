@@ -263,27 +263,27 @@ inline bool FindAimHeadTarget(void *camera, Vector3 &outHeadWorldPos, float heig
     return found;
 }
 
-// Player.m_CurrentRotateDirection (dump.cs OB54, instance field offset - NOT a
-// getRealOffset/ASLR-relative address, this is added directly to the object pointer).
-#define kPlayerCurrentRotateDirectionOffset 0x1EAC
-
 // ===== SPIN BOT =====
-// v1 wrote set_forward directly on the player's own Transform, which only visibly
-// spun while standing completely still - while moving/firing/jumping, the movement
-// system's own per-frame rotation update (Player.UpdateRotation /
-// UpdateRightAxisAndDoRotation, both found near this field in dump.cs) recomputes and
-// overwrites the Transform's rotation from movement/aim input every frame, fighting our
-// write (same category of bug as Camera.Render/set_forward never affecting aim - see
-// game_sdk_t::init()). This v2 instead writes m_CurrentRotateDirection, the field that
-// system itself reads as its "desired facing" input, hoping its own smoothing (see
-// MAX_ROTATION_DELTA/ROTATION_EXPONENT on Player) then carries our direction into the
-// actual Transform cooperatively instead of us fighting it. Unverified on-device -
-// mirrors the set_aim fix in spirit, but the previous attempt at this same kind of
-// "guess the right field/offset" swap (the head bone override) crashed the game, so
-// this needs real testing and may need another iteration or a full revert.
+// v2 tried writing Player.m_CurrentRotateDirection (dump.cs OB54 instance field,
+// offset 0x1EAC) directly instead of the Transform, hoping the movement system would
+// carry it into rotation itself - on-device it had zero effect at all. The field sits
+// right next to m_LastGrabRotateDirLeft and near the SnowSlideGrabRotate/
+// UpdateSnowSlideTurnEffect methods in dump.cs, which in hindsight means it's almost
+// certainly specific to a "snow slide grab" mechanic, not general character facing -
+// wrong guess, reverted.
+// Back to v1: set_forward on the player's own Transform (Component_GetTransform(local_player),
+// NOT the camera - unrelated to why set_forward never worked for aiming). Confirmed
+// on-device this only visibly spins while standing completely still; while moving,
+// firing, or jumping, the movement system's own per-frame rotation update overwrites
+// it every frame, so it has no visible effect then. Finding the actual authoritative
+// field/method for that would need more dump.cs digging and another on-device gamble -
+// left as-is for now since the last two guesses were wrong (one crashed the game).
 inline void ProcessSpinBot(void *local_player)
 {
     if (!Vars.SpinBot || !local_player) return;
+
+    void *transform = game_sdk->Component_GetTransform(local_player);
+    if (!transform) return;
 
     // Frame-rate independent: accumulate by real elapsed time rather than a fixed
     // per-frame step, so SpinSpeed (deg/sec) means the same thing regardless of fps.
@@ -298,8 +298,7 @@ inline void ProcessSpinBot(void *local_player)
     if (angleDeg >= 360.0f) angleDeg -= 360.0f;
 
     float rad = angleDeg * (float)M_PI / 180.0f;
-    Vector3 dir(sinf(rad), 0, cosf(rad));
-    *(Vector3 *)((char *)local_player + kPlayerCurrentRotateDirectionOffset) = dir;
+    game_sdk->set_forward(transform, Vector3(sinf(rad), 0, cosf(rad)));
 }
 
 // ===== OPTIMIZED ESP RENDERER =====
