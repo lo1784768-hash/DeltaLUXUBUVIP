@@ -55,6 +55,8 @@ static NSDictionary<NSString *, NSArray<NSString *> *> *LocStrings() {
             @"section_display": @[@"Hiển Thị", @"Display"],
             @"section_aim": @[@"Tự Động Ngắm", @"Auto Aim"],
             @"section_boost": @[@"Tăng Cường", @"Boost"],
+            @"aim_mode_always": @[@"Luôn Bật", @"Always"],
+            @"aim_mode_fire": @[@"Khi Bắn/Ngắm", @"Fire/Scope"],
             @"antena": @[@"Antena", @"Antena"],
             @"speed_x2": @[@"Tốc Độ x2", @"Speed x2"],
             @"speed_x8": @[@"Tốc Độ x8", @"Speed x8"],
@@ -116,6 +118,7 @@ static NSString *LOC(NSString *key) {
 @property (nonatomic, strong) UIView *modGocView;
 @property (nonatomic, strong) UIView *modModView;
 @property (nonatomic, strong) UISwitch *aimHeadSwitch;
+@property (nonatomic, strong) UISegmentedControl *aimModeControl;
 @property (nonatomic, strong) UISwitch *antenaSwitch;
 @property (nonatomic, strong) UISwitch *speedX2Switch;
 @property (nonatomic, strong) UISwitch *speedX8Switch;
@@ -458,6 +461,21 @@ static MemScanner searchScanner;
     _aimHeadSwitch = [self addToggleCardWithLocKey:@"aim_head" symbol:@"scope" frame:CGRectMake(btnX, btnY, btnW, cardH) action:@selector(toggleAimHead:) toView:scroll];
     btnY += cardH + btnGap;
 
+    // Two ways to run Aim Head: always snap while a target's in FOV, or only while the
+    // player is actually firing/scoped (less conspicuous, matches AimHead.md's AimWhen).
+    _aimModeControl = [[UISegmentedControl alloc] initWithItems:@[@"", @""]];
+    _aimModeControl.frame = CGRectMake(btnX, btnY, btnW, 26);
+    _aimModeControl.selectedSegmentIndex = Vars.AimHeadMode;
+    [self styleSegmentedControl:_aimModeControl];
+    [_aimModeControl addTarget:self action:@selector(aimModeChanged:) forControlEvents:UIControlEventValueChanged];
+    [scroll addSubview:_aimModeControl];
+    __weak UISegmentedControl *weakAimModeControl = _aimModeControl;
+    [self addLocalizedRefresher:^{
+        [weakAimModeControl setTitle:LOC(@"aim_mode_always") forSegmentAtIndex:0];
+        [weakAimModeControl setTitle:LOC(@"aim_mode_fire") forSegmentAtIndex:1];
+    }];
+    btnY += 26 + btnGap;
+
     // Radius is configured on the ESP tab's Show FOV Circle slider (same Vars.AimFOV) -
     // just a pointer note here, not a duplicate control.
     UILabel *aimNote = [[UILabel alloc] initWithFrame:CGRectMake(btnX + 8, btnY, btnW - 8, 14)];
@@ -611,6 +629,10 @@ static MemScanner searchScanner;
     BOOL state = sender.on;
     [self showToast:[NSString stringWithFormat:@"%@ %@", LOC(@"aim_head"), LOC(state ? @"on" : @"off")]];
     Vars.AimHead = state;
+}
+
+- (void)aimModeChanged:(UISegmentedControl *)sender {
+    Vars.AimHeadMode = (int)sender.selectedSegmentIndex;
 }
 
 - (void)toggleShowFovCircle:(UISwitch *)sender {
@@ -1161,6 +1183,10 @@ void game_sdk_t::init()
     this->set_aim = (void (*)(void *, Quaternion, bool))getRealOffset(0x53C4534);
     this->get_isLocalTeam = (bool (*)(void *))getRealOffset(0x55C5AC0);
     this->get_IsDieing = (bool (*)(void *))getRealOffset(0x53AA18C);
+    // Player.IsFiring()/get_IsSighting() - both non-virtual (no Slot: in dump.cs), safe
+    // to call directly like set_aim. Used to gate Aim Head's "only while firing/scoped" mode.
+    this->get_IsFiring = (bool (*)(void *))getRealOffset(0x53ACC9C);
+    this->get_IsSighting = (bool (*)(void *))getRealOffset(0x53B769C);
     this->get_MaxHP = (int (*)(void *))getRealOffset(0x5435A3C);
     this->GetHp = (int (*)(void *))getRealOffset(0x543592C);
     this->name = (monoString * (*)(void *player))getRealOffset(0x53BE8E0);

@@ -34,6 +34,11 @@ struct Vars_t
     bool counts = false;
     bool NoFog = true;
     bool AimHead = false;
+    // 0 = Always (snap every frame a target is in FOV, current behavior), 1 = only while
+    // actually firing or scoped (checked via game_sdk->get_IsFiring/get_IsSighting) -
+    // mirrors the AimWhen gate from the AimHead.md reference. Lets the user pick between
+    // the more "magnetic"/always-on feel and a less conspicuous, input-gated one.
+    int AimHeadMode = 0;
     // Shared: ESP tab's FOV circle radius IS Aim Head's snap radius, but the two stay
     // separate switches - Show FOV Circle just draws the circle, Aim Head does the actual
     // person-detection + snap. Radius kept modest (well under half a typical screen width)
@@ -64,6 +69,11 @@ public:
     void (*set_aim)(void *player, Quaternion rotation, bool sendToServer);
     bool (*get_isLocalTeam)(void *player);
     bool (*get_IsDieing)(void *player);
+    // Non-virtual instance methods on Player (dump.cs OB54, no vtable Slot: annotation -
+    // safe to call directly like set_aim). Used to gate Aim Head to "only while
+    // firing/scoped" mode.
+    bool (*get_IsFiring)(void *player);
+    bool (*get_IsSighting)(void *player);
     int (*get_MaxHP)(void *player);
     int (*GetHp)(void *player);
     monoString *(*name)(void *player);
@@ -396,7 +406,12 @@ inline void get_players()
         // game reads aim direction from the player's own aim state, not the camera.
         // Only runs the (moderately expensive) target search when Aim Head is actually on,
         // not just because the FOV circle is showing.
-        if (Vars.AimHead) {
+        // Mode 1 (Fire/Scope only) also skips the target search entirely when neither is
+        // true - besides matching what the user actually asked for, it's strictly less
+        // per-frame work than Mode 0, not more.
+        bool aimHeadShouldRun = Vars.AimHead &&
+            (Vars.AimHeadMode == 0 || game_sdk->get_IsFiring(local_player) || game_sdk->get_IsSighting(local_player));
+        if (aimHeadShouldRun) {
             void *camera = game_sdk->get_camera();
             void *camTransform = camera ? game_sdk->Component_GetTransform(camera) : nullptr;
             Vector3 aimHeadWorld;
