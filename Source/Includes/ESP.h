@@ -391,17 +391,26 @@ inline void get_players()
         if (Vars.AimHead) {
             frameAimWriteCount++;
             void *camera = game_sdk->get_camera();
+            void *camTransform = camera ? game_sdk->Component_GetTransform(camera) : nullptr;
             Vector3 aimHeadWorld;
             bool haveTarget = camera && FindAimHeadTarget(camera, aimHeadWorld);
-            if (haveTarget) {
-                void *camTransform = game_sdk->Component_GetTransform(camera);
-                if (camTransform) {
-                    Vector3 camPos = game_sdk->get_position(camTransform);
-                    Vector3 dir = Vector3::Normalized(aimHeadWorld - camPos);
-                    game_sdk->set_forward(camTransform, dir);
-                }
+            if (haveTarget && camTransform) {
+                Vector3 camPos = game_sdk->get_position(camTransform);
+                Vector3 dir = Vector3::Normalized(aimHeadWorld - camPos);
+                game_sdk->set_forward(camTransform, dir);
             }
             [renderer drawTextAt:SimpleVec2(sW / 2.0f, 60) text:[NSString stringWithFormat:@"Frame:%llu RenderHook:%llu Target:%@", frameAimWriteCount, g_aimHookCallCount, haveTarget ? @"YES" : @"NO"]];
+
+            // Diagnostic: prints the camera's CURRENT forward vector every frame, whether or
+            // not a target is found. Look around manually with no enemy nearby (Target:NO) and
+            // watch these numbers - if they track your look direction, reading/writing this
+            // camera is the right one and only the write itself fails to stick; if they never
+            // change no matter how you look around, get_camera()/its Transform isn't actually
+            // the camera the game renders through.
+            if (camTransform) {
+                Vector3 fwd = game_sdk->GetForward(camTransform);
+                [renderer drawTextAt:SimpleVec2(sW / 2.0f, 78) text:[NSString stringWithFormat:@"Fwd: %.2f, %.2f, %.2f", fwd.x, fwd.y, fwd.z]];
+            }
         }
 
         for (int u = 0; u < players->getSize(); u++) {
