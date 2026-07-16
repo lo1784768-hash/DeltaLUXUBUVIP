@@ -44,6 +44,7 @@ static NSDictionary<NSString *, NSArray<NSString *> *> *LocStrings() {
             @"skeleton": @[@"Khung Xương", @"Skeleton"],
             @"enemy_count": @[@"Số Địch", @"Enemy Count"],
             @"aim_head": @[@"Ngắm Đầu", @"Aim Head"],
+            @"show_fov_circle": @[@"Hiện Vòng FOV", @"Show FOV Circle"],
             @"antena": @[@"Antena", @"Antena"],
             @"speed_x2": @[@"Tốc Độ x2", @"Speed x2"],
             @"speed_x8": @[@"Tốc Độ x8", @"Speed x8"],
@@ -96,6 +97,7 @@ static NSString *LOC(NSString *key) {
 @property (nonatomic, strong) UISwitch *distanceSwitch;
 @property (nonatomic, strong) UISwitch *skeletonSwitch;
 @property (nonatomic, strong) UISwitch *countSwitch;
+@property (nonatomic, strong) UISwitch *showFovCircleSwitch;
 @property (nonatomic, strong) UISlider *fovCircleSlider;
 @property (nonatomic, strong) UILabel *fovCircleLabel;
 
@@ -351,6 +353,33 @@ static MemScanner searchScanner;
     _enableSwitch = [self addToggleCardWithLocKey:@"master_switch" frame:CGRectMake(padX, y, fullW, cardH) action:@selector(toggleEnable:) toView:scroll];
     y += cardH + gap;
 
+    // Back to two separate switches per the user: Show FOV Circle (visual only, this tab)
+    // and Aim Head (MOD tab, the only thing with person-detection logic) - they now
+    // understand why Aim Head alone drives the snap, they just want the switches split.
+    _showFovCircleSwitch = [self addToggleCardWithLocKey:@"show_fov_circle" frame:CGRectMake(padX, y, fullW, cardH) action:@selector(toggleShowFovCircle:) toView:scroll];
+    y += cardH + gap;
+
+    _fovCircleLabel = [[UILabel alloc] initWithFrame:CGRectMake(padX, y, fullW, 14)];
+    _fovCircleLabel.font = [UIFont systemFontOfSize:10.5f weight:UIFontWeightMedium];
+    _fovCircleLabel.textColor = COLOR_TEXT_DIM;
+    [scroll addSubview:_fovCircleLabel];
+    __weak UILabel *weakFovCircleLabel = _fovCircleLabel;
+    [self addLocalizedRefresher:^{
+        weakFovCircleLabel.text = [NSString stringWithFormat:isEnglishMode ? @"Radius: %.0fpx" : @"Bán kính: %.0fpx", Vars.AimFOV];
+    }];
+    y += 14 + 2;
+
+    _fovCircleSlider = [[UISlider alloc] initWithFrame:CGRectMake(padX, y, fullW, 20)];
+    _fovCircleSlider.minimumValue = 40.0f;
+    _fovCircleSlider.maximumValue = 200.0f;
+    _fovCircleSlider.value = Vars.AimFOV;
+    _fovCircleSlider.minimumTrackTintColor = COLOR_CYAN;
+    _fovCircleSlider.maximumTrackTintColor = [UIColor colorWithWhite:1.0 alpha:0.12];
+    _fovCircleSlider.thumbTintColor = COLOR_TEXT;
+    [_fovCircleSlider addTarget:self action:@selector(fovCircleRadiusChanged:) forControlEvents:UIControlEventValueChanged];
+    [scroll addSubview:_fovCircleSlider];
+    y += 20 + gap;
+
     NSArray<NSString *> *gridKeys = @[@"box", @"lines", @"names", @"health", @"distance", @"skeleton", @"enemy_count"];
     NSArray<NSValue *> *gridSelectors = @[
         [NSValue valueWithPointer:@selector(toggleBox:)],
@@ -413,28 +442,17 @@ static MemScanner searchScanner;
     _aimHeadSwitch = [self addToggleCardWithLocKey:@"aim_head" frame:CGRectMake(btnX, btnY, btnW, cardH) action:@selector(toggleAimHead:) toView:scroll];
     btnY += cardH + btnGap;
 
-    // One toggle: turning Aim Head on both draws the FOV circle (get_players() in ESP.h)
-    // and performs the snap, both using this same Vars.AimFOV radius.
-    _fovCircleLabel = [[UILabel alloc] initWithFrame:CGRectMake(btnX, btnY, btnW, 14)];
-    _fovCircleLabel.font = [UIFont systemFontOfSize:10.5f weight:UIFontWeightMedium];
-    _fovCircleLabel.textColor = COLOR_TEXT_DIM;
-    [scroll addSubview:_fovCircleLabel];
-    __weak UILabel *weakFovCircleLabel = _fovCircleLabel;
+    // Radius is configured on the ESP tab's Show FOV Circle slider (same Vars.AimFOV) -
+    // just a pointer note here, not a duplicate control.
+    UILabel *aimNote = [[UILabel alloc] initWithFrame:CGRectMake(btnX, btnY, btnW, 14)];
+    aimNote.font = [UIFont systemFontOfSize:10.5f weight:UIFontWeightMedium];
+    aimNote.textColor = COLOR_TEXT_DIM;
+    aimNote.adjustsFontSizeToFitWidth = YES;
+    [scroll addSubview:aimNote];
     [self addLocalizedRefresher:^{
-        weakFovCircleLabel.text = [NSString stringWithFormat:isEnglishMode ? @"Range: %.0fpx" : @"Bán kính: %.0fpx", Vars.AimFOV];
+        aimNote.text = isEnglishMode ? @"Range: FOV circle slider (ESP tab)" : @"Bán kính: xem thanh FOV bên tab ESP";
     }];
-    btnY += 14 + 2;
-
-    _fovCircleSlider = [[UISlider alloc] initWithFrame:CGRectMake(btnX, btnY, btnW, 20)];
-    _fovCircleSlider.minimumValue = 40.0f;
-    _fovCircleSlider.maximumValue = 200.0f;
-    _fovCircleSlider.value = Vars.AimFOV;
-    _fovCircleSlider.minimumTrackTintColor = COLOR_CYAN;
-    _fovCircleSlider.maximumTrackTintColor = [UIColor colorWithWhite:1.0 alpha:0.12];
-    _fovCircleSlider.thumbTintColor = COLOR_TEXT;
-    [_fovCircleSlider addTarget:self action:@selector(fovCircleRadiusChanged:) forControlEvents:UIControlEventValueChanged];
-    [scroll addSubview:_fovCircleSlider];
-    btnY += 20 + btnGap;
+    btnY += 14 + btnGap;
 
     _antenaSwitch = [self addToggleCardWithLocKey:@"antena" frame:CGRectMake(btnX, btnY, btnW, cardH) action:@selector(toggleAntena:) toView:scroll];
     btnY += cardH + btnGap;
@@ -576,9 +594,13 @@ static MemScanner searchScanner;
     Vars.AimHead = state;
 }
 
+- (void)toggleShowFovCircle:(UISwitch *)sender {
+    Vars.ShowFOVCircle = sender.on;
+}
+
 - (void)fovCircleRadiusChanged:(UISlider *)sender {
     Vars.AimFOV = sender.value;
-    _fovCircleLabel.text = [NSString stringWithFormat:isEnglishMode ? @"Range: %.0fpx" : @"Bán kính: %.0fpx", Vars.AimFOV];
+    _fovCircleLabel.text = [NSString stringWithFormat:isEnglishMode ? @"Radius: %.0fpx" : @"Bán kính: %.0fpx", Vars.AimFOV];
 }
 
 - (void)toggleAntena:(UISwitch *)sender {
@@ -916,7 +938,7 @@ static MemScanner searchScanner;
 
     if (!MenDeal) return;
 
-    NSArray<UISwitch *> *subSwitches = @[_boxSwitch, _linesSwitch, _nameSwitch, _healthSwitch, _distanceSwitch, _skeletonSwitch, _countSwitch];
+    NSArray<UISwitch *> *subSwitches = @[_boxSwitch, _linesSwitch, _nameSwitch, _healthSwitch, _distanceSwitch, _skeletonSwitch, _countSwitch, _showFovCircleSwitch];
     for (UISwitch *sw in subSwitches) {
         sw.enabled = Vars.Enable;
         sw.superview.alpha = Vars.Enable ? 1.0f : 0.4f;
