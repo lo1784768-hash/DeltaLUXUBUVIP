@@ -69,6 +69,12 @@ static const char *kJunkDNSDomains[] = {
     "adsrvr.org",
     "amazon-adsystem.com",
     "bidswitch.net",
+    // Garena/Free Fire's own in-game banner/promo image CDN - not a third-party ad
+    // network, but the in-game promotional banners it serves are laggy to load and
+    // unwanted, per user request.
+    "gin.freefiremobile.com",
+    "y5en.com",
+    "ggblueshark.com",
 };
 
 inline bool isJunkDNSDomain(const char *hostname) {
