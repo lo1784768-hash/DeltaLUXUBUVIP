@@ -6,44 +6,47 @@
 #import <string.h>
 #import <unistd.h>
 
-#include <string>
-
 #import "MemoryUtils.h"
 
-// Redirects open()/fopen()/access() calls for files under the game bundle's Data/
-// directory to the mirrored replacement directory at Library/Caches/Delta/Data/,
-// falling back to the original bundle asset whenever no replacement file exists at the
-// mirrored path.
-//
-// g_bundlePrefix/g_moddedPrefix are computed exactly once, in the constructor, before
-// any other code in the process runs (dyld serializes image-load constructors ahead of
-// any thread spawning) and are never written again afterward - so concurrent reads from
-// the many threads that load game assets need no lock. Adding a mutex here would only
-// cost latency on one of the hottest syscall paths in the process for no actual benefit,
-// since there is nothing left to race on.
-static std::string g_bundlePrefix;  // e.g. ".../FreeFire.app/Data/"
-static std::string g_moddedPrefix;  // e.g. ".../Library/Caches/Delta/Data/"
+// Quản lý tiền tố đường dẫn dạng C-string thô và độ dài của chúng để tối ưu hóa so sánh tốc độ cao
+static char g_bundlePrefixC[1024] = {0};
+static size_t g_bundlePrefixLen = 0;
 
-// redirectAssetPath() needs to check whether a modded file exists, but access() itself
-// is one of the functions being hooked below - it must call the ORIGINAL access (this
-// pointer) for that check, never the bare libc access()/hooked_access(), or every
-// lookup would recurse into itself.
+static char g_moddedPrefixC[1024] = {0};
+static size_t g_moddedPrefixLen = 0;
+
+// Con trỏ gốc của hàm access bắt buộc phải được gán trước
 static int (*orig_access)(const char *, int);
 
-inline std::string redirectAssetPath(const char *path) {
-    if (!path) return std::string();
-    if (g_bundlePrefix.empty()) return path; // constructor hasn't run yet (or found no bundle) - passthrough
+inline const char* redirectAssetPath(const char *path) {
+    if (!path || g_bundlePrefixLen == 0) return path;
 
-    const char *found = strstr(path, g_bundlePrefix.c_str());
-    if (!found) return path;
-
-    std::string relative(found + g_bundlePrefix.size());
-    std::string moddedPath = g_moddedPrefix + relative;
-
-    if (orig_access(moddedPath.c_str(), F_OK) == 0) {
-        return moddedPath;
+    // TỐI ƯU 1: Kiểm tra xem đường dẫn đầu vào có bắt đầu bằng g_bundlePrefix hay không.
+    // Thay vì dùng strstr chậm chạp, ta dùng strncmp để so sánh trực tiếp số ký túc định trước.
+    if (strncmp(path, g_bundlePrefixC, g_bundlePrefixLen) != 0) {
+        return path;
     }
-    return path;
+
+    // TỐI ƯU 2: Sử dụng thread_local buffer thay vì std::string để triệt tiêu việc cấp phát/giải phóng bộ nhớ trên RAM.
+    // thread_local giúp an toàn tuyệt đối khi game tải dữ liệu đa luồng (multi-threading).
+    static thread_local char redirectedBuffer[2048];
+
+    // Lấy phần đường dẫn tương đối (bỏ phần tiền tố bundle đi)
+    const char *relative = path + g_bundlePrefixLen;
+
+    // Ghép đường dẫn mới: g_moddedPrefixC + relative
+    // Dùng snprintf an toàn chống tràn bộ đệm (Buffer Overflow)
+    int written = snprintf(redirectedBuffer, sizeof(redirectedBuffer), "%s%s", g_moddedPrefixC, relative);
+    if (written < 0 || written >= (int)sizeof(redirectedBuffer)) {
+        return path; // Nếu đường dẫn quá dài vượt bộ đệm, fallback về file gốc để an toàn
+    }
+
+    // KIỂM TRA DỰ PHÒNG CHÍNH XÁC: Gọi hàm access gốc
+    if (orig_access(redirectedBuffer, F_OK) == 0) {
+        return redirectedBuffer; // Tìm thấy file mod trong Delta, chuyển hướng thành công
+    }
+    
+    return path; // Không tìm thấy file mod, đọc file gốc trong App Bundle
 }
 
 static int (*orig_open)(const char *, int, ...);
@@ -56,20 +59,20 @@ inline int hooked_open(const char *path, int oflag, ...) {
         mode = (mode_t)va_arg(args, int);
         va_end(args);
     }
-    std::string redirected = redirectAssetPath(path);
-    return orig_open(redirected.c_str(), oflag, mode);
+    const char *redirected = redirectAssetPath(path);
+    return orig_open(redirected, oflag, mode);
 }
 
 static FILE *(*orig_fopen)(const char *, const char *);
 
 inline FILE *hooked_fopen(const char *filename, const char *mode) {
-    std::string redirected = redirectAssetPath(filename);
-    return orig_fopen(redirected.c_str(), mode);
+    const char *redirected = redirectAssetPath(filename);
+    return orig_fopen(redirected, mode);
 }
 
 inline int hooked_access(const char *path, int mode) {
-    std::string redirected = redirectAssetPath(path);
-    return orig_access(redirected.c_str(), mode);
+    const char *redirected = redirectAssetPath(path);
+    return orig_access(redirected, mode);
 }
 
 __attribute__((constructor))
@@ -77,20 +80,26 @@ static void initDeltaVirtualFS() {
     @autoreleasepool {
         NSString *bundlePath = [[NSBundle mainBundle] bundlePath];
         if (bundlePath) {
-            g_bundlePrefix = std::string([bundlePath UTF8String]) + "/Data/";
+            NSString *bundleData = [bundlePath stringByAppendingString:@"/Data/"];
+            strncpy(g_bundlePrefixC, [bundleData UTF8String], sizeof(g_bundlePrefixC) - 1);
+            g_bundlePrefixLen = strlen(g_bundlePrefixC);
         }
 
         NSArray<NSString *> *cachesPaths = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES);
         NSString *cachesDir = cachesPaths.firstObject;
-        NSString *moddedDataDir = [cachesDir stringByAppendingPathComponent:@"Delta/Data"];
-        g_moddedPrefix = std::string([moddedDataDir UTF8String]) + "/";
+        if (cachesDir) {
+            // stringByAppendingString: (not stringByAppendingPathComponent:, which
+            // strips the trailing "/" from its argument) so the "/" between Data and
+            // the relative asset path is guaranteed present - without it, every
+            // redirected path is missing a separator (".../DataTextures/foo.png"),
+            // access() always fails, and the whole redirect silently never fires.
+            NSString *moddedDataDir = [cachesDir stringByAppendingString:@"/Delta/Data/"];
+            strncpy(g_moddedPrefixC, [moddedDataDir UTF8String], sizeof(g_moddedPrefixC) - 1);
+            g_moddedPrefixLen = strlen(g_moddedPrefixC);
+        }
     }
 
-    // access() must be hooked first: redirectAssetPath() (used by all three hooks)
-    // calls orig_access(), so it needs to already be populated before open/fopen can
-    // safely be exercised. HOOKSYM sets the orig_* pointer synchronously, so this order
-    // just avoids a brief window where orig_access would still be null if open/fopen
-    // somehow fired before this line - harmless either way, but cheap to be explicit.
+    // Thiết lập Hook đồng bộ qua thư viện MemoryUtils của bạn
     HOOKSYM("access", hooked_access, orig_access);
     HOOKSYM("open", hooked_open, orig_open);
     HOOKSYM("fopen", hooked_fopen, orig_fopen);
