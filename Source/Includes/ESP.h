@@ -27,6 +27,12 @@ struct SimpleVec2 {
 #define kHealthYellowThreshold 0.3f
 #define kHealthGreenThreshold 0.6f
 
+// Shared with Menu.mm's fovCircleRadiusChanged: - dragging the FOV/Aim Head radius
+// slider all the way to its minimum is treated as "use the default radius" rather than
+// literally the slider's floor value, so there's a quick, obvious way back to a sane
+// default rather than having to eyeball a specific pixel value.
+#define kDefaultAimFOV 120.0f
+
 // ===== SIMPLIFIED VARIABLES =====
 struct Vars_t
 {
@@ -62,7 +68,7 @@ struct Vars_t
     // person-detection + snap. Radius kept modest (well under half a typical screen width)
     // so the drawn circle stays fully on-screen - at the old default of 250 (slider allowed
     // up to 400) it was mostly clipped off both side edges on a ~400pt-wide screen.
-    float AimFOV = 120.0f;
+    float AimFOV = kDefaultAimFOV;
     bool ShowFOVCircle = false;
     // Continuously rotates the local player's own character (not the camera/aim) - see
     // ProcessSpinBot below. SpinSpeed is degrees per second, adjustable via the Mod tab

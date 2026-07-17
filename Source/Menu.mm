@@ -713,8 +713,16 @@ static MemScanner searchScanner;
 }
 
 - (void)fovCircleRadiusChanged:(UISlider *)sender {
-    Vars.AimFOV = sender.value;
-    _fovCircleLabel.text = [NSString stringWithFormat:isEnglishMode ? @"Radius: %.0fpx" : @"Bán kính: %.0fpx", Vars.AimFOV];
+    // Dragged all the way to the floor (40px) = "use the default radius" instead of
+    // literally 40px - an explicit, obvious way back to a sane value instead of the
+    // slider's numeric minimum.
+    if (sender.value <= sender.minimumValue + 0.5f) {
+        Vars.AimFOV = kDefaultAimFOV;
+        _fovCircleLabel.text = isEnglishMode ? @"Radius: Default" : @"Bán kính: Mặc Định";
+    } else {
+        Vars.AimFOV = sender.value;
+        _fovCircleLabel.text = [NSString stringWithFormat:isEnglishMode ? @"Radius: %.0fpx" : @"Bán kính: %.0fpx", Vars.AimFOV];
+    }
 }
 
 - (void)toggleAntena:(UISwitch *)sender {
