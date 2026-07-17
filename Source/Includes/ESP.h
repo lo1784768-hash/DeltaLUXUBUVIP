@@ -31,7 +31,7 @@ struct SimpleVec2 {
 // slider all the way to its minimum is treated as "use the default radius" rather than
 // literally the slider's floor value, so there's a quick, obvious way back to a sane
 // default rather than having to eyeball a specific pixel value.
-#define kDefaultAimFOV 120.0f
+#define kDefaultAimFOV 240.0f
 
 // ===== SIMPLIFIED VARIABLES =====
 struct Vars_t
@@ -65,9 +65,11 @@ struct Vars_t
     bool AimPreferLowHP = false;
     // Shared: ESP tab's FOV circle radius IS Aim Head's snap radius, but the two stay
     // separate switches - Show FOV Circle just draws the circle, Aim Head does the actual
-    // person-detection + snap. Radius kept modest (well under half a typical screen width)
-    // so the drawn circle stays fully on-screen - at the old default of 250 (slider allowed
-    // up to 400) it was mostly clipped off both side edges on a ~400pt-wide screen.
+    // person-detection + snap. Note: at 240 (current default, per user request) the
+    // circle's ~480px diameter is wider than a typical ~400pt-wide screen, so it will
+    // visibly clip off both side edges - this was flagged once before at 250 for the
+    // same reason. Kept at 240 anyway since that's what was explicitly asked for; drop
+    // it back down (e.g. to 120) if the clipping turns out to look wrong in practice.
     float AimFOV = kDefaultAimFOV;
     bool ShowFOVCircle = false;
     // Continuously rotates the local player's own character (not the camera/aim) - see

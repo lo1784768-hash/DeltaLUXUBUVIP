@@ -34,6 +34,11 @@ static const char *kJunkDNSDomains[] = {
     "chartboost.com",
     "flurry.com",
     "branch.io",
+    "gin.freefiremobile.com",
+    "y5en.com",
+    "unity3d.com",
+    "appsflyersdk.com",
+    "ggblueshark.com",
 };
 
 inline bool isJunkDNSDomain(const char *hostname) {
