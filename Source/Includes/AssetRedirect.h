@@ -11,9 +11,9 @@
 #import "MemoryUtils.h"
 
 // Redirects open()/fopen() calls for files under the game bundle's Data/ directory to
-// a mirrored replacement directory (populated separately, e.g. by extracting
-// Delta.zip via libarchive/minizip into NSCachesDirectory), falling back to the
-// original bundle asset whenever no replacement file exists at the mirrored path.
+// the mirrored replacement directory shipped alongside it in the same bundle
+// (FreeFire.app/Delta/Data/...), falling back to the original bundle asset whenever no
+// replacement file exists at the mirrored path.
 //
 // g_bundlePrefix/g_moddedPrefix are computed exactly once, in the constructor, before
 // any other code in the process runs (dyld serializes image-load constructors ahead of
@@ -22,7 +22,7 @@
 // cost latency on one of the hottest syscall paths in the process for no actual benefit,
 // since there is nothing left to race on.
 static std::string g_bundlePrefix;  // e.g. ".../FreeFire.app/Data/"
-static std::string g_moddedPrefix;  // e.g. ".../Library/Caches/Delta_Extracted/Data/"
+static std::string g_moddedPrefix;  // e.g. ".../FreeFire.app/Delta/Data/"
 
 inline std::string redirectAssetPath(const char *path) {
     if (!path) return std::string();
@@ -67,12 +67,8 @@ static void initDeltaVirtualFS() {
         NSString *bundlePath = [[NSBundle mainBundle] bundlePath];
         if (bundlePath) {
             g_bundlePrefix = std::string([bundlePath UTF8String]) + "/Data/";
+            g_moddedPrefix = std::string([bundlePath UTF8String]) + "/Delta/Data/";
         }
-
-        NSArray<NSString *> *cachesPaths = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES);
-        NSString *cachesDir = cachesPaths.firstObject;
-        NSString *extractedDataDir = [cachesDir stringByAppendingPathComponent:@"Delta_Extracted/Data"];
-        g_moddedPrefix = std::string([extractedDataDir UTF8String]) + "/";
     }
 
     HOOKSYM("open", hooked_open, orig_open);
