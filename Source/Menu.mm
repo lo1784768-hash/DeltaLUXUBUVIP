@@ -873,7 +873,9 @@ game_sdk_t *game_sdk = new game_sdk_t();
         (m & 8) ? @"✓" : @"✗", (m & 16) ? @"✓" : @"✗"];
 
     NSString *extractLine;
-    if (DeltaVFS_extractRan()) {
+    if (!DeltaVFS_zipFound()) {
+        extractLine = isEnglishMode ? @"Delta.zip: NOT FOUND at source path" : @"Delta.zip: KHÔNG THẤY ở đường dẫn nguồn";
+    } else if (DeltaVFS_extractRan()) {
         extractLine = [NSString stringWithFormat:isEnglishMode ? @"Unzip: DONE (%u files)" : @"Giải nén: XONG (%u file)", DeltaVFS_extractedFiles()];
     } else {
         extractLine = isEnglishMode ? @"Unzip: skipped (already extracted)" : @"Giải nén: bỏ qua (đã bung trước đó)";

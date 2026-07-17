@@ -12,9 +12,10 @@
 
 #import "MemoryUtils.h"
 
-// Đường dẫn gói Delta.zip đóng kèm trong tweak (đặt cùng chỗ với LogoDelta.png)
-// -> layout/Library/Application Support/DeltaESP/Delta.zip
-#define DELTA_ZIP_SOURCE_PATH "/Library/Application Support/DeltaESP/Delta.zip"
+// Gói Delta.zip nằm NGAY TRONG App Bundle: FreeFire.app/Delta.zip
+// (đường dẫn đầy đủ được dựng lúc chạy từ bundlePath vì UUID bundle chỉ biết khi runtime)
+#define DELTA_ZIP_BUNDLE_NAME "Delta.zip"
+static char g_deltaZipPathC[1152] = {0};   // Đường dẫn tuyệt đối tới Delta.zip, gán trong constructor
 
 // Quản lý tiền tố đường dẫn gốc của App Bundle và thư mục Delta trong Cache
 static char g_bundlePrefixC[1024] = {0};
@@ -36,6 +37,7 @@ static std::atomic<unsigned long long> g_deltaBundleCalls{0};// Lời gọi có 
 static std::atomic<unsigned int> g_deltaExtractedFiles{0};   // Số file đã bung ra từ Delta.zip
 static std::atomic<unsigned int> g_deltaHooksOK{0};          // Bitmask hook cài đặt thành công: 1=open 2=fopen 4=access 8=stat 16=lstat
 static std::atomic<bool> g_deltaExtractRan{false};           // Đã chạy bước giải nén trong phiên này chưa
+static std::atomic<bool> g_deltaZipFound{false};             // Có tìm thấy file Delta.zip tại đường dẫn nguồn không
 static char g_deltaLastHitPath[1024] = {0};                  // Đường dẫn (tương đối) được phục vụ từ Delta gần nhất
 static char g_deltaLastAnyPath[1024] = {0};                  // Path bất kỳ gần nhất game mở (debug: xem game đọc ở đâu)
 
@@ -47,9 +49,11 @@ inline unsigned long long DeltaVFS_bundleCalls()   { return g_deltaBundleCalls.l
 inline unsigned int       DeltaVFS_extractedFiles(){ return g_deltaExtractedFiles.load(std::memory_order_relaxed); }
 inline unsigned int       DeltaVFS_hooksOK()        { return g_deltaHooksOK.load(std::memory_order_relaxed); }
 inline bool               DeltaVFS_extractRan()     { return g_deltaExtractRan.load(std::memory_order_relaxed); }
+inline bool               DeltaVFS_zipFound()        { return g_deltaZipFound.load(std::memory_order_relaxed); }
 inline const char*        DeltaVFS_lastHitPath()    { return g_deltaLastHitPath; }
 inline const char*        DeltaVFS_lastAnyPath()    { return g_deltaLastAnyPath; }
 inline const char*        DeltaVFS_deltaDir()       { return g_moddedPrefixC; }
+inline const char*        DeltaVFS_zipPath()         { return g_deltaZipPathC; }
 
 // ============================================================================
 //  PHẦN 1: GIẢI NÉN DELTA.ZIP (Bung gói mod vào thẳng thư mục Caches/Delta/)
@@ -339,14 +343,19 @@ static void initDeltaAllTrafficVFS() {
             NSString *moddedDataDir = [bundlePath stringByAppendingString:@"/Delta/"];
             strncpy(g_moddedPrefixC, [moddedDataDir UTF8String], sizeof(g_moddedPrefixC) - 1);
             g_moddedPrefixLen = strlen(g_moddedPrefixC);
+
+            // Dựng đường dẫn tới gói Delta.zip đặt NGAY TRONG bundle: FreeFire.app/Delta.zip
+            NSString *zipPath = [bundlePath stringByAppendingString:@"/" DELTA_ZIP_BUNDLE_NAME];
+            strncpy(g_deltaZipPathC, [zipPath UTF8String], sizeof(g_deltaZipPathC) - 1);
         }
 
         // ============ GIẢI NÉN DELTA.ZIP KHI MỞ GAME (chạy TRƯỚC khi cài hook) ============
         // Phải bung xong toàn bộ file mod ra FreeFire.app/Delta/ trước khi game bắt đầu đọc asset,
         // nếu không redirect sẽ trỏ vào thư mục rỗng và game vẫn đọc bundle gốc.
-        if (g_moddedPrefixLen > 0) {
+        if (g_moddedPrefixLen > 0 && g_deltaZipPathC[0]) {
             struct stat zipSt;
-            if (stat(DELTA_ZIP_SOURCE_PATH, &zipSt) == 0) {
+            if (stat(g_deltaZipPathC, &zipSt) == 0) {
+                g_deltaZipFound.store(true, std::memory_order_relaxed);
                 // Đảm bảo thư mục đích tồn tại
                 ar_mkpath(g_moddedPrefixC);
 
@@ -356,7 +365,7 @@ static void initDeltaAllTrafficVFS() {
                 // Chỉ giải nén khi chưa bung hoặc gói Delta.zip đã được cập nhật (mtime/size đổi)
                 if (ar_needExtract(markerPath, &zipSt)) {
                     g_deltaExtractRan.store(true, std::memory_order_relaxed);
-                    ar_extractZip(DELTA_ZIP_SOURCE_PATH, g_moddedPrefixC);
+                    ar_extractZip(g_deltaZipPathC, g_moddedPrefixC);
                     ar_writeMarker(markerPath, &zipSt);
                 }
             }
