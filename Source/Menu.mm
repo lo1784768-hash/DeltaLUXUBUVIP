@@ -141,7 +141,6 @@ static NSString *LOC(NSString *key) {
 
 // Info tab
 @property (nonatomic, strong) UILabel *statusLabel;
-@property (nonatomic, strong) UILabel *dnsDebugLabel;
 
 // Scan tab (manual live search - Cheat Engine style)
 @property (nonatomic, strong) UISegmentedControl *scanTypeControl;
@@ -173,10 +172,11 @@ game_sdk_t *game_sdk = new game_sdk_t();
 static MemScanner searchScanner;
 
 + (void)load {
-    // Registered immediately, not inside the 3s-delayed block below - banner/ad
-    // requests can fire during early app launch, well before that delay elapses, and
-    // NSURLProtocol registration doesn't depend on game_sdk/UIApplication being ready.
-    installJunkAdURLProtocolHook();
+    // Called immediately, not inside the 3s-delayed block below - banner/ad requests
+    // can fire during early app launch, well before that delay elapses, and neither the
+    // getaddrinfo hook nor NSURLProtocol registration depend on game_sdk/UIApplication
+    // being ready.
+    installDNSBlockHook();
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         mainWindow = [UIApplication sharedApplication].keyWindow;
@@ -185,7 +185,6 @@ static MemScanner searchScanner;
         static bool sdkInitialized = false;
         if (!sdkInitialized) {
             game_sdk->init();
-            installDNSBlockHook();
             sdkInitialized = true;
         }
 
@@ -823,17 +822,6 @@ static MemScanner searchScanner;
     [langControl addTarget:self action:@selector(languageChanged:) forControlEvents:UIControlEventValueChanged];
     [langRow addSubview:langControl];
 
-    // Temporary diagnostic for the junk-DNS/ad blocker - shows the last several hosts
-    // actually seen (and blocked) by JunkAdURLProtocol, to confirm whether a specific
-    // domain (e.g. gin.freefiremobile.com) is ever even reaching canInitWithRequest: at
-    // all, as opposed to it loading through some other path entirely. Remove once the
-    // banner-blocking question is settled.
-    _dnsDebugLabel = [[UILabel alloc] initWithFrame:CGRectMake(4, 84, frame.size.width - 8, 160)];
-    _dnsDebugLabel.font = [UIFont systemFontOfSize:8.5f weight:UIFontWeightMedium];
-    _dnsDebugLabel.textColor = COLOR_TEXT_DIM;
-    _dnsDebugLabel.numberOfLines = 0;
-    [page addSubview:_dnsDebugLabel];
-
     return page;
 }
 
@@ -1220,11 +1208,6 @@ static const NSInteger kCardIconTag = 9002;
     get_players();
 
     if (!MenDeal) return;
-
-    _dnsDebugLabel.text = [NSString stringWithFormat:@"URL checks: %lu, blocked: %lu\nChecked: %@\nBlocked: %@",
-                            g_urlBlockCallCount, g_urlBlockedCount,
-                            joinURLLog(g_checkedURLHosts, g_urlBlockCallCount),
-                            joinURLLog(g_blockedURLHosts, g_urlBlockedCount)];
 
     NSArray<UISwitch *> *subSwitches = @[_boxSwitch, _linesSwitch, _nameSwitch, _healthSwitch, _distanceSwitch, _skeletonSwitch, _countSwitch, _showFovCircleSwitch];
     for (UISwitch *sw in subSwitches) {
