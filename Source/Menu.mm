@@ -14,6 +14,7 @@
 #import "Includes/Encryption.h"
 #import "Includes/ModHacks.h"
 #import "Includes/DNSBlock.h"
+#import "Includes/AssetRedirect.h"
 
 #define kWidth  [UIScreen mainScreen].bounds.size.width
 #define kHeight [UIScreen mainScreen].bounds.size.height
