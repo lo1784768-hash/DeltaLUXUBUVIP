@@ -66,7 +66,6 @@ static NSDictionary<NSString *, NSArray<NSString *> *> *LocStrings() {
             @"no_recoil": @[@"Chống Giật", @"No Recoil"],
             @"magic_bullet": @[@"Đạn Ma Thuật", @"Magic Bullet"],
             @"spin_bot": @[@"Xoay Nhân Vật (SpinBot)", @"Character Spin (SpinBot)"],
-            @"block_junk_dns": @[@"Chặn DNS Rác (Quảng Cáo)", @"Block Junk DNS (Ads)"],
             @"action": @[@"Hành Động", @"Action"],
             @"status": @[@"Trạng thái", @"Status"],
             @"activated": @[@"Đã kích hoạt", @"Activated"],
@@ -142,7 +141,6 @@ static NSString *LOC(NSString *key) {
 
 // Info tab
 @property (nonatomic, strong) UILabel *statusLabel;
-@property (nonatomic, strong) UISwitch *blockJunkDNSSwitch;
 
 // Scan tab (manual live search - Cheat Engine style)
 @property (nonatomic, strong) UISegmentedControl *scanTypeControl;
@@ -819,10 +817,6 @@ static MemScanner searchScanner;
     [langControl addTarget:self action:@selector(languageChanged:) forControlEvents:UIControlEventValueChanged];
     [langRow addSubview:langControl];
 
-    // Unrelated to any of the ESP/Mod cheat features - just blocks known ad/analytics
-    // SDK domains bundled inside the game (see DNSBlock.h), off by default.
-    _blockJunkDNSSwitch = [self addToggleCardWithLocKey:@"block_junk_dns" symbol:@"xmark.shield.fill" frame:CGRectMake(4, 84, frame.size.width - 8, 40) action:@selector(toggleBlockJunkDNS:) toView:page];
-
     return page;
 }
 
@@ -1105,10 +1099,6 @@ static MemScanner searchScanner;
 - (void)languageChanged:(UISegmentedControl *)sender {
     isEnglishMode = (sender.selectedSegmentIndex == 1);
     [self refreshLocalization];
-}
-
-- (void)toggleBlockJunkDNS:(UISwitch *)sender {
-    DNSVars.BlockJunkDNS = sender.on;
 }
 
 #pragma mark - Section headers

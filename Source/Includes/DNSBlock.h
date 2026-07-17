@@ -6,33 +6,69 @@
 
 #import "MemoryUtils.h"
 
-struct DNSBlockVars_t {
-    bool BlockJunkDNS = false;
-} DNSVars;
-
+// In-process ad/tracker DNS blocker (NextDNS-style curated blocklist, but scoped to
+// this process only): hooks getaddrinfo, the libc DNS resolution entry point almost
+// everything - NSURLSession, third-party SDKs, raw sockets - goes through, and fails
+// the lookup for known ad/analytics/tracking domains. Always active once installed
+// (see installDNSBlockHook() in +load) - no menu switch, runs continuously alongside
+// everything else.
 static const char *kJunkDNSDomains[] = {
+    // Google ad/analytics
     "doubleclick.net",
     "googlesyndication.com",
     "googleadservices.com",
     "google-analytics.com",
     "app-measurement.com",
-    "adjust.com",
-    "adjust.io",
-    "appsflyer.com",
+    "googletagmanager.com",
+    "googletagservices.com",
+    "adservice.google.com",
+    // Mobile ad networks / mediation
     "applovin.com",
     "unityads.unity3d.com",
+    "unity3d.com",
     "vungle.com",
     "ironsrc.com",
     "supersonicads.com",
     "mopub.com",
     "chartboost.com",
+    "inmobi.com",
+    "tapjoy.com",
+    "adcolony.com",
+    "pangle.io",
+    "pangleglobal.com",
+    "mintegral.com",
+    "startapp.com",
+    "fyber.com",
+    "smaato.com",
+    // Attribution / mobile analytics
+    "adjust.com",
+    "adjust.io",
+    "appsflyer.com",
+    "appsflyersdk.com",
     "flurry.com",
     "branch.io",
-    "gin.freefiremobile.com",
-    "y5en.com",
-    "unity3d.com",
-    "appsflyersdk.com",
-    "ggblueshark.com",
+    "kochava.com",
+    "tenjin.io",
+    "singular.net",
+    "mixpanel.com",
+    "amplitude.com",
+    "segment.io",
+    // Web ad exchanges / trackers
+    "adnxs.com",
+    "casalemedia.com",
+    "openx.net",
+    "pubmatic.com",
+    "rubiconproject.com",
+    "smartadserver.com",
+    "media.net",
+    "criteo.com",
+    "taboola.com",
+    "outbrain.com",
+    "scorecardresearch.com",
+    "moatads.com",
+    "adsrvr.org",
+    "amazon-adsystem.com",
+    "bidswitch.net",
 };
 
 inline bool isJunkDNSDomain(const char *hostname) {
@@ -47,7 +83,7 @@ inline bool isJunkDNSDomain(const char *hostname) {
 static int (*orig_getaddrinfo)(const char *, const char *, const struct addrinfo *, struct addrinfo **);
 
 inline int hooked_getaddrinfo(const char *hostname, const char *servname, const struct addrinfo *hints, struct addrinfo **res) {
-    if (DNSVars.BlockJunkDNS && isJunkDNSDomain(hostname)) {
+    if (isJunkDNSDomain(hostname)) {
         return EAI_NONAME; // fail resolution, as if the domain simply doesn't exist
     }
     return orig_getaddrinfo(hostname, servname, hints, res);
