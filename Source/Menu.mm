@@ -141,6 +141,7 @@ static NSString *LOC(NSString *key) {
 
 // Info tab
 @property (nonatomic, strong) UILabel *statusLabel;
+@property (nonatomic, strong) UILabel *dnsDebugLabel;
 
 // Scan tab (manual live search - Cheat Engine style)
 @property (nonatomic, strong) UISegmentedControl *scanTypeControl;
@@ -817,6 +818,17 @@ static MemScanner searchScanner;
     [langControl addTarget:self action:@selector(languageChanged:) forControlEvents:UIControlEventValueChanged];
     [langRow addSubview:langControl];
 
+    // Temporary diagnostic for the junk-DNS blocker - the user reported it having no
+    // effect at all, so this surfaces whether getaddrinfo is even being called for the
+    // banner/ad domains (see g_dnsCallCount/g_lastDNSHostname in DNSBlock.h) without
+    // needing Xcode console access. Remove once confirmed working (or once we know it
+    // needs a different interception point entirely).
+    _dnsDebugLabel = [[UILabel alloc] initWithFrame:CGRectMake(4, 84, frame.size.width - 8, 40)];
+    _dnsDebugLabel.font = [UIFont systemFontOfSize:9.5f weight:UIFontWeightMedium];
+    _dnsDebugLabel.textColor = COLOR_TEXT_DIM;
+    _dnsDebugLabel.numberOfLines = 2;
+    [page addSubview:_dnsDebugLabel];
+
     return page;
 }
 
@@ -1203,6 +1215,9 @@ static const NSInteger kCardIconTag = 9002;
     get_players();
 
     if (!MenDeal) return;
+
+    _dnsDebugLabel.text = [NSString stringWithFormat:@"DNS calls: %lu, blocked: %lu\nLast: %s",
+                            g_dnsCallCount, g_dnsBlockedCount, g_lastDNSHostname];
 
     NSArray<UISwitch *> *subSwitches = @[_boxSwitch, _linesSwitch, _nameSwitch, _healthSwitch, _distanceSwitch, _skeletonSwitch, _countSwitch, _showFovCircleSwitch];
     for (UISwitch *sw in subSwitches) {

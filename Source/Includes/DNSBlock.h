@@ -69,9 +69,6 @@ static const char *kJunkDNSDomains[] = {
     "adsrvr.org",
     "amazon-adsystem.com",
     "bidswitch.net",
-    // Garena/Free Fire's own in-game banner/promo image CDN - not a third-party ad
-    // network, but the in-game promotional banners it serves are laggy to load and
-    // unwanted, per user request.
     "gin.freefiremobile.com",
     "y5en.com",
     "ggblueshark.com",
@@ -88,8 +85,20 @@ inline bool isJunkDNSDomain(const char *hostname) {
 
 static int (*orig_getaddrinfo)(const char *, const char *, const struct addrinfo *, struct addrinfo **);
 
+// Diagnostics - the user reported the block having no effect at all (banner still
+// loads); before guessing further, these let us see from the Info tab whether
+// getaddrinfo is even being called for the banner domains, or whether the game/its ad
+// SDK resolves DNS some other way entirely (would mean this whole approach needs to
+// move to a different interception point, e.g. NSURLProtocol, instead of getaddrinfo).
+static unsigned long g_dnsCallCount = 0;
+static unsigned long g_dnsBlockedCount = 0;
+static char g_lastDNSHostname[256] = "";
+
 inline int hooked_getaddrinfo(const char *hostname, const char *servname, const struct addrinfo *hints, struct addrinfo **res) {
+    g_dnsCallCount++;
+    if (hostname) strncpy(g_lastDNSHostname, hostname, sizeof(g_lastDNSHostname) - 1);
     if (isJunkDNSDomain(hostname)) {
+        g_dnsBlockedCount++;
         return EAI_NONAME; // fail resolution, as if the domain simply doesn't exist
     }
     return orig_getaddrinfo(hostname, servname, hints, res);
