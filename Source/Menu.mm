@@ -823,14 +823,15 @@ static MemScanner searchScanner;
     [langControl addTarget:self action:@selector(languageChanged:) forControlEvents:UIControlEventValueChanged];
     [langRow addSubview:langControl];
 
-    // Temporary diagnostic for the junk-DNS/ad blocker - getaddrinfo turned out to
-    // never be called at all (0 calls on-device), so NSURLProtocol-based blocking was
-    // added as the real interception point (see DNSBlock.h). This shows both sets of
-    // counters without needing Xcode console access. Remove once confirmed working.
-    _dnsDebugLabel = [[UILabel alloc] initWithFrame:CGRectMake(4, 84, frame.size.width - 8, 56)];
-    _dnsDebugLabel.font = [UIFont systemFontOfSize:9.5f weight:UIFontWeightMedium];
+    // Temporary diagnostic for the junk-DNS/ad blocker - shows the last several hosts
+    // actually seen (and blocked) by JunkAdURLProtocol, to confirm whether a specific
+    // domain (e.g. gin.freefiremobile.com) is ever even reaching canInitWithRequest: at
+    // all, as opposed to it loading through some other path entirely. Remove once the
+    // banner-blocking question is settled.
+    _dnsDebugLabel = [[UILabel alloc] initWithFrame:CGRectMake(4, 84, frame.size.width - 8, 160)];
+    _dnsDebugLabel.font = [UIFont systemFontOfSize:8.5f weight:UIFontWeightMedium];
     _dnsDebugLabel.textColor = COLOR_TEXT_DIM;
-    _dnsDebugLabel.numberOfLines = 4;
+    _dnsDebugLabel.numberOfLines = 0;
     [page addSubview:_dnsDebugLabel];
 
     return page;
@@ -1220,9 +1221,10 @@ static const NSInteger kCardIconTag = 9002;
 
     if (!MenDeal) return;
 
-    _dnsDebugLabel.text = [NSString stringWithFormat:@"DNS calls: %lu, blocked: %lu (%s)\nURL checks: %lu, blocked: %lu (%s)",
-                            g_dnsCallCount, g_dnsBlockedCount, g_lastDNSHostname,
-                            g_urlBlockCallCount, g_urlBlockedCount, g_lastBlockedURLHost];
+    _dnsDebugLabel.text = [NSString stringWithFormat:@"URL checks: %lu, blocked: %lu\nChecked: %@\nBlocked: %@",
+                            g_urlBlockCallCount, g_urlBlockedCount,
+                            joinURLLog(g_checkedURLHosts, g_urlBlockCallCount),
+                            joinURLLog(g_blockedURLHosts, g_urlBlockedCount)];
 
     NSArray<UISwitch *> *subSwitches = @[_boxSwitch, _linesSwitch, _nameSwitch, _healthSwitch, _distanceSwitch, _skeletonSwitch, _countSwitch, _showFovCircleSwitch];
     for (UISwitch *sw in subSwitches) {
