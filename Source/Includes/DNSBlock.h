@@ -3,6 +3,10 @@
 #import <netdb.h>
 #import <string.h>
 #import <strings.h>
+#import <ctype.h> // tolower
+
+#include <string>
+#include <unordered_map>
 
 #import "MemoryUtils.h"
 
@@ -69,27 +73,90 @@ static const char *kJunkDNSDomains[] = {
     "ggblueshark.com",
 };
 
-// Suffix match instead of strcasestr's substring scan: hostname must equal the listed
-// domain, or end with "." + the listed domain (so ads.doubleclick.net matches
-// doubleclick.net, but notdoubleclick.net does not). Cheaper per-entry (a length check
-// + one strcasecmp on the tail, not a sliding substring search) and avoids false
-// positives from the domain string appearing in the middle of an unrelated hostname.
-inline bool hostMatchesDomain(const char *hostname, const char *domain) {
-    size_t hostLen = strlen(hostname);
-    size_t domainLen = strlen(domain);
-    if (hostLen < domainLen) return false;
-    const char *suffix = hostname + (hostLen - domainLen);
-    if (strcasecmp(suffix, domain) != 0) return false;
-    return hostLen == domainLen || hostname[hostLen - domainLen - 1] == '.';
+// Suffix-matching trie keyed by domain label, walked from the TLD inward (labels
+// inserted/looked-up in reverse order) - so ads.doubleclick.net matches the
+// doubleclick.net entry in O(number of labels in the hostname), independent of how many
+// domains are in kJunkDNSDomains, instead of a linear scan over every blocked entry.
+// Built once from the fixed list below and never mutated afterward (see
+// junkDomainTrie()), so concurrent lookups from multiple threads need no locking at all.
+struct JunkDomainTrieNode {
+    std::unordered_map<std::string, JunkDomainTrieNode *> children;
+    bool isBlocked = false;
+};
+
+class JunkDomainTrie {
+public:
+    JunkDomainTrie() : root(new JunkDomainTrieNode()) {}
+
+    void insert(const char *domain) {
+        JunkDomainTrieNode *node = root;
+        forEachLabelReversed(domain, [&](const std::string &label) {
+            JunkDomainTrieNode *&child = node->children[label];
+            if (!child) child = new JunkDomainTrieNode();
+            node = child;
+        });
+        node->isBlocked = true;
+    }
+
+    bool matches(const char *hostname) const {
+        if (!hostname || !hostname[0]) return false;
+        JunkDomainTrieNode *node = root;
+        bool blocked = false;
+        forEachLabelReversed(hostname, [&](const std::string &label) {
+            if (blocked || !node) return;
+            std::unordered_map<std::string, JunkDomainTrieNode *>::const_iterator it = node->children.find(label);
+            if (it == node->children.end()) { node = NULL; return; }
+            node = it->second;
+            if (node->isBlocked) blocked = true; // hostname is this domain, or a subdomain of it
+        });
+        return blocked;
+    }
+
+private:
+    JunkDomainTrieNode *root;
+
+    // Splits "a.b.Example.COM" into lowercased labels ["com", "example", "b", "a"] (TLD
+    // first) and invokes fn(label) for each, in that order - matching the direction
+    // domains are inserted in, so insert() and matches() walk the trie the same way.
+    template <typename Fn>
+    static void forEachLabelReversed(const char *host, Fn fn) {
+        size_t len = strlen(host);
+        size_t end = len;
+        size_t i = len;
+        while (true) {
+            bool atStart = (i == 0);
+            bool atDot = !atStart && host[i - 1] == '.';
+            if (atStart || atDot) {
+                if (end > i) {
+                    std::string label(host + i, end - i);
+                    for (size_t j = 0; j < label.size(); j++) label[j] = (char)tolower((unsigned char)label[j]);
+                    fn(label);
+                }
+                if (atStart) break; // i==0: nothing left to consume, stop before i-1 underflows
+                end = i - 1;
+            }
+            i--;
+        }
+    }
+};
+
+// A plain "if (!trie) trie = new ...;" null-check here would race if two threads both
+// call this for the first time concurrently (both could see null and both construct).
+// Building the whole trie inside the static's own initializer instead relies on C++11's
+// guaranteed thread-safe function-local static initialization ("magic statics") -
+// concurrent first-callers block until this one-time init finishes, no manual locking.
+inline JunkDomainTrie &junkDomainTrie() {
+    static JunkDomainTrie trie = [] {
+        JunkDomainTrie t;
+        size_t count = sizeof(kJunkDNSDomains) / sizeof(kJunkDNSDomains[0]);
+        for (size_t i = 0; i < count; i++) t.insert(kJunkDNSDomains[i]);
+        return t;
+    }();
+    return trie;
 }
 
 inline bool isJunkDNSDomain(const char *hostname) {
-    if (!hostname) return false;
-    size_t count = sizeof(kJunkDNSDomains) / sizeof(kJunkDNSDomains[0]);
-    for (size_t i = 0; i < count; i++) {
-        if (hostMatchesDomain(hostname, kJunkDNSDomains[i])) return true;
-    }
-    return false;
+    return junkDomainTrie().matches(hostname);
 }
 
 // ===== 2. HOOK DNS RESOLUTION (getaddrinfo + legacy gethostbyname/gethostbyname2) =====
