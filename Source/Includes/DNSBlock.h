@@ -7,8 +7,25 @@
 
 #include <string>
 #include <unordered_map>
+#include <atomic>
 
 #import "MemoryUtils.h"
+#import "fishhook.h"
+
+// ===== Thống kê chặn DNS (để tab INFO soi được có chặn thật không) =====
+static std::atomic<unsigned long long> g_dnsBlockCount{0};  // Tổng số request đã bị chặn
+static char g_dnsLastBlocked[256] = {0};                    // Host bị chặn gần nhất
+
+inline unsigned long long DNSBlock_count()   { return g_dnsBlockCount.load(std::memory_order_relaxed); }
+inline const char*        DNSBlock_lastHost() { return g_dnsLastBlocked; }
+
+inline void dnsNoteBlocked(const char *host) {
+    g_dnsBlockCount.fetch_add(1, std::memory_order_relaxed);
+    if (host) {
+        strncpy(g_dnsLastBlocked, host, sizeof(g_dnsLastBlocked) - 1);
+        g_dnsLastBlocked[sizeof(g_dnsLastBlocked) - 1] = '\0';
+    }
+}
 
 // 1. Danh sách đen các Domain chặn DNS & HTTP
 static const char *kJunkDNSDomains[] = {
@@ -164,6 +181,7 @@ static int (*orig_getaddrinfo)(const char *, const char *, const struct addrinfo
 
 inline int hooked_getaddrinfo(const char *hostname, const char *servname, const struct addrinfo *hints, struct addrinfo **res) {
     if (isJunkDNSDomain(hostname)) {
+        dnsNoteBlocked(hostname);
         return EAI_NONAME; // Giả lập lỗi: Domain không tồn tại
     }
     return orig_getaddrinfo(hostname, servname, hints, res);
@@ -177,6 +195,7 @@ static struct hostent *(*orig_gethostbyname2)(const char *, int);
 
 inline struct hostent *hooked_gethostbyname(const char *name) {
     if (isJunkDNSDomain(name)) {
+        dnsNoteBlocked(name);
         h_errno = HOST_NOT_FOUND;
         return NULL;
     }
@@ -185,6 +204,7 @@ inline struct hostent *hooked_gethostbyname(const char *name) {
 
 inline struct hostent *hooked_gethostbyname2(const char *name, int af) {
     if (isJunkDNSDomain(name)) {
+        dnsNoteBlocked(name);
         h_errno = HOST_NOT_FOUND;
         return NULL;
     }
@@ -211,6 +231,7 @@ inline struct hostent *hooked_gethostbyname2(const char *name, int af) {
 }
 
 - (void)startLoading {
+    dnsNoteBlocked([self.request.URL.host UTF8String]);
     NSError *error = [NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorCannotFindHost userInfo:nil];
     [self.client URLProtocol:self didFailWithError:error];
 }
@@ -222,11 +243,22 @@ inline struct hostent *hooked_gethostbyname2(const char *name, int af) {
 
 // ===== 4. KHỞI CHẠY HOOK =====
 inline void installDNSBlockHook() {
-    // Hook DNS (modern + legacy resolver APIs)
-    HOOKSYM("getaddrinfo", hooked_getaddrinfo, orig_getaddrinfo);
-    HOOKSYM("gethostbyname", hooked_gethostbyname, orig_gethostbyname);
-    HOOKSYM("gethostbyname2", hooked_gethostbyname2, orig_gethostbyname2);
+    // Hook DNS bằng FISHHOOK, KHÔNG dùng MSHookFunction: getaddrinfo/gethostbyname nằm trong
+    // dyld shared cache nên MSHookFunction hook trượt (xem AssetRedirect.h). Fishhook tráo con
+    // trỏ import nên bắt được -> chặn thật sự request phân giải tên miền như gin.freefiremobile.com.
 
-    // Đăng ký URL Protocol
+    // Lấy sẵn con trỏ gốc qua dlsym làm mạng an toàn (tránh orig_* = NULL nếu fishhook bỏ sót image)
+    orig_getaddrinfo    = (int (*)(const char *, const char *, const struct addrinfo *, struct addrinfo **))dlsym((void *)RTLD_DEFAULT, "getaddrinfo");
+    orig_gethostbyname  = (struct hostent *(*)(const char *))dlsym((void *)RTLD_DEFAULT, "gethostbyname");
+    orig_gethostbyname2 = (struct hostent *(*)(const char *, int))dlsym((void *)RTLD_DEFAULT, "gethostbyname2");
+
+    struct rebinding dnsRebindings[] = {
+        {"getaddrinfo",    (void *)hooked_getaddrinfo,    (void **)&orig_getaddrinfo},
+        {"gethostbyname",  (void *)hooked_gethostbyname,  (void **)&orig_gethostbyname},
+        {"gethostbyname2", (void *)hooked_gethostbyname2, (void **)&orig_gethostbyname2},
+    };
+    rebind_symbols(dnsRebindings, sizeof(dnsRebindings) / sizeof(dnsRebindings[0]));
+
+    // Đăng ký URL Protocol (tầng HTTP/HTTPS cho traffic đi qua NSURLSession/NSURLConnection)
     [NSURLProtocol registerClass:[JunkAdURLProtocol class]];
 }

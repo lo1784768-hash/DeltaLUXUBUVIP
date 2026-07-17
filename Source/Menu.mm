@@ -895,6 +895,11 @@ game_sdk_t *game_sdk = new game_sdk_t();
         verdict = isEnglishMode ? @"⚠️ Bundle read, but files missing in Delta" : @"⚠️ Có đọc bundle nhưng Delta thiếu file";
     }
 
+    // Thống kê chặn DNS/mạng
+    unsigned long long dnsBlocked = DNSBlock_count();
+    const char *dnsHostC = DNSBlock_lastHost();
+    NSString *dnsHost = (dnsHostC && dnsHostC[0]) ? [NSString stringWithUTF8String:dnsHostC] : @"—";
+
     NSString *text = [NSString stringWithFormat:
         @"%@\n\n"
          "%@\n"
@@ -905,10 +910,14 @@ game_sdk_t *game_sdk = new game_sdk_t();
          "Hits  (đọc từ Delta): %llu\n"
          "Miss  (đọc bundle gốc): %llu\n"
          "Tỉ lệ qua Delta: %.1f%%\n\n"
-         "Path bất kỳ gần nhất:\n%@\n\n"
-         "File Delta gần nhất:\n%@",
+         "Path bất kỳ gần nhất:\n%@\n"
+         "File Delta gần nhất:\n%@\n\n"
+         "── CHẶN DNS ──\n"
+         "Đã chặn: %llu request\n"
+         "Host chặn gần nhất:\n%@",
         verdict, hookLine, extractLine, dir,
-        totalCalls, bundleCalls, hits, misses, pct, anyPath, last];
+        totalCalls, bundleCalls, hits, misses, pct, anyPath, last,
+        dnsBlocked, dnsHost];
 
     _deltaLogView.text = text;
 }
