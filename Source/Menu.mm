@@ -72,12 +72,6 @@ static NSDictionary<NSString *, NSArray<NSString *> *> *LocStrings() {
             @"select_base_action": @[@"CHỌN HÀNH ĐỘNG GỐC", @"SELECT BASE ACTION"],
             @"select_mod_action": @[@"CHỌN HÀNH ĐỘNG MOD", @"SELECT MOD ACTION"],
             @"back": @[@"Trở Về", @"Back"],
-            @"find": @[@"Tìm", @"Find"],
-            @"find_next": @[@"Tìm Tiếp", @"Find Next"],
-            @"edit_all": @[@"Sửa Tất Cả", @"Edit All"],
-            @"clear_results": @[@"Xóa Kết Quả", @"Clear Results"],
-            @"current_value_placeholder": @[@"Giá trị hiện tại", @"Current value"],
-            @"new_value_placeholder": @[@"Giá trị mới", @"New value"],
             @"on": @[@"BẬT", @"ON"],
             @"off": @[@"TẮT", @"OFF"],
         };
@@ -97,7 +91,7 @@ static NSString *LOC(NSString *key) {
 @property (nonatomic, strong) CADisplayLink *displayLink;
 @property (nonatomic, assign) CGPoint lastPoint;
 
-// Sidebar nav (left column: ESP / MOD / INFO / SCAN)
+// Sidebar nav (left column: ESP / MOD / INFO)
 @property (nonatomic, strong) UIView *sidebarView;
 @property (nonatomic, strong) NSArray<UIImageView *> *navIcons;
 @property (nonatomic, strong) NSArray<UILabel *> *navLabels;
@@ -141,17 +135,6 @@ static NSString *LOC(NSString *key) {
 // Info tab
 @property (nonatomic, strong) UILabel *statusLabel;
 
-// Scan tab (manual live search - Cheat Engine style)
-@property (nonatomic, strong) UISegmentedControl *scanTypeControl;
-@property (nonatomic, strong) UITextField *scanValueField;
-@property (nonatomic, strong) UITextField *scanNewValueField;
-@property (nonatomic, strong) UILabel *scanResultLabel;
-@property (nonatomic, strong) UIButton *scanFindButton;
-@property (nonatomic, strong) UIButton *scanNextButton;
-@property (nonatomic, strong) UIButton *scanEditButton;
-@property (nonatomic, strong) UIButton *scanClearButton;
-@property (nonatomic, assign) size_t lastScanResultCount;
-
 // Localization
 @property (nonatomic, strong) NSMutableArray<dispatch_block_t> *localizationRefreshers;
 
@@ -165,10 +148,6 @@ static DeltaMenu *extraInfo;
 static BOOL MenDeal;
 UIWindow *mainWindow;
 game_sdk_t *game_sdk = new game_sdk_t();
-
-// Dedicated scanner for the manual Scan tab - separate from ModHacks' own internal
-// scanners so the two tools can't clobber each other's in-progress result sets.
-static MemScanner searchScanner;
 
 + (void)load {
     // Called immediately, not inside the 3s-delayed block below - banner/ad requests
@@ -239,18 +218,15 @@ static MemScanner searchScanner;
     UIView *espPage = [self buildESPPageInFrame:contentFrame];
     UIView *modPage = [self buildModPageInFrame:contentFrame];
     UIView *infoPage = [self buildInfoPageInFrame:contentFrame];
-    UIView *scanPage = [self buildScanPageInFrame:contentFrame];
 
     modPage.hidden = YES;
     infoPage.hidden = YES;
-    scanPage.hidden = YES;
 
     [_menuView addSubview:espPage];
     [_menuView addSubview:modPage];
     [_menuView addSubview:infoPage];
-    [_menuView addSubview:scanPage];
 
-    _tabPages = @[espPage, modPage, infoPage, scanPage];
+    _tabPages = @[espPage, modPage, infoPage];
 }
 
 - (void)installAnimatedBorder {
@@ -312,8 +288,8 @@ static MemScanner searchScanner;
         [brandContainer addSubview:fallback];
     }
 
-    NSArray<NSString *> *titles = @[@"ESP", @"MOD", @"INFO", @"SCAN"];
-    NSArray<NSString *> *symbols = @[@"scope", @"wrench.and.screwdriver.fill", @"info.circle.fill", @"viewfinder"];
+    NSArray<NSString *> *titles = @[@"ESP", @"MOD", @"INFO"];
+    NSArray<NSString *> *symbols = @[@"scope", @"wrench.and.screwdriver.fill", @"info.circle.fill"];
 
     CGFloat startY = 52;
     CGFloat itemH = 46, itemGap = 3;
@@ -811,127 +787,6 @@ static MemScanner searchScanner;
     [langRow addSubview:langControl];
 
     return page;
-}
-
-#pragma mark - Scan tab page
-
-- (UIView *)buildScanPageInFrame:(CGRect)frame {
-    UIView *page = [[UIView alloc] initWithFrame:frame];
-    CGFloat w = frame.size.width;
-    CGFloat y = 0;
-
-    _scanTypeControl = [[UISegmentedControl alloc] initWithItems:@[@"I32", @"I64", @"F32"]];
-    _scanTypeControl.frame = CGRectMake(4, y, w - 8, 26);
-    _scanTypeControl.selectedSegmentIndex = 0;
-    [self styleSegmentedControl:_scanTypeControl];
-    [page addSubview:_scanTypeControl];
-    y += 26 + 8;
-
-    _scanValueField = [[UITextField alloc] initWithFrame:CGRectMake(4, y, w - 8, 30)];
-    [self styleDarkTextField:_scanValueField];
-    _scanValueField.keyboardType = UIKeyboardTypeNumbersAndPunctuation;
-    _scanValueField.returnKeyType = UIReturnKeyDone;
-    _scanValueField.delegate = self;
-    [page addSubview:_scanValueField];
-    UITextField *weakScanValueField = _scanValueField;
-    [self addLocalizedRefresher:^{ weakScanValueField.placeholder = LOC(@"current_value_placeholder"); }];
-    y += 30 + 6;
-
-    CGFloat halfW = (w - 8 - 6) / 2.0f;
-    _scanFindButton = [self createButtonWithLocKey:@"find" frame:CGRectMake(4, y, halfW, 30)];
-    [_scanFindButton addTarget:self action:@selector(scanFindTapped) forControlEvents:UIControlEventTouchUpInside];
-    [page addSubview:_scanFindButton];
-
-    _scanNextButton = [self createButtonWithLocKey:@"find_next" frame:CGRectMake(4 + halfW + 6, y, halfW, 30)];
-    [_scanNextButton addTarget:self action:@selector(scanNextTapped) forControlEvents:UIControlEventTouchUpInside];
-    [page addSubview:_scanNextButton];
-    y += 30 + 8;
-
-    _scanResultLabel = [[UILabel alloc] initWithFrame:CGRectMake(4, y, w - 8, 18)];
-    _scanResultLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightMedium];
-    _scanResultLabel.textColor = COLOR_CYAN;
-    _scanResultLabel.textAlignment = NSTextAlignmentCenter;
-    [page addSubview:_scanResultLabel];
-    __weak UILabel *weakScanResultLabel = _scanResultLabel;
-    __weak __typeof__(self) weakSelf = self;
-    [self addLocalizedRefresher:^{
-        weakScanResultLabel.text = [NSString stringWithFormat:isEnglishMode ? @"Results: %zu" : @"Số kết quả: %zu", weakSelf.lastScanResultCount];
-    }];
-    y += 18 + 10;
-
-    _scanNewValueField = [[UITextField alloc] initWithFrame:CGRectMake(4, y, w - 8, 30)];
-    [self styleDarkTextField:_scanNewValueField];
-    _scanNewValueField.keyboardType = UIKeyboardTypeNumbersAndPunctuation;
-    _scanNewValueField.returnKeyType = UIReturnKeyDone;
-    _scanNewValueField.delegate = self;
-    [page addSubview:_scanNewValueField];
-    UITextField *weakScanNewValueField = _scanNewValueField;
-    [self addLocalizedRefresher:^{ weakScanNewValueField.placeholder = LOC(@"new_value_placeholder"); }];
-    y += 30 + 6;
-
-    _scanEditButton = [self createButtonWithLocKey:@"edit_all" frame:CGRectMake(4, y, w - 8, 30)];
-    [_scanEditButton setTitleColor:COLOR_CYAN forState:UIControlStateNormal];
-    [_scanEditButton addTarget:self action:@selector(scanEditAllTapped) forControlEvents:UIControlEventTouchUpInside];
-    [page addSubview:_scanEditButton];
-    y += 30 + 6;
-
-    _scanClearButton = [self createButtonWithLocKey:@"clear_results" frame:CGRectMake(4, y, w - 8, 30)];
-    [_scanClearButton setTitleColor:[UIColor colorWithRed:0.95 green:0.35 blue:0.45 alpha:0.85] forState:UIControlStateNormal];
-    [_scanClearButton addTarget:self action:@selector(scanClearTapped) forControlEvents:UIControlEventTouchUpInside];
-    [page addSubview:_scanClearButton];
-
-    return page;
-}
-
-- (NSString *)scanSelectedType {
-    NSArray<NSString *> *types = @[@"I32", @"I64", @"F32"];
-    NSInteger idx = _scanTypeControl.selectedSegmentIndex;
-    if (idx < 0 || idx >= (NSInteger)types.count) idx = 0;
-    return types[idx];
-}
-
-- (void)updateScanResultLabel:(size_t)count {
-    _lastScanResultCount = count;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        self.scanResultLabel.text = [NSString stringWithFormat:isEnglishMode ? @"Results: %zu" : @"Số kết quả: %zu", count];
-    });
-}
-
-- (void)scanFindTapped {
-    NSString *value = _scanValueField.text;
-    NSString *type = [self scanSelectedType];
-    if (value.length == 0) { [self showToast:isEnglishMode ? @"Enter a value first" : @"Nhập giá trị trước"]; return; }
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        size_t count = searchScanner.searchNumber(std::string([value UTF8String]), std::string([type UTF8String]));
-        [self updateScanResultLabel:count];
-    });
-}
-
-- (void)scanNextTapped {
-    NSString *value = _scanValueField.text;
-    NSString *type = [self scanSelectedType];
-    if (value.length == 0) { [self showToast:isEnglishMode ? @"Enter a value first" : @"Nhập giá trị trước"]; return; }
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        size_t count = searchScanner.nextScan(std::string([value UTF8String]), std::string([type UTF8String]));
-        [self updateScanResultLabel:count];
-    });
-}
-
-- (void)scanEditAllTapped {
-    NSString *value = _scanNewValueField.text;
-    NSString *type = [self scanSelectedType];
-    if (value.length == 0) { [self showToast:isEnglishMode ? @"Enter a new value first" : @"Nhập giá trị mới trước"]; return; }
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        bool ok = searchScanner.editAll(std::string([value UTF8String]), std::string([type UTF8String]));
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [self showToast:ok ? (isEnglishMode ? @"Edit done" : @"Đã sửa xong") : (isEnglishMode ? @"No results to edit" : @"Không có kết quả để sửa")];
-        });
-    });
-}
-
-- (void)scanClearTapped {
-    searchScanner.clearResults();
-    [self updateScanResultLabel:0];
 }
 
 - (BOOL)textFieldShouldReturn:(UITextField *)textField {
