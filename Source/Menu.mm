@@ -61,6 +61,7 @@ static NSDictionary<NSString *, NSArray<NSString *> *> *LocStrings() {
             @"aim_mode_always": @[@"Luôn Bật", @"Always"],
             @"aim_mode_fire": @[@"Khi Bắn/Ngắm", @"Fire/Scope"],
             @"aim_prefer_low_hp": @[@"Ưu Tiên Máu Vàng/Đỏ (Ngẫu Nhiên)", @"Prefer Yellow/Red HP (Random)"],
+            @"aim_smoothing": @[@"Aim Mượt (Legit)", @"Smooth Aim (Legit)"],
             @"antena": @[@"Antena", @"Antena"],
             @"speed_x2": @[@"Tốc Độ x2", @"Speed x2"],
             @"speed_x8": @[@"Tốc Độ x8", @"Speed x8"],
@@ -119,6 +120,9 @@ static NSString *LOC(NSString *key) {
 @property (nonatomic, strong) UISwitch *aimNheTamSwitch;
 @property (nonatomic, strong) UISegmentedControl *aimModeControl;
 @property (nonatomic, strong) UISwitch *aimPreferLowHPSwitch;
+@property (nonatomic, strong) UISwitch *aimSmoothingSwitch;
+@property (nonatomic, strong) UISlider *aimTurnSpeedSlider;
+@property (nonatomic, strong) UILabel *aimTurnSpeedLabel;
 @property (nonatomic, strong) UISwitch *antenaSwitch;
 @property (nonatomic, strong) UISwitch *speedX2Switch;
 @property (nonatomic, strong) UISwitch *speedX8Switch;
@@ -485,6 +489,32 @@ game_sdk_t *game_sdk = new game_sdk_t();
     _aimPreferLowHPSwitch = [self addToggleCardWithLocKey:@"aim_prefer_low_hp" symbol:@"shuffle" frame:CGRectMake(btnX, btnY, btnW, cardH) action:@selector(toggleAimPreferLowHP:) toView:scroll];
     btnY += cardH + btnGap;
 
+    // "Legit" feel: turns toward the target at a capped speed instead of snapping
+    // straight to it every frame (see AimSmoothing in ESP.h's get_players()).
+    _aimSmoothingSwitch = [self addToggleCardWithLocKey:@"aim_smoothing" symbol:@"waveform.path.ecg" frame:CGRectMake(btnX, btnY, btnW, cardH) action:@selector(toggleAimSmoothing:) toView:scroll];
+    btnY += cardH + btnGap;
+
+    _aimTurnSpeedLabel = [[UILabel alloc] initWithFrame:CGRectMake(btnX + 8, btnY, btnW - 8, 14)];
+    _aimTurnSpeedLabel.font = [UIFont systemFontOfSize:10.5f weight:UIFontWeightMedium];
+    _aimTurnSpeedLabel.textColor = COLOR_TEXT_DIM;
+    [scroll addSubview:_aimTurnSpeedLabel];
+    __weak UILabel *weakAimTurnSpeedLabel = _aimTurnSpeedLabel;
+    [self addLocalizedRefresher:^{
+        weakAimTurnSpeedLabel.text = [NSString stringWithFormat:isEnglishMode ? @"Turn speed: %.0f°/s" : @"Tốc độ xoay: %.0f°/s", Vars.AimTurnSpeed];
+    }];
+    btnY += 14 + 2;
+
+    _aimTurnSpeedSlider = [[UISlider alloc] initWithFrame:CGRectMake(btnX, btnY, btnW, 20)];
+    _aimTurnSpeedSlider.minimumValue = 90.0f;
+    _aimTurnSpeedSlider.maximumValue = 1800.0f;
+    _aimTurnSpeedSlider.value = Vars.AimTurnSpeed;
+    _aimTurnSpeedSlider.minimumTrackTintColor = COLOR_CYAN;
+    _aimTurnSpeedSlider.maximumTrackTintColor = [UIColor colorWithWhite:1.0 alpha:0.12];
+    _aimTurnSpeedSlider.thumbTintColor = COLOR_TEXT;
+    [_aimTurnSpeedSlider addTarget:self action:@selector(aimTurnSpeedChanged:) forControlEvents:UIControlEventValueChanged];
+    [scroll addSubview:_aimTurnSpeedSlider];
+    btnY += 20 + btnGap;
+
     // Radius is configured on the ESP tab's Show FOV Circle slider (same Vars.AimFOV) -
     // just a pointer note here, not a duplicate control.
     UILabel *aimNote = [[UILabel alloc] initWithFrame:CGRectMake(btnX + 8, btnY, btnW - 8, 14)];
@@ -685,6 +715,15 @@ game_sdk_t *game_sdk = new game_sdk_t();
 
 - (void)toggleAimPreferLowHP:(UISwitch *)sender {
     Vars.AimPreferLowHP = sender.on;
+}
+
+- (void)toggleAimSmoothing:(UISwitch *)sender {
+    Vars.AimSmoothing = sender.on;
+}
+
+- (void)aimTurnSpeedChanged:(UISlider *)sender {
+    Vars.AimTurnSpeed = sender.value;
+    _aimTurnSpeedLabel.text = [NSString stringWithFormat:isEnglishMode ? @"Turn speed: %.0f°/s" : @"Tốc độ xoay: %.0f°/s", Vars.AimTurnSpeed];
 }
 
 - (void)toggleShowFovCircle:(UISwitch *)sender {
@@ -1133,6 +1172,10 @@ void game_sdk_t::init()
     // writing the camera's Transform directly (set_forward above) never worked for Aim
     // Head, which lines up with the game reading aim from the player's own state instead.
     this->set_aim = (void (*)(void *, Quaternion, bool))getRealOffset(0x53C4534);
+    // Player.GetAimRotation() - non-virtual (no Slot: in dump.cs), returns the current
+    // aim state set_aim itself writes to. Used to smoothly turn toward a target instead
+    // of snapping straight to it (see AimSmoothing in ESP.h's get_players()).
+    this->get_aim_rotation = (Quaternion (*)(void *))getRealOffset(0x53B1FEC);
     this->get_isLocalTeam = (bool (*)(void *))getRealOffset(0x55C5AC0);
     this->get_IsDieing = (bool (*)(void *))getRealOffset(0x53AA18C);
     // Player.IsFiring()/get_IsSighting() - both non-virtual (no Slot: in dump.cs), safe

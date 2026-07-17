@@ -63,6 +63,12 @@ struct Vars_t
     // already hurt) that are in FOV/range - falls back to the normal closest-to-
     // crosshair target if nobody in range is currently wounded.
     bool AimPreferLowHP = false;
+    // "Legit" feel: instead of snapping straight to the target rotation every frame,
+    // turn toward it at a capped angular speed (AimTurnSpeed, deg/sec) via
+    // Quaternion::RotateTowards - looks like a fast human flick instead of an instant
+    // teleport. Applies to whichever of AimHead/AimNheTam is active.
+    bool AimSmoothing = false;
+    float AimTurnSpeed = 720.0f;
     // Shared: ESP tab's FOV circle radius IS Aim Head's snap radius, but the two stay
     // separate switches - Show FOV Circle just draws the circle, Aim Head does the actual
     // person-detection + snap. Note: at 240 (current default, per user request) the
@@ -98,6 +104,10 @@ public:
     // had any visible effect, which now makes sense if the game reads aim direction from
     // the player's own aim state (this function) rather than deriving it from the camera.
     void (*set_aim)(void *player, Quaternion rotation, bool sendToServer);
+    // Player.GetAimRotation() - the player's current aim rotation, read back so
+    // AimSmoothing can turn toward the target gradually (Quaternion::RotateTowards)
+    // instead of snapping set_aim straight to it every frame.
+    Quaternion (*get_aim_rotation)(void *player);
     bool (*get_isLocalTeam)(void *player);
     bool (*get_IsDieing)(void *player);
     // Non-virtual instance methods on Player (dump.cs OB54, no vtable Slot: annotation -
@@ -558,6 +568,23 @@ inline void get_players()
                 Vector3 eyePos = game_sdk->get_position(camTransform);
                 Vector3 dir = Vector3::Normalized(aimHeadWorld - eyePos);
                 Quaternion look = Quaternion::LookRotation(dir, Vector3(0, 1, 0));
+
+                // "Legit" feel: turn toward the target at a capped angular speed instead
+                // of snapping straight to it every frame - a fast human flick rather
+                // than an instant teleport. Frame-rate independent (scales the per-frame
+                // angle cap by real elapsed time), same approach as SpinBot's timing.
+                if (Vars.AimSmoothing) {
+                    static CFTimeInterval lastAimSmoothTime = 0;
+                    CFTimeInterval now = CACurrentMediaTime();
+                    CFTimeInterval dt = (lastAimSmoothTime > 0) ? (now - lastAimSmoothTime) : 0.0;
+                    lastAimSmoothTime = now;
+                    if (dt > 0.1) dt = 0.1; // clamp huge gaps (menu just opened, app backgrounded, etc.)
+
+                    Quaternion current = game_sdk->get_aim_rotation(local_player);
+                    float maxRadiansPerFrame = (Vars.AimTurnSpeed * (float)M_PI / 180.0f) * (float)dt;
+                    look = Quaternion::RotateTowards(current, look, maxRadiansPerFrame);
+                }
+
                 // sendToServer=false: this runs every frame while a target is in range.
                 // true flooded a network RPC / tripped server-side anti-cheat rate
                 // limiting (crashed the game); false keeps the rotation change local-only.
