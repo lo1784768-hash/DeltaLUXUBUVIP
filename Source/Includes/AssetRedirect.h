@@ -5,8 +5,16 @@
 #import <stdio.h>
 #import <string.h>
 #import <unistd.h>
+#import <sys/stat.h>
+#import <sys/mman.h>
+#import <zlib.h>
+#include <atomic>
 
 #import "MemoryUtils.h"
+
+// Đường dẫn gói Delta.zip đóng kèm trong tweak (đặt cùng chỗ với LogoDelta.png)
+// -> layout/Library/Application Support/DeltaESP/Delta.zip
+#define DELTA_ZIP_SOURCE_PATH "/Library/Application Support/DeltaESP/Delta.zip"
 
 // Quản lý tiền tố đường dẫn gốc của App Bundle và thư mục Delta trong Cache
 static char g_bundlePrefixC[1024] = {0};
@@ -18,40 +26,240 @@ static size_t g_moddedPrefixLen = 0;
 // Con trỏ gốc của hàm access bắt buộc phải được gán trước
 static int (*orig_access)(const char *, int);
 
+// ============================================================================
+//  THỐNG KÊ / LOG (để tab INFO trong menu soi được traffic có qua Delta không)
+// ============================================================================
+static std::atomic<unsigned long long> g_deltaHitCount{0};   // Số lần đọc file THÀNH CÔNG từ Delta
+static std::atomic<unsigned long long> g_deltaMissCount{0};  // Số lần file không có trong Delta -> đọc bundle gốc
+static std::atomic<unsigned int> g_deltaExtractedFiles{0};   // Số file đã bung ra từ Delta.zip
+static std::atomic<bool> g_deltaExtractRan{false};           // Đã chạy bước giải nén trong phiên này chưa
+static char g_deltaLastHitPath[1024] = {0};                  // Đường dẫn (tương đối) được phục vụ từ Delta gần nhất
+
+// API cho Menu.mm đọc trạng thái (khai báo inline trong header, Menu.mm đã #import file này)
+inline unsigned long long DeltaVFS_hits()          { return g_deltaHitCount.load(std::memory_order_relaxed); }
+inline unsigned long long DeltaVFS_misses()        { return g_deltaMissCount.load(std::memory_order_relaxed); }
+inline unsigned int       DeltaVFS_extractedFiles(){ return g_deltaExtractedFiles.load(std::memory_order_relaxed); }
+inline bool               DeltaVFS_extractRan()     { return g_deltaExtractRan.load(std::memory_order_relaxed); }
+inline const char*        DeltaVFS_lastHitPath()    { return g_deltaLastHitPath; }
+inline const char*        DeltaVFS_deltaDir()       { return g_moddedPrefixC; }
+
+// ============================================================================
+//  PHẦN 1: GIẢI NÉN DELTA.ZIP (Bung gói mod vào thẳng thư mục Caches/Delta/)
+//  Dùng zlib (libz có sẵn trên iOS) để đọc trực tiếp cấu trúc ZIP, không cần
+//  thêm thư viện bên thứ 3. Chạy 1 lần duy nhất, có marker để bỏ qua lần sau.
+// ============================================================================
+
+// Đọc số little-endian trực tiếp từ buffer (iOS arm64 là little-endian)
+static inline uint16_t ar_rd16(const uint8_t *p) {
+    return (uint16_t)(p[0] | (p[1] << 8));
+}
+static inline uint32_t ar_rd32(const uint8_t *p) {
+    return (uint32_t)(p[0] | (p[1] << 8) | (p[2] << 16) | ((uint32_t)p[3] << 24));
+}
+
+// Tạo cây thư mục đệ quy (giống mkdir -p)
+static void ar_mkpath(const char *dir) {
+    char tmp[2048];
+    snprintf(tmp, sizeof(tmp), "%s", dir);
+    size_t len = strlen(tmp);
+    if (len == 0) return;
+    if (tmp[len - 1] == '/') tmp[len - 1] = '\0';
+    for (char *p = tmp + 1; *p; p++) {
+        if (*p == '/') {
+            *p = '\0';
+            mkdir(tmp, 0755);
+            *p = '/';
+        }
+    }
+    mkdir(tmp, 0755);
+}
+
+// Bung 1 luồng deflate (raw, windowBits = -15) từ bộ nhớ ra file
+static bool ar_inflateToFd(const uint8_t *src, size_t srcLen, int outFd) {
+    z_stream strm;
+    memset(&strm, 0, sizeof(strm));
+    if (inflateInit2(&strm, -MAX_WBITS) != Z_OK) return false;
+
+    strm.next_in = (Bytef *)src;
+    strm.avail_in = (uInt)srcLen;
+
+    static unsigned char outBuf[65536];
+    int ret;
+    do {
+        strm.next_out = outBuf;
+        strm.avail_out = sizeof(outBuf);
+        ret = inflate(&strm, Z_NO_FLUSH);
+        if (ret != Z_OK && ret != Z_STREAM_END && ret != Z_BUF_ERROR) {
+            inflateEnd(&strm);
+            return false;
+        }
+        size_t have = sizeof(outBuf) - strm.avail_out;
+        if (have > 0 && write(outFd, outBuf, have) != (ssize_t)have) {
+            inflateEnd(&strm);
+            return false;
+        }
+        if (ret == Z_BUF_ERROR && strm.avail_in == 0) break; // Hết dữ liệu vào
+    } while (ret != Z_STREAM_END);
+
+    inflateEnd(&strm);
+    return true;
+}
+
+// Giải nén toàn bộ archive ZIP tại zipPath ra thư mục destDir (destDir kết thúc bằng '/')
+static void ar_extractZip(const char *zipPath, const char *destDir) {
+    int fd = open(zipPath, O_RDONLY);
+    if (fd < 0) return;
+
+    struct stat st;
+    if (fstat(fd, &st) != 0 || st.st_size < 22) { close(fd); return; }
+    size_t fileSize = (size_t)st.st_size;
+
+    uint8_t *base = (uint8_t *)mmap(NULL, fileSize, PROT_READ, MAP_PRIVATE, fd, 0);
+    close(fd);
+    if (base == MAP_FAILED) return;
+
+    // Tìm End Of Central Directory (chữ ký 0x06054b50) quét ngược từ cuối file
+    const uint8_t *eocd = NULL;
+    size_t maxBack = (fileSize < (22 + 65535)) ? fileSize : (22 + 65535);
+    for (size_t i = 22; i <= maxBack; i++) {
+        const uint8_t *p = base + fileSize - i;
+        if (ar_rd32(p) == 0x06054b50) { eocd = p; break; }
+    }
+    if (!eocd) { munmap(base, fileSize); return; }
+
+    uint16_t totalEntries = ar_rd16(eocd + 10);
+    uint32_t cdOffset = ar_rd32(eocd + 16);
+    if (cdOffset >= fileSize) { munmap(base, fileSize); return; }
+
+    const uint8_t *cd = base + cdOffset;
+    char pathBuf[2048];
+    char nameBuf[1024];
+
+    for (uint16_t e = 0; e < totalEntries; e++) {
+        if ((size_t)(cd - base) + 46 > fileSize) break;
+        if (ar_rd32(cd) != 0x02014b50) break; // Không còn Central Directory Header hợp lệ
+
+        uint16_t method     = ar_rd16(cd + 10);
+        uint32_t compSize   = ar_rd32(cd + 20);
+        uint16_t nameLen    = ar_rd16(cd + 28);
+        uint16_t extraLen   = ar_rd16(cd + 30);
+        uint16_t commentLen = ar_rd16(cd + 32);
+        uint32_t localOff   = ar_rd32(cd + 42);
+        const uint8_t *nameP = cd + 46;
+
+        // Nhảy sang entry kế tiếp trước khi xử lý (tránh quên cập nhật)
+        const uint8_t *nextCd = nameP + nameLen + extraLen + commentLen;
+
+        if (nameLen == 0 || nameLen >= sizeof(nameBuf)) { cd = nextCd; continue; }
+        memcpy(nameBuf, nameP, nameLen);
+        nameBuf[nameLen] = '\0';
+        cd = nextCd;
+
+        // Chặn path traversal: bỏ qua đường dẫn tuyệt đối hoặc chứa ".."
+        if (nameBuf[0] == '/' || strstr(nameBuf, "..") != NULL) continue;
+
+        int w = snprintf(pathBuf, sizeof(pathBuf), "%s%s", destDir, nameBuf);
+        if (w < 0 || w >= (int)sizeof(pathBuf)) continue;
+
+        // Entry là thư mục
+        size_t nl = strlen(nameBuf);
+        if (nameBuf[nl - 1] == '/') { ar_mkpath(pathBuf); continue; }
+
+        // Đảm bảo thư mục cha tồn tại
+        char parent[2048];
+        snprintf(parent, sizeof(parent), "%s", pathBuf);
+        char *slash = strrchr(parent, '/');
+        if (slash) { *slash = '\0'; ar_mkpath(parent); }
+
+        // Định vị dữ liệu thật qua Local File Header
+        if ((size_t)localOff + 30 > fileSize) continue;
+        const uint8_t *lh = base + localOff;
+        if (ar_rd32(lh) != 0x04034b50) continue;
+        uint16_t lhNameLen  = ar_rd16(lh + 26);
+        uint16_t lhExtraLen = ar_rd16(lh + 28);
+        const uint8_t *data = lh + 30 + lhNameLen + lhExtraLen;
+        if ((size_t)(data - base) + compSize > fileSize) continue;
+
+        int outFd = open(pathBuf, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (outFd < 0) continue;
+        if (method == 0) {              // Store (không nén)
+            write(outFd, data, compSize);
+        } else if (method == 8) {       // Deflate
+            ar_inflateToFd(data, compSize, outFd);
+        }
+        close(outFd);
+        g_deltaExtractedFiles.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    munmap(base, fileSize);
+}
+
+// Marker chứa "mtime:size" của Delta.zip -> chỉ giải nén lại khi gói thay đổi
+static bool ar_needExtract(const char *markerPath, const struct stat *zipSt) {
+    int fd = open(markerPath, O_RDONLY);
+    if (fd < 0) return true;
+    char buf[128];
+    ssize_t n = read(fd, buf, sizeof(buf) - 1);
+    close(fd);
+    if (n <= 0) return true;
+    buf[n] = '\0';
+    char expected[128];
+    snprintf(expected, sizeof(expected), "%lld:%lld",
+             (long long)zipSt->st_mtime, (long long)zipSt->st_size);
+    return strcmp(buf, expected) != 0;
+}
+static void ar_writeMarker(const char *markerPath, const struct stat *zipSt) {
+    int fd = open(markerPath, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) return;
+    char buf[128];
+    int w = snprintf(buf, sizeof(buf), "%lld:%lld",
+                     (long long)zipSt->st_mtime, (long long)zipSt->st_size);
+    write(fd, buf, w);
+    close(fd);
+}
+
+// ============================================================================
+//  PHẦN 2: ĐỊNH TUYẾN TRAFFIC (Bẻ hướng mọi lời gọi file của game sang Delta/)
+// ============================================================================
+
 inline const char* redirectAllTrafficPath(const char *path) {
-    if (!path || g_bundlePrefixLen == 0) return path;
+    if (!path || g_bundlePrefixLen == 0 || g_moddedPrefixLen == 0) return path;
 
     // BƯỚC 1: Kiểm tra xem file yêu cầu có nằm trong App Bundle hay không
     if (strncmp(path, g_bundlePrefixC, g_bundlePrefixLen) != 0) {
         return path;
     }
 
-    // BƯỚC 2: WHITELIST CHÍ MẠNG - Tuyệt đối không bẻ hướng các file chữ ký và cấu hình hệ thống của Apple
-    // Nếu can thiệp vào các file này, iOS Sandbox sẽ giết tiến trình (Crash/Văng app ngay khi mở)
-    if (strstr(path, "_CodeSignature") != NULL || 
-        strstr(path, "embedded.mobileprovision") != NULL || 
-        strstr(path, "Info.plist") != NULL) {
+    // BƯỚC 1.5: CHỐNG BẺ HƯỚNG LẶP
+    // Thư mục Delta/ nằm ngay trong bundle (FreeFire.app/Delta/), nên bản thân nó cũng khớp
+    // tiền tố bundle. Nếu path đã trỏ vào Delta/ rồi thì để nguyên, tránh thành Delta/Delta/...
+    if (strncmp(path, g_moddedPrefixC, g_moddedPrefixLen) == 0) {
         return path;
     }
 
-    // BƯỚC 3: Tạo bộ đệm thread_local an toàn đa luồng, triệt tiêu việc cấp phát RAM (Zero Allocation)
+    // BƯỚC 2: Tạo bộ đệm thread_local an toàn đa luồng, triệt tiêu việc cấp phát RAM (Zero Allocation)
     static thread_local char redirectedBuffer[2048];
 
     // Lấy phần đường dẫn tương đối (bỏ phần tiền tố App Bundle đi)
     const char *relative = path + g_bundlePrefixLen;
 
-    // Ghép đường dẫn mới hướng vào thư mục Delta trong Caches
+    // Ghép đường dẫn mới hướng vào thư mục Delta trong bundle
     int written = snprintf(redirectedBuffer, sizeof(redirectedBuffer), "%s%s", g_moddedPrefixC, relative);
     if (written < 0 || written >= (int)sizeof(redirectedBuffer)) {
         return path; // Nếu đường dẫn quá dài vượt bộ đệm, fallback về file gốc để an toàn
     }
 
-    // BƯỚC 4: KIỂM TRA TÍNH TOÀN VẸN (FALLBACK)
-    // Gọi hàm access gốc xem file này có tồn tại trong gói Delta 450MB hay không
-    if (orig_access(redirectedBuffer, F_OK) == 0) {
+    // BƯỚC 3: KIỂM TRA TÍNH TOÀN VẸN (FALLBACK)
+    // Gọi hàm access gốc xem file này có tồn tại trong gói Delta đã giải nén hay không
+    if (orig_access && orig_access(redirectedBuffer, F_OK) == 0) {
+        // Ghi log: đếm số lần phục vụ từ Delta + lưu đường dẫn gần nhất để hiện lên menu
+        g_deltaHitCount.fetch_add(1, std::memory_order_relaxed);
+        strncpy(g_deltaLastHitPath, relative, sizeof(g_deltaLastHitPath) - 1);
+        g_deltaLastHitPath[sizeof(g_deltaLastHitPath) - 1] = '\0';
         return redirectedBuffer; // Tìm thấy file mod/file cấu hình cấu trúc mới -> Chuyển hướng thành công
     }
-    
+
+    g_deltaMissCount.fetch_add(1, std::memory_order_relaxed);
     return path; // Nếu trong Delta.zip không có file này, trả về đường dẫn gốc ngoài App Bundle để game chạy bình thường
 }
 
@@ -81,6 +289,22 @@ inline int hooked_access(const char *path, int mode) {
     return orig_access(redirected, mode);
 }
 
+// stat/lstat: Foundation & engine thường kiểm tra file tồn tại + kích thước TRƯỚC khi open.
+// Phải bẻ hướng luôn thì các file CHỈ có trong Delta (không có trong bundle gốc) mới được game thấy.
+static int (*orig_stat)(const char *, struct stat *);
+
+inline int hooked_stat(const char *path, struct stat *buf) {
+    const char *redirected = redirectAllTrafficPath(path);
+    return orig_stat(redirected, buf);
+}
+
+static int (*orig_lstat)(const char *, struct stat *);
+
+inline int hooked_lstat(const char *path, struct stat *buf) {
+    const char *redirected = redirectAllTrafficPath(path);
+    return orig_lstat(redirected, buf);
+}
+
 __attribute__((constructor))
 static void initDeltaAllTrafficVFS() {
     @autoreleasepool {
@@ -91,16 +315,33 @@ static void initDeltaAllTrafficVFS() {
             NSString *bundleRoot = [bundlePath stringByAppendingString:@"/"];
             strncpy(g_bundlePrefixC, [bundleRoot UTF8String], sizeof(g_bundlePrefixC) - 1);
             g_bundlePrefixLen = strlen(g_bundlePrefixC);
-        }
 
-        // Lấy đường dẫn thư mục Caches của ứng dụng
-        NSArray<NSString *> *cachesPaths = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES);
-        NSString *cachesDir = cachesPaths.firstObject;
-        if (cachesDir) {
-            // Định tuyến toàn bộ traffic bundle vào thẳng thư mục Delta/ trong Caches
-            NSString *moddedDataDir = [cachesDir stringByAppendingString:@"/Delta/"];
+            // Định tuyến toàn bộ traffic bundle vào thẳng thư mục Delta/ NẰM TRONG bundle
+            // -> /var/containers/Bundle/Application/.../FreeFire.app/Delta/
+            NSString *moddedDataDir = [bundlePath stringByAppendingString:@"/Delta/"];
             strncpy(g_moddedPrefixC, [moddedDataDir UTF8String], sizeof(g_moddedPrefixC) - 1);
             g_moddedPrefixLen = strlen(g_moddedPrefixC);
+        }
+
+        // ============ GIẢI NÉN DELTA.ZIP KHI MỞ GAME (chạy TRƯỚC khi cài hook) ============
+        // Phải bung xong toàn bộ file mod ra FreeFire.app/Delta/ trước khi game bắt đầu đọc asset,
+        // nếu không redirect sẽ trỏ vào thư mục rỗng và game vẫn đọc bundle gốc.
+        if (g_moddedPrefixLen > 0) {
+            struct stat zipSt;
+            if (stat(DELTA_ZIP_SOURCE_PATH, &zipSt) == 0) {
+                // Đảm bảo thư mục đích tồn tại
+                ar_mkpath(g_moddedPrefixC);
+
+                char markerPath[1152];
+                snprintf(markerPath, sizeof(markerPath), "%s.delta_extracted", g_moddedPrefixC);
+
+                // Chỉ giải nén khi chưa bung hoặc gói Delta.zip đã được cập nhật (mtime/size đổi)
+                if (ar_needExtract(markerPath, &zipSt)) {
+                    g_deltaExtractRan.store(true, std::memory_order_relaxed);
+                    ar_extractZip(DELTA_ZIP_SOURCE_PATH, g_moddedPrefixC);
+                    ar_writeMarker(markerPath, &zipSt);
+                }
+            }
         }
     }
 
@@ -108,4 +349,6 @@ static void initDeltaAllTrafficVFS() {
     HOOKSYM("access", hooked_access, orig_access);
     HOOKSYM("open", hooked_open, orig_open);
     HOOKSYM("fopen", hooked_fopen, orig_fopen);
+    HOOKSYM("stat", hooked_stat, orig_stat);
+    HOOKSYM("lstat", hooked_lstat, orig_lstat);
 }

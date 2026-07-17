@@ -20,6 +20,6 @@ $(TWEAK_NAME)_CFLAGS = -fobjc-arc -Wno-deprecated-declarations -Wno-unused-varia
 
 $(TWEAK_NAME)_FILES = Source/Menu.mm
 
-$(TWEAK_NAME)_LIBRARIES += substrate
+$(TWEAK_NAME)_LIBRARIES += substrate z
 
 include $(THEOS_MAKE_PATH)/tweak.mk

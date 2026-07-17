@@ -138,6 +138,7 @@ static NSString *LOC(NSString *key) {
 
 // Info tab
 @property (nonatomic, strong) UILabel *statusLabel;
+@property (nonatomic, strong) UITextView *deltaLogView;
 
 // Localization
 @property (nonatomic, strong) NSMutableArray<dispatch_block_t> *localizationRefreshers;
@@ -825,7 +826,70 @@ game_sdk_t *game_sdk = new game_sdk_t();
     [langControl addTarget:self action:@selector(languageChanged:) forControlEvents:UIControlEventValueChanged];
     [langRow addSubview:langControl];
 
+    // ===== DELTA VFS log: soi xem traffic của game có thực sự đi qua Delta không =====
+    UILabel *logHeader = [[UILabel alloc] initWithFrame:CGRectMake(6, 82, frame.size.width - 12, 12)];
+    logHeader.font = [UIFont systemFontOfSize:10 weight:UIFontWeightHeavy];
+    logHeader.textColor = COLOR_CYAN;
+    logHeader.text = @"DELTA VFS";
+    [page addSubview:logHeader];
+
+    _deltaLogView = [[UITextView alloc] initWithFrame:CGRectMake(4, 96, frame.size.width - 8, frame.size.height - 100)];
+    _deltaLogView.backgroundColor = COLOR_CARD_BG;
+    _deltaLogView.layer.cornerRadius = 10.0f;
+    _deltaLogView.layer.borderWidth = 1.0f;
+    _deltaLogView.layer.borderColor = COLOR_CARD_BORDER.CGColor;
+    _deltaLogView.editable = NO;
+    _deltaLogView.selectable = NO;
+    _deltaLogView.scrollEnabled = YES;
+    _deltaLogView.textColor = COLOR_TEXT;
+    _deltaLogView.font = [UIFont fontWithName:@"Menlo" size:9.5f] ?: [UIFont systemFontOfSize:9.5f];
+    _deltaLogView.textContainerInset = UIEdgeInsetsMake(8, 8, 8, 8);
+    [page addSubview:_deltaLogView];
+
     return page;
+}
+
+// Cập nhật bảng log DELTA VFS - gọi định kỳ từ updateMenu (khi menu đang mở).
+- (void)refreshDeltaLog {
+    if (!_deltaLogView) return;
+
+    unsigned long long hits = DeltaVFS_hits();
+    unsigned long long misses = DeltaVFS_misses();
+    unsigned long long total = hits + misses;
+    double pct = total ? (100.0 * (double)hits / (double)total) : 0.0;
+
+    const char *lastC = DeltaVFS_lastHitPath();
+    NSString *last = (lastC && lastC[0]) ? [NSString stringWithUTF8String:lastC] : @"—";
+    const char *dirC = DeltaVFS_deltaDir();
+    NSString *dir = (dirC && dirC[0]) ? [NSString stringWithUTF8String:dirC] : @"(chưa xác định)";
+
+    NSString *extractLine;
+    if (DeltaVFS_extractRan()) {
+        extractLine = [NSString stringWithFormat:isEnglishMode ? @"Unzip: DONE (%u files)" : @"Giải nén: XONG (%u file)", DeltaVFS_extractedFiles()];
+    } else {
+        extractLine = isEnglishMode ? @"Unzip: skipped (already extracted)" : @"Giải nén: bỏ qua (đã bung trước đó)";
+    }
+
+    NSString *verdict;
+    if (hits > 0) {
+        verdict = isEnglishMode ? @"✅ Game IS reading through Delta" : @"✅ Game ĐANG đọc qua Delta";
+    } else if (total > 0) {
+        verdict = isEnglishMode ? @"⚠️ Bundle hit, but 0 files matched in Delta" : @"⚠️ Có gọi bundle nhưng 0 file khớp trong Delta";
+    } else {
+        verdict = isEnglishMode ? @"… waiting for the game to read files" : @"… đang chờ game đọc file";
+    }
+
+    NSString *text = [NSString stringWithFormat:
+        @"%@\n\n"
+         "Delta: %@\n"
+         "%@\n"
+         "Hits  (đọc từ Delta): %llu\n"
+         "Miss  (đọc bundle gốc): %llu\n"
+         "Tỉ lệ qua Delta: %.1f%%\n\n"
+         "File Delta gần nhất:\n%@",
+        verdict, dir, extractLine, hits, misses, pct, last];
+
+    _deltaLogView.text = text;
 }
 
 - (BOOL)textFieldShouldReturn:(UITextField *)textField {
@@ -1095,6 +1159,12 @@ static const NSInteger kCardIconTag = 9002;
     for (UISwitch *sw in subSwitches) {
         sw.enabled = Vars.Enable;
         sw.superview.alpha = Vars.Enable ? 1.0f : 0.4f;
+    }
+
+    // Làm mới bảng log DELTA VFS ~2 lần/giây, chỉ khi tab INFO đang hiển thị (tránh phí CPU mỗi frame).
+    static NSInteger logTick = 0;
+    if (_tabPages.count > 2 && !_tabPages[2].hidden && (++logTick % 30 == 0)) {
+        [self refreshDeltaLog];
     }
 }
 
