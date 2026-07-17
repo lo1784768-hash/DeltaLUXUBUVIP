@@ -6,6 +6,7 @@
 #include <mach/mach_traps.h>
 #include <CoreFoundation/CoreFoundation.h>
 #include <string>
+#include <dlfcn.h> // RTLD_DEFAULT, used by the HOOKSYM/HOOKSYM_NO_ORIG/getSym macros below
 
 
 // thanks to shmoo for the usefull stuff under this comment.

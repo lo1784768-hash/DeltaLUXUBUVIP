@@ -6,12 +6,6 @@
 
 #import "MemoryUtils.h"
 
-// Simple in-process junk-domain blocker: hooks getaddrinfo (the libc DNS resolution
-// entry point almost everything - NSURLSession, third-party SDKs, raw sockets - goes
-// through) and fails the lookup for known ad/analytics SDK domains bundled inside the
-// game. Deliberately NOT a generic "block anything" mechanism - the list below is the
-// only thing it can ever block, and it's limited to well-known ad-network/analytics
-// endpoints, nothing related to actual gameplay/matchmaking traffic.
 struct DNSBlockVars_t {
     bool BlockJunkDNS = false;
 } DNSVars;
