@@ -107,3 +107,50 @@ inline int hooked_getaddrinfo(const char *hostname, const char *servname, const 
 inline void installDNSBlockHook() {
     HOOKSYM("getaddrinfo", hooked_getaddrinfo, orig_getaddrinfo);
 }
+
+// "DNS calls: 0" on-device proved getaddrinfo is never even invoked in this process -
+// modern NSURLSession/CFNetwork resolves hostnames through a private system-level path
+// that doesn't go through the public getaddrinfo symbol, so hooking it was the wrong
+// interception point entirely for whatever loads the banner images. This blocks at the
+// URL Loading System level instead, which is what NSURLSession/NSURLConnection (and
+// very likely Unity's own iOS networking backend, which is built on NSURLSession)
+// actually route through - registering a class here lets it intercept every request
+// before any connection is attempted, regardless of how DNS would have been resolved.
+static unsigned long g_urlBlockCallCount = 0;
+static unsigned long g_urlBlockedCount = 0;
+static char g_lastBlockedURLHost[256] = "";
+
+@interface JunkAdURLProtocol : NSURLProtocol
+@end
+
+@implementation JunkAdURLProtocol
+
++ (BOOL)canInitWithRequest:(NSURLRequest *)request {
+    NSString *host = request.URL.host;
+    if (!host) return NO;
+    g_urlBlockCallCount++;
+    if (isJunkDNSDomain([host UTF8String])) {
+        g_urlBlockedCount++;
+        strncpy(g_lastBlockedURLHost, [host UTF8String], sizeof(g_lastBlockedURLHost) - 1);
+        return YES; // claim it so -startLoading below can fail it
+    }
+    return NO; // let every other request through untouched
+}
+
++ (NSURLRequest *)canonicalRequestForRequest:(NSURLRequest *)request {
+    return request;
+}
+
+- (void)startLoading {
+    NSError *error = [NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorCannotFindHost userInfo:nil];
+    [self.client URLProtocol:self didFailWithError:error];
+}
+
+- (void)stopLoading {
+}
+
+@end
+
+inline void installJunkAdURLProtocolHook() {
+    [NSURLProtocol registerClass:[JunkAdURLProtocol class]];
+}
