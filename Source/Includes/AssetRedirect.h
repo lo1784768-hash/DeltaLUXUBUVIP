@@ -31,16 +31,24 @@ static int (*orig_access)(const char *, int);
 // ============================================================================
 static std::atomic<unsigned long long> g_deltaHitCount{0};   // Số lần đọc file THÀNH CÔNG từ Delta
 static std::atomic<unsigned long long> g_deltaMissCount{0};  // Số lần file không có trong Delta -> đọc bundle gốc
+static std::atomic<unsigned long long> g_deltaTotalCalls{0}; // MỌI lời gọi file qua hook (bất kể path ở đâu)
+static std::atomic<unsigned long long> g_deltaBundleCalls{0};// Lời gọi có path nằm trong App Bundle
 static std::atomic<unsigned int> g_deltaExtractedFiles{0};   // Số file đã bung ra từ Delta.zip
+static std::atomic<unsigned int> g_deltaHooksOK{0};          // Bitmask hook cài đặt thành công: 1=open 2=fopen 4=access 8=stat 16=lstat
 static std::atomic<bool> g_deltaExtractRan{false};           // Đã chạy bước giải nén trong phiên này chưa
 static char g_deltaLastHitPath[1024] = {0};                  // Đường dẫn (tương đối) được phục vụ từ Delta gần nhất
+static char g_deltaLastAnyPath[1024] = {0};                  // Path bất kỳ gần nhất game mở (debug: xem game đọc ở đâu)
 
 // API cho Menu.mm đọc trạng thái (khai báo inline trong header, Menu.mm đã #import file này)
 inline unsigned long long DeltaVFS_hits()          { return g_deltaHitCount.load(std::memory_order_relaxed); }
 inline unsigned long long DeltaVFS_misses()        { return g_deltaMissCount.load(std::memory_order_relaxed); }
+inline unsigned long long DeltaVFS_totalCalls()    { return g_deltaTotalCalls.load(std::memory_order_relaxed); }
+inline unsigned long long DeltaVFS_bundleCalls()   { return g_deltaBundleCalls.load(std::memory_order_relaxed); }
 inline unsigned int       DeltaVFS_extractedFiles(){ return g_deltaExtractedFiles.load(std::memory_order_relaxed); }
+inline unsigned int       DeltaVFS_hooksOK()        { return g_deltaHooksOK.load(std::memory_order_relaxed); }
 inline bool               DeltaVFS_extractRan()     { return g_deltaExtractRan.load(std::memory_order_relaxed); }
 inline const char*        DeltaVFS_lastHitPath()    { return g_deltaLastHitPath; }
+inline const char*        DeltaVFS_lastAnyPath()    { return g_deltaLastAnyPath; }
 inline const char*        DeltaVFS_deltaDir()       { return g_moddedPrefixC; }
 
 // ============================================================================
@@ -223,12 +231,22 @@ static void ar_writeMarker(const char *markerPath, const struct stat *zipSt) {
 // ============================================================================
 
 inline const char* redirectAllTrafficPath(const char *path) {
-    if (!path || g_bundlePrefixLen == 0 || g_moddedPrefixLen == 0) return path;
+    if (!path) return path;
+
+    // LOG CHẨN ĐOÁN: đếm MỌI lời gọi file qua hook (kể cả path ngoài bundle) + lưu path gần nhất.
+    // Nếu con số này = 0 nghĩa là hook KHÔNG bắt được -> lỗi ở tầng MSHookFunction/dlsym.
+    // Nếu > 0 mà "Trong bundle" = 0 -> game không đọc file trong .app (đọc ở Documents/Caches).
+    g_deltaTotalCalls.fetch_add(1, std::memory_order_relaxed);
+    strncpy(g_deltaLastAnyPath, path, sizeof(g_deltaLastAnyPath) - 1);
+    g_deltaLastAnyPath[sizeof(g_deltaLastAnyPath) - 1] = '\0';
+
+    if (g_bundlePrefixLen == 0 || g_moddedPrefixLen == 0) return path;
 
     // BƯỚC 1: Kiểm tra xem file yêu cầu có nằm trong App Bundle hay không
     if (strncmp(path, g_bundlePrefixC, g_bundlePrefixLen) != 0) {
         return path;
     }
+    g_deltaBundleCalls.fetch_add(1, std::memory_order_relaxed);
 
     // BƯỚC 1.5: CHỐNG BẺ HƯỚNG LẶP
     // Thư mục Delta/ nằm ngay trong bundle (FreeFire.app/Delta/), nên bản thân nó cũng khớp
@@ -351,4 +369,14 @@ static void initDeltaAllTrafficVFS() {
     HOOKSYM("fopen", hooked_fopen, orig_fopen);
     HOOKSYM("stat", hooked_stat, orig_stat);
     HOOKSYM("lstat", hooked_lstat, orig_lstat);
+
+    // Sau khi hook: nếu con trỏ orig_* khác NULL nghĩa là MSHookFunction đã bám thành công.
+    // Ghi lại bitmask để tab INFO hiển thị hook nào sống/chết -> chẩn đoán nhanh.
+    unsigned int mask = 0;
+    if (orig_open)   mask |= 1;
+    if (orig_fopen)  mask |= 2;
+    if (orig_access) mask |= 4;
+    if (orig_stat)   mask |= 8;
+    if (orig_lstat)  mask |= 16;
+    g_deltaHooksOK.store(mask, std::memory_order_relaxed);
 }

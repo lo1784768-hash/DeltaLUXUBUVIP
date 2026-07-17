@@ -855,13 +855,22 @@ game_sdk_t *game_sdk = new game_sdk_t();
 
     unsigned long long hits = DeltaVFS_hits();
     unsigned long long misses = DeltaVFS_misses();
-    unsigned long long total = hits + misses;
-    double pct = total ? (100.0 * (double)hits / (double)total) : 0.0;
+    unsigned long long totalCalls = DeltaVFS_totalCalls();
+    unsigned long long bundleCalls = DeltaVFS_bundleCalls();
+    double pct = (hits + misses) ? (100.0 * (double)hits / (double)(hits + misses)) : 0.0;
 
     const char *lastC = DeltaVFS_lastHitPath();
     NSString *last = (lastC && lastC[0]) ? [NSString stringWithUTF8String:lastC] : @"—";
+    const char *anyC = DeltaVFS_lastAnyPath();
+    NSString *anyPath = (anyC && anyC[0]) ? [NSString stringWithUTF8String:anyC] : @"—";
     const char *dirC = DeltaVFS_deltaDir();
     NSString *dir = (dirC && dirC[0]) ? [NSString stringWithUTF8String:dirC] : @"(chưa xác định)";
+
+    // Trạng thái từng hook (sống ✓ / chết ✗)
+    unsigned int m = DeltaVFS_hooksOK();
+    NSString *hookLine = [NSString stringWithFormat:@"Hooks: open%@ fopen%@ access%@ stat%@ lstat%@",
+        (m & 1) ? @"✓" : @"✗", (m & 2) ? @"✓" : @"✗", (m & 4) ? @"✓" : @"✗",
+        (m & 8) ? @"✓" : @"✗", (m & 16) ? @"✓" : @"✗"];
 
     NSString *extractLine;
     if (DeltaVFS_extractRan()) {
@@ -870,24 +879,34 @@ game_sdk_t *game_sdk = new game_sdk_t();
         extractLine = isEnglishMode ? @"Unzip: skipped (already extracted)" : @"Giải nén: bỏ qua (đã bung trước đó)";
     }
 
+    // Chẩn đoán 3 tầng: hook chết -> game không đọc bundle -> đọc bundle nhưng thiếu file trong Delta
     NSString *verdict;
-    if (hits > 0) {
+    if (m == 0) {
+        verdict = isEnglishMode ? @"❌ HOOKS DEAD - MSHookFunction failed" : @"❌ HOOK CHẾT - MSHookFunction thất bại";
+    } else if (totalCalls == 0) {
+        verdict = isEnglishMode ? @"❌ Hooks set but 0 file calls seen" : @"❌ Hook đã cài nhưng chưa bắt được lời gọi file nào";
+    } else if (bundleCalls == 0) {
+        verdict = isEnglishMode ? @"⚠️ Game reads OUTSIDE .app (not the bundle)" : @"⚠️ Game đọc NGOÀI .app (không phải trong bundle)";
+    } else if (hits > 0) {
         verdict = isEnglishMode ? @"✅ Game IS reading through Delta" : @"✅ Game ĐANG đọc qua Delta";
-    } else if (total > 0) {
-        verdict = isEnglishMode ? @"⚠️ Bundle hit, but 0 files matched in Delta" : @"⚠️ Có gọi bundle nhưng 0 file khớp trong Delta";
     } else {
-        verdict = isEnglishMode ? @"… waiting for the game to read files" : @"… đang chờ game đọc file";
+        verdict = isEnglishMode ? @"⚠️ Bundle read, but files missing in Delta" : @"⚠️ Có đọc bundle nhưng Delta thiếu file";
     }
 
     NSString *text = [NSString stringWithFormat:
         @"%@\n\n"
-         "Delta: %@\n"
          "%@\n"
+         "%@\n"
+         "Delta: %@\n\n"
+         "Tổng lời gọi file: %llu\n"
+         "Trong bundle: %llu\n"
          "Hits  (đọc từ Delta): %llu\n"
          "Miss  (đọc bundle gốc): %llu\n"
          "Tỉ lệ qua Delta: %.1f%%\n\n"
+         "Path bất kỳ gần nhất:\n%@\n\n"
          "File Delta gần nhất:\n%@",
-        verdict, dir, extractLine, hits, misses, pct, last];
+        verdict, hookLine, extractLine, dir,
+        totalCalls, bundleCalls, hits, misses, pct, anyPath, last];
 
     _deltaLogView.text = text;
 }
