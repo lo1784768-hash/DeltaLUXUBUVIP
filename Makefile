@@ -18,7 +18,7 @@ $(TWEAK_NAME)_FRAMEWORKS = UIKit Foundation QuartzCore CoreGraphics AudioToolbox
 $(TWEAK_NAME)_CCFLAGS = -std=c++11 -fno-rtti -fno-exceptions -DNDEBUG
 $(TWEAK_NAME)_CFLAGS = -fobjc-arc -Wno-deprecated-declarations -Wno-unused-variable -Wno-unused-value
 
-$(TWEAK_NAME)_FILES = Source/Menu.mm
+$(TWEAK_NAME)_FILES = Source/Menu.mm Source/fishhook.c
 
 $(TWEAK_NAME)_LIBRARIES += substrate z
 

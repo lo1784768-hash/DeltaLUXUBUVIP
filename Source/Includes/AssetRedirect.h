@@ -11,6 +11,7 @@
 #include <atomic>
 
 #import "MemoryUtils.h"
+#import "fishhook.h"
 
 // Gói Delta.zip nằm NGAY TRONG App Bundle: FreeFire.app/Delta.zip
 // (đường dẫn đầy đủ được dựng lúc chạy từ bundlePath vì UUID bundle chỉ biết khi runtime)
@@ -372,20 +373,30 @@ static void initDeltaAllTrafficVFS() {
         }
     }
 
-    // Khởi tạo các mắt xích Hook hệ thống thông qua Macro HOOKSYM của bạn
-    HOOKSYM("access", hooked_access, orig_access);
-    HOOKSYM("open", hooked_open, orig_open);
-    HOOKSYM("fopen", hooked_fopen, orig_fopen);
-    HOOKSYM("stat", hooked_stat, orig_stat);
-    HOOKSYM("lstat", hooked_lstat, orig_lstat);
+    // ============ CÀI HOOK I/O BẰNG FISHHOOK ============
+    // MSHookFunction KHÔNG hook được open/stat/... vì chúng nằm trong dyld shared cache
+    // (vùng code read-only Apple bảo vệ). Fishhook không patch code mà chỉ tráo con trỏ
+    // trong bảng import (__DATA) của từng image -> chạy được cả khi KHÔNG jailbreak, và
+    // bắt được luôn các hàm trong shared cache. Đây là cách chuẩn để chặn I/O của game.
 
-    // Sau khi hook: nếu con trỏ orig_* khác NULL nghĩa là MSHookFunction đã bám thành công.
-    // Ghi lại bitmask để tab INFO hiển thị hook nào sống/chết -> chẩn đoán nhanh.
-    unsigned int mask = 0;
-    if (orig_open)   mask |= 1;
-    if (orig_fopen)  mask |= 2;
-    if (orig_access) mask |= 4;
-    if (orig_stat)   mask |= 8;
-    if (orig_lstat)  mask |= 16;
-    g_deltaHooksOK.store(mask, std::memory_order_relaxed);
+    // Lấy sẵn con trỏ hàm gốc qua dlsym làm mạng an toàn (phòng khi fishhook không bắt
+    // được binding cho 1 image nào đó -> orig_* vẫn trỏ vào libc thật, không bị NULL).
+    orig_open   = (int   (*)(const char *, int, ...))     dlsym((void *)RTLD_DEFAULT, "open");
+    orig_fopen  = (FILE *(*)(const char *, const char *)) dlsym((void *)RTLD_DEFAULT, "fopen");
+    orig_access = (int   (*)(const char *, int))          dlsym((void *)RTLD_DEFAULT, "access");
+    orig_stat   = (int   (*)(const char *, struct stat *))dlsym((void *)RTLD_DEFAULT, "stat");
+    orig_lstat  = (int   (*)(const char *, struct stat *))dlsym((void *)RTLD_DEFAULT, "lstat");
+
+    struct rebinding rebindings[] = {
+        {"open",   (void *)hooked_open,   (void **)&orig_open},
+        {"fopen",  (void *)hooked_fopen,  (void **)&orig_fopen},
+        {"access", (void *)hooked_access, (void **)&orig_access},
+        {"stat",   (void *)hooked_stat,   (void **)&orig_stat},
+        {"lstat",  (void *)hooked_lstat,  (void **)&orig_lstat},
+    };
+    int rebindRet = rebind_symbols(rebindings, sizeof(rebindings) / sizeof(rebindings[0]));
+
+    // rebind_symbols trả 0 nếu chạy trót lọt. Con số thật để soi hook sống hay không vẫn
+    // là "Tổng lời gọi file" bên tab INFO (fishhook ăn thì nó tăng ngay lập tức).
+    g_deltaHooksOK.store(rebindRet == 0 ? 0x1F : 0, std::memory_order_relaxed);
 }

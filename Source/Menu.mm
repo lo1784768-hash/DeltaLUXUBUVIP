@@ -866,11 +866,11 @@ game_sdk_t *game_sdk = new game_sdk_t();
     const char *dirC = DeltaVFS_deltaDir();
     NSString *dir = (dirC && dirC[0]) ? [NSString stringWithUTF8String:dirC] : @"(chưa xác định)";
 
-    // Trạng thái từng hook (sống ✓ / chết ✗)
+    // Trạng thái cài hook bằng fishhook (rebind symbol import)
     unsigned int m = DeltaVFS_hooksOK();
-    NSString *hookLine = [NSString stringWithFormat:@"Hooks: open%@ fopen%@ access%@ stat%@ lstat%@",
-        (m & 1) ? @"✓" : @"✗", (m & 2) ? @"✓" : @"✗", (m & 4) ? @"✓" : @"✗",
-        (m & 8) ? @"✓" : @"✗", (m & 16) ? @"✓" : @"✗"];
+    NSString *hookLine = (m != 0)
+        ? (isEnglishMode ? @"Fishhook: installed ✓" : @"Fishhook: đã cài ✓")
+        : (isEnglishMode ? @"Fishhook: FAILED ✗" : @"Fishhook: THẤT BẠI ✗");
 
     NSString *extractLine;
     if (!DeltaVFS_zipFound()) {
@@ -884,9 +884,9 @@ game_sdk_t *game_sdk = new game_sdk_t();
     // Chẩn đoán 3 tầng: hook chết -> game không đọc bundle -> đọc bundle nhưng thiếu file trong Delta
     NSString *verdict;
     if (m == 0) {
-        verdict = isEnglishMode ? @"❌ HOOKS DEAD - MSHookFunction failed" : @"❌ HOOK CHẾT - MSHookFunction thất bại";
+        verdict = isEnglishMode ? @"❌ HOOKS DEAD - fishhook failed" : @"❌ HOOK CHẾT - fishhook thất bại";
     } else if (totalCalls == 0) {
-        verdict = isEnglishMode ? @"❌ Hooks set but 0 file calls seen" : @"❌ Hook đã cài nhưng chưa bắt được lời gọi file nào";
+        verdict = isEnglishMode ? @"❌ Hooked but 0 file calls (fishhook not biting?)" : @"❌ Đã cài nhưng 0 lời gọi (fishhook chưa ăn?)";
     } else if (bundleCalls == 0) {
         verdict = isEnglishMode ? @"⚠️ Game reads OUTSIDE .app (not the bundle)" : @"⚠️ Game đọc NGOÀI .app (không phải trong bundle)";
     } else if (hits > 0) {
