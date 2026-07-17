@@ -64,7 +64,6 @@ static NSDictionary<NSString *, NSArray<NSString *> *> *LocStrings() {
             @"speed_x2": @[@"Tốc Độ x2", @"Speed x2"],
             @"speed_x8": @[@"Tốc Độ x8", @"Speed x8"],
             @"no_recoil": @[@"Chống Giật", @"No Recoil"],
-            @"magic_bullet": @[@"Đạn Ma Thuật", @"Magic Bullet"],
             @"spin_bot": @[@"Xoay Nhân Vật (SpinBot)", @"Character Spin (SpinBot)"],
             @"action": @[@"Hành Động", @"Action"],
             @"status": @[@"Trạng thái", @"Status"],
@@ -129,7 +128,6 @@ static NSString *LOC(NSString *key) {
 @property (nonatomic, strong) UISwitch *speedX2Switch;
 @property (nonatomic, strong) UISwitch *speedX8Switch;
 @property (nonatomic, strong) UISwitch *noRecoilSwitch;
-@property (nonatomic, strong) UISwitch *magicBulletSwitch;
 @property (nonatomic, strong) UISwitch *spinBotSwitch;
 @property (nonatomic, strong) UISlider *spinSpeedSlider;
 @property (nonatomic, strong) UILabel *spinSpeedLabel;
@@ -537,9 +535,6 @@ static MemScanner searchScanner;
     _noRecoilSwitch = [self addToggleCardWithLocKey:@"no_recoil" symbol:@"shield.fill" frame:CGRectMake(btnX, btnY, btnW, cardH) action:@selector(toggleNoRecoil:) toView:scroll];
     btnY += cardH + btnGap;
 
-    _magicBulletSwitch = [self addToggleCardWithLocKey:@"magic_bullet" symbol:@"wand.and.stars" frame:CGRectMake(btnX, btnY, btnW, cardH) action:@selector(toggleMagicBullet:) toView:scroll];
-    btnY += cardH + btnGap;
-
     _spinBotSwitch = [self addToggleCardWithLocKey:@"spin_bot" symbol:@"arrow.triangle.2.circlepath" frame:CGRectMake(btnX, btnY, btnW, cardH) action:@selector(toggleSpinBot:) toView:scroll];
     btnY += cardH + btnGap;
 
@@ -753,14 +748,6 @@ static MemScanner searchScanner;
     [self showToast:[NSString stringWithFormat:@"%@ %@", LOC(@"no_recoil"), LOC(state ? @"on" : @"off")]];
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         ModHacks::noRecoil(state);
-    });
-}
-
-- (void)toggleMagicBullet:(UISwitch *)sender {
-    BOOL state = sender.on;
-    [self showToast:[NSString stringWithFormat:@"%@ %@", LOC(@"magic_bullet"), LOC(state ? @"on" : @"off")]];
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        ModHacks::magicBullet(state);
     });
 }
 

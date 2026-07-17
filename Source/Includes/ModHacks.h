@@ -13,7 +13,6 @@ inline MemScanner &antenaScanner() { static MemScanner instance; return instance
 inline MemScanner &speedX2Scanner() { static MemScanner instance; return instance; }
 inline MemScanner &speedX8Scanner() { static MemScanner instance; return instance; }
 inline MemScanner &noRecoilScanner() { static MemScanner instance; return instance; }
-inline MemScanner &magicBulletScanner() { static MemScanner instance; return instance; }
 
 // On: fresh search + edit, which leaves the matched addresses sitting in the
 // scanner's results. Off: write the original value back to those same remembered
@@ -67,24 +66,6 @@ inline void noRecoil(bool on) {
     } else {
         s.editAll("1016018816", "I32");
     }
-}
-
-// Ported call-for-call from the source script, including its own oddity: the final
-// searchNumber below re-scans the full range and supersedes the four searchNearby
-// calls before it, since MemScanner::searchNumber (like h5gg's) always resets the
-// result set. That's how the source script is written; kept as-is since there's no
-// way to verify the "intended" narrowing behavior without the live game binary.
-inline void magicBullet(bool on) {
-    if (!on) return; // source script's OFF handler only shows a toast, there's no revert
-    MemScanner &s = magicBulletScanner();
-    s.clearResults();
-    s.searchNumber("4333543704410193920", "I64", 0x100000000ULL, 0x160000000ULL);
-    s.searchNearby("0.01", "F32", 0x8);
-    s.searchNearby("0.0219~0.02975", "F32", 0x32);
-    s.searchNearby("0.1035~0.1070", "F32", 0x4);
-    s.searchNearby("2.802597e-45", "F32", 0x4);
-    s.searchNumber("0.1035~0.1070", "F32", 0x100000000ULL, 0x160000000ULL);
-    s.editAll("1.875", "F32");
 }
 
 // Two-step "Hanh Dong" (action) patcher: pick a base emote/gesture ("goc") to locate,
