@@ -69,6 +69,9 @@ static inline uint16_t ar_rd16(const uint8_t *p) {
 static inline uint32_t ar_rd32(const uint8_t *p) {
     return (uint32_t)(p[0] | (p[1] << 8) | (p[2] << 16) | ((uint32_t)p[3] << 24));
 }
+static inline uint64_t ar_rd64(const uint8_t *p) {
+    return (uint64_t)ar_rd32(p) | ((uint64_t)ar_rd32(p + 4) << 32);
+}
 
 // Tạo cây thư mục đệ quy (giống mkdir -p)
 static void ar_mkpath(const char *dir) {
@@ -140,25 +143,63 @@ static void ar_extractZip(const char *zipPath, const char *destDir) {
     }
     if (!eocd) { munmap(base, fileSize); return; }
 
-    uint16_t totalEntries = ar_rd16(eocd + 10);
-    uint32_t cdOffset = ar_rd32(eocd + 16);
+    uint64_t totalEntries = ar_rd16(eocd + 10);
+    uint64_t cdOffset     = ar_rd32(eocd + 16);
+
+    // ===== ZIP64: nếu EOCD thường dùng giá trị sentinel thì lấy số thật từ bản ghi ZIP64 =====
+    // Ngay TRƯỚC EOCD là "ZIP64 EOCD Locator" (chữ ký 0x07064b50, dài 20 byte). Locator trỏ tới
+    // "ZIP64 EOCD Record" (chữ ký 0x06064b50) chứa số entry và offset CD ở dạng 64-bit.
+    if ((size_t)(eocd - base) >= 20) {
+        const uint8_t *loc = eocd - 20;
+        if (ar_rd32(loc) == 0x07064b50) {
+            uint64_t z64Off = ar_rd64(loc + 8);
+            if (z64Off + 56 <= fileSize && ar_rd32(base + z64Off) == 0x06064b50) {
+                const uint8_t *z64 = base + z64Off;
+                totalEntries = ar_rd64(z64 + 32); // Tổng số entry (64-bit)
+                cdOffset     = ar_rd64(z64 + 48); // Offset Central Directory (64-bit)
+            }
+        }
+    }
+
     if (cdOffset >= fileSize) { munmap(base, fileSize); return; }
 
     const uint8_t *cd = base + cdOffset;
     char pathBuf[2048];
     char nameBuf[1024];
 
-    for (uint16_t e = 0; e < totalEntries; e++) {
+    for (uint64_t e = 0; e < totalEntries; e++) {
         if ((size_t)(cd - base) + 46 > fileSize) break;
         if (ar_rd32(cd) != 0x02014b50) break; // Không còn Central Directory Header hợp lệ
 
         uint16_t method     = ar_rd16(cd + 10);
-        uint32_t compSize   = ar_rd32(cd + 20);
+        uint32_t uncompSize = ar_rd32(cd + 24);
+        uint64_t compSize   = ar_rd32(cd + 20);
         uint16_t nameLen    = ar_rd16(cd + 28);
         uint16_t extraLen   = ar_rd16(cd + 30);
         uint16_t commentLen = ar_rd16(cd + 32);
-        uint32_t localOff   = ar_rd32(cd + 42);
+        uint64_t localOff   = ar_rd32(cd + 42);
         const uint8_t *nameP = cd + 46;
+
+        // ===== ZIP64: các trường 32-bit bị 0xFFFFFFFF -> giá trị thật nằm trong extra field 0x0001 =====
+        // Trong extra, các trường 64-bit xuất hiện THEO THỨ TỰ cố định và CHỈ khi trường 32-bit
+        // tương ứng bị sentinel: uncompressed(8) -> compressed(8) -> localHeaderOffset(8) -> disk(4).
+        {
+            const uint8_t *ex = nameP + nameLen;
+            const uint8_t *exEnd = ex + extraLen;
+            while (ex + 4 <= exEnd) {
+                uint16_t exId  = ar_rd16(ex);
+                uint16_t exSz  = ar_rd16(ex + 2);
+                const uint8_t *fld = ex + 4;
+                if (ex + 4 + exSz > exEnd) break;
+                if (exId == 0x0001) {
+                    if (uncompSize == 0xFFFFFFFF && fld + 8 <= ex + 4 + exSz) fld += 8; // bỏ qua uncompressed
+                    if (compSize   == 0xFFFFFFFF && fld + 8 <= ex + 4 + exSz) { compSize = ar_rd64(fld); fld += 8; }
+                    if (localOff   == 0xFFFFFFFF && fld + 8 <= ex + 4 + exSz) { localOff = ar_rd64(fld); fld += 8; }
+                    break;
+                }
+                ex += 4 + exSz;
+            }
+        }
 
         // Nhảy sang entry kế tiếp trước khi xử lý (tránh quên cập nhật)
         const uint8_t *nextCd = nameP + nameLen + extraLen + commentLen;
