@@ -47,6 +47,7 @@
 
 #include <string>
 #include <unordered_set>
+#include <unordered_map>
 #include <mutex>
 #include <atomic>
 #include <cstdint>
@@ -172,25 +173,33 @@ inline size_t netLogLongestPrintableRun(const void *buf, size_t len) {
     return best;
 }
 
-#define NETLOG_UDP_PEEK_MIN_TEXT_RUN 10
+// Payload ngắn (24-34 byte) + byte ngẫu nhiên/mã hoá có ~37% khả năng rơi vào dải in-được mỗi
+// byte, nên ngưỡng 10 vẫn lọt khá nhiều chuỗi trùng hợp (đặc biệt khi có 1 đoạn magic-byte cố
+// định kiểu ";8:*:" lặp lại ở đầu mọi gói - không phải chuỗi bí mật, chỉ là header giao thức).
+// Nâng ngưỡng lên 16 cho chắc hơn: 1 đoạn 16+ ký tự in-được liên tục khó xảy ra ngẫu nhiên
+// (~37%^16 ≈ 1 phần triệu mỗi gói), nên nếu vẫn thấy thì gần như chắc chắn là chuỗi thật.
+#define NETLOG_UDP_PEEK_MIN_TEXT_RUN 16
 
-// fd UDP đã connect() tới 1 peer trong dải cổng nghi vấn - soi MỌI gói write()/send() sau đó
-// (khác sniPendingFds: không phải "chỉ 1 lần", vì mỗi gói UDP là 1 đơn vị độc lập, không phải
-// 1 bắt tay như TLS). netLogRaw tự gom trùng nếu payload giống hệt, nên không lo log tràn.
+// fd UDP đã connect() tới 1 peer trong dải cổng nghi vấn -> port thật (để log kèm, xác nhận
+// đúng dải 10000-10020 chứ không lẫn fd khác) - soi MỌI gói write()/send() sau đó (khác
+// sniPendingFds: không phải "chỉ 1 lần", vì mỗi gói UDP là 1 đơn vị độc lập, không phải 1 bắt
+// tay như TLS). netLogRaw tự gom trùng nếu payload giống hệt, nên không lo log tràn.
 static std::mutex g_udpPeekMutex;
-static std::unordered_set<int> g_udpPeekFds;
+static std::unordered_map<int, uint16_t> g_udpPeekFds;
 static std::atomic<int> g_udpPeekCount{0};
 
-inline void udpPeekMark(int fd) {
+inline void udpPeekMark(int fd, uint16_t port) {
     std::lock_guard<std::mutex> lock(g_udpPeekMutex);
     if (g_udpPeekFds.size() > 256) { g_udpPeekFds.clear(); g_udpPeekCount.store(0, std::memory_order_relaxed); }
-    if (g_udpPeekFds.insert(fd).second) g_udpPeekCount.fetch_add(1, std::memory_order_relaxed);
+    if (g_udpPeekFds.emplace(fd, port).second) g_udpPeekCount.fetch_add(1, std::memory_order_relaxed);
 }
 
-inline bool udpPeekActive(int fd) {
-    if (g_udpPeekCount.load(std::memory_order_relaxed) == 0) return false; // hot-path bail, không lock
+// Trả cổng đã lưu cho fd nếu đang được soi, hoặc 0 nếu không (fd không nằm trong danh sách soi).
+inline uint16_t udpPeekPort(int fd) {
+    if (g_udpPeekCount.load(std::memory_order_relaxed) == 0) return 0; // hot-path bail, không lock
     std::lock_guard<std::mutex> lock(g_udpPeekMutex);
-    return g_udpPeekFds.count(fd) > 0;
+    auto it = g_udpPeekFds.find(fd);
+    return it == g_udpPeekFds.end() ? 0 : it->second;
 }
 
 // fd TCP vừa connect() xong, đang đợi write()/send() đầu tiên để soi ClientHello (SNI)
@@ -250,7 +259,7 @@ inline int hooked_connect(int fd, const struct sockaddr *addr, socklen_t len) {
     // ClientHello (nếu có) là gói ĐẦU TIÊN client gửi sau khi kết nối TCP xong - đánh dấu fd
     // này để hook write()/send() bên dưới soi đúng gói đầu, không soi nhầm data sau đó.
     if (isTcp && (ret == 0 || errno == EINPROGRESS)) sniMarkPending(fd);
-    if (!isTcp && ret == 0 && netLogPortInPeekRange(port)) udpPeekMark(fd);
+    if (!isTcp && ret == 0 && netLogPortInPeekRange(port)) udpPeekMark(fd, port);
     return ret;
 }
 
@@ -290,7 +299,7 @@ inline int hooked_connectx(int fd, const sa_endpoints_t *endpoints, sae_associd_
 
     int ret = orig_connectx(fd, endpoints, associd, flags, iov, iovcnt, len, connid);
     if (isTcp && (ret == 0 || errno == EINPROGRESS)) sniMarkPending(fd);
-    if (!isTcp && ret == 0 && netLogPortInPeekRange(port)) udpPeekMark(fd);
+    if (!isTcp && ret == 0 && netLogPortInPeekRange(port)) udpPeekMark(fd, port);
     return ret;
 }
 
@@ -454,12 +463,14 @@ inline bool sniInspectFirstWrite(int fd, const void *buf, size_t count) {
 // Soi payload UDP cho fd đã connect() tới dải cổng nghi vấn (udpPeekMark) - MỌI gói, không
 // phải chỉ gói đầu như TLS/HTTP, vì UDP là datagram rời rạc chứ không phải 1 bắt tay liên tục.
 inline void udpPeekInspectWrite(int fd, const void *buf, size_t count) {
-    if (!buf || count == 0 || !udpPeekActive(fd)) return;
+    if (!buf || count == 0) return;
+    uint16_t port = udpPeekPort(fd);
+    if (port == 0) return; // fd không nằm trong dải cổng nghi vấn
     if (netLogLongestPrintableRun(buf, count) < NETLOG_UDP_PEEK_MIN_TEXT_RUN) return;
     std::string preview;
     netLogPreviewPayload(buf, count, preview);
     char detail[160];
-    snprintf(detail, sizeof(detail), "fd=%d len=%zu | %s", fd, count, preview.c_str());
+    snprintf(detail, sizeof(detail), "port=%d len=%zu | %s", port, count, preview.c_str());
     netLogRaw("UDP-PEEK", detail);
 }
 
