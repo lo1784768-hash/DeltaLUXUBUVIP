@@ -1,8 +1,6 @@
 #pragma once
 #import <Foundation/Foundation.h>
 #import <netdb.h>
-#import <resolv.h> // res_9_query family - resolver BSD cấp thấp, netcode game hay gọi thẳng
-#import <dns_sd.h> // DNSServiceGetAddrInfo - đường phân giải của Network.framework / nw_connection
 #import <string.h>
 #import <strings.h>
 #import <ctype.h> // tolower
@@ -213,63 +211,6 @@ inline struct hostent *hooked_gethostbyname2(const char *name, int af) {
     return orig_gethostbyname2(name, af);
 }
 
-// res_query/res_search (và bản _n có res_state) là resolver BSD cấp thấp: chúng KHÔNG đi qua
-// getaddrinfo mà bắn thẳng gói DNS rồi trả về answer thô. Netcode realtime (vd server trận
-// ggblueshark.com) hay gọi trực tiếp mấy hàm này để né getaddrinfo, nên phải hook riêng.
-// Trên Apple các symbol này được đổi tên thành res_9_query/res_9_search/... (xem resolv.h),
-// vì vậy fishhook phải rebind đúng tên "res_9_*" chứ không phải "res_query".
-static int (*orig_res_query)(const char *, int, int, u_char *, int);
-static int (*orig_res_search)(const char *, int, int, u_char *, int);
-static int (*orig_res_nquery)(res_state, const char *, int, int, u_char *, int);
-static int (*orig_res_nsearch)(res_state, const char *, int, int, u_char *, int);
-
-inline int hooked_res_query(const char *dname, int cls, int type, u_char *answer, int anslen) {
-    if (isJunkDNSDomain(dname)) { dnsNoteBlocked(dname); h_errno = HOST_NOT_FOUND; return -1; }
-    return orig_res_query(dname, cls, type, answer, anslen);
-}
-
-inline int hooked_res_search(const char *dname, int cls, int type, u_char *answer, int anslen) {
-    if (isJunkDNSDomain(dname)) { dnsNoteBlocked(dname); h_errno = HOST_NOT_FOUND; return -1; }
-    return orig_res_search(dname, cls, type, answer, anslen);
-}
-
-inline int hooked_res_nquery(res_state statep, const char *dname, int cls, int type, u_char *answer, int anslen) {
-    if (isJunkDNSDomain(dname)) { dnsNoteBlocked(dname); h_errno = HOST_NOT_FOUND; return -1; }
-    return orig_res_nquery(statep, dname, cls, type, answer, anslen);
-}
-
-inline int hooked_res_nsearch(res_state statep, const char *dname, int cls, int type, u_char *answer, int anslen) {
-    if (isJunkDNSDomain(dname)) { dnsNoteBlocked(dname); h_errno = HOST_NOT_FOUND; return -1; }
-    return orig_res_nsearch(statep, dname, cls, type, answer, anslen);
-}
-
-// DNSServiceGetAddrInfo là đường phân giải của libsystem_dnssd: Network.framework (nw_connection)
-// và mọi code dùng dns_sd đi qua đây, KHÔNG chạm getaddrinfo/res_*. Chặn bằng cách trả lỗi đồng bộ
-// kDNSServiceErr_NoSuchName -> caller không nhận callback, coi như host không tồn tại. Đây là đường
-// khả nghi nhất cho server realtime kiểu ggblueshark.com nếu netcode dùng Network.framework.
-static DNSServiceErrorType (*orig_DNSServiceGetAddrInfo)(DNSServiceRef *, DNSServiceFlags, uint32_t, DNSServiceProtocol, const char *, DNSServiceGetAddrInfoReply, void *);
-
-inline DNSServiceErrorType hooked_DNSServiceGetAddrInfo(DNSServiceRef *sdRef, DNSServiceFlags flags, uint32_t interfaceIndex, DNSServiceProtocol protocol, const char *hostname, DNSServiceGetAddrInfoReply callBack, void *context) {
-    if (isJunkDNSDomain(hostname)) {
-        dnsNoteBlocked(hostname);
-        return kDNSServiceErr_NoSuchName;
-    }
-    return orig_DNSServiceGetAddrInfo(sdRef, flags, interfaceIndex, protocol, hostname, callBack, context);
-}
-
-// getipnodebyname: resolver BSD cũ (thread-safe, thay cho gethostbyname). Hiếm dùng nhưng hook cho
-// trọn - fail bằng cách trả NULL và set *error_num = HOST_NOT_FOUND.
-static struct hostent *(*orig_getipnodebyname)(const char *, int, int, int *);
-
-inline struct hostent *hooked_getipnodebyname(const char *name, int af, int flags, int *error_num) {
-    if (isJunkDNSDomain(name)) {
-        dnsNoteBlocked(name);
-        if (error_num) *error_num = HOST_NOT_FOUND;
-        return NULL;
-    }
-    return orig_getipnodebyname(name, af, flags, error_num);
-}
-
 // ===== 3. NSURLPROTOCOL (Cấp độ HTTP/HTTPS) =====
 @interface JunkAdURLProtocol : NSURLProtocol
 @end
@@ -310,24 +251,11 @@ inline void installDNSBlockHook() {
     orig_getaddrinfo    = (int (*)(const char *, const char *, const struct addrinfo *, struct addrinfo **))dlsym((void *)RTLD_DEFAULT, "getaddrinfo");
     orig_gethostbyname  = (struct hostent *(*)(const char *))dlsym((void *)RTLD_DEFAULT, "gethostbyname");
     orig_gethostbyname2 = (struct hostent *(*)(const char *, int))dlsym((void *)RTLD_DEFAULT, "gethostbyname2");
-    // Symbol thật trong shared cache là res_9_* (resolv.h #define res_query -> res_9_query ...)
-    orig_res_query      = (int (*)(const char *, int, int, u_char *, int))dlsym((void *)RTLD_DEFAULT, "res_9_query");
-    orig_res_search     = (int (*)(const char *, int, int, u_char *, int))dlsym((void *)RTLD_DEFAULT, "res_9_search");
-    orig_res_nquery     = (int (*)(res_state, const char *, int, int, u_char *, int))dlsym((void *)RTLD_DEFAULT, "res_9_nquery");
-    orig_res_nsearch    = (int (*)(res_state, const char *, int, int, u_char *, int))dlsym((void *)RTLD_DEFAULT, "res_9_nsearch");
-    orig_DNSServiceGetAddrInfo = (DNSServiceErrorType (*)(DNSServiceRef *, DNSServiceFlags, uint32_t, DNSServiceProtocol, const char *, DNSServiceGetAddrInfoReply, void *))dlsym((void *)RTLD_DEFAULT, "DNSServiceGetAddrInfo");
-    orig_getipnodebyname = (struct hostent *(*)(const char *, int, int, int *))dlsym((void *)RTLD_DEFAULT, "getipnodebyname");
 
     struct rebinding dnsRebindings[] = {
-        {"getaddrinfo",          (void *)hooked_getaddrinfo,          (void **)&orig_getaddrinfo},
-        {"gethostbyname",        (void *)hooked_gethostbyname,        (void **)&orig_gethostbyname},
-        {"gethostbyname2",       (void *)hooked_gethostbyname2,       (void **)&orig_gethostbyname2},
-        {"res_9_query",          (void *)hooked_res_query,            (void **)&orig_res_query},
-        {"res_9_search",         (void *)hooked_res_search,           (void **)&orig_res_search},
-        {"res_9_nquery",         (void *)hooked_res_nquery,           (void **)&orig_res_nquery},
-        {"res_9_nsearch",        (void *)hooked_res_nsearch,          (void **)&orig_res_nsearch},
-        {"DNSServiceGetAddrInfo",(void *)hooked_DNSServiceGetAddrInfo,(void **)&orig_DNSServiceGetAddrInfo},
-        {"getipnodebyname",      (void *)hooked_getipnodebyname,      (void **)&orig_getipnodebyname},
+        {"getaddrinfo",    (void *)hooked_getaddrinfo,    (void **)&orig_getaddrinfo},
+        {"gethostbyname",  (void *)hooked_gethostbyname,  (void **)&orig_gethostbyname},
+        {"gethostbyname2", (void *)hooked_gethostbyname2, (void **)&orig_gethostbyname2},
     };
     rebind_symbols(dnsRebindings, sizeof(dnsRebindings) / sizeof(dnsRebindings[0]));
 
