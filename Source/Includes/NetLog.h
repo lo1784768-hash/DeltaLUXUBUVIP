@@ -30,6 +30,10 @@
 //              socket-layer UDP/TCP blocking"), để biết chắc nội dung trước khi quyết định chặn.
 //              Chỉ ghi log nếu gói có đoạn ký tự in-được liên tục >= 10 (netLogLongestPrintableRun)
 //              - lọc bớt noise binary thuần của gameplay netcode (đa số traffic ở dải cổng này).
+//   UDP-THR  : gói UDP gửi tới dải cổng 10000-10020 bị ĐIỀU TIẾT (không phải chặn hẳn) -
+//              netLogUdpThrottlePaused() luân phiên ngưng 5s / chạy 5s liên tục theo mốc thời
+//              gian toàn cục; trong 5s "ngưng", gói bị bỏ nhưng hook vẫn trả về như gửi thành
+//              công (UDP vốn mất gói bình thường) để làm chậm nhịp request mà không phá kết nối.
 //
 // Bản thân NetLog không tự quyết định chặn gì - việc chặn (connect theo IP, hay write/send
 // theo hostname từ SNI/Host) do module khác (DNSBlock.h) đăng ký qua netLogSetBlockCheck /
@@ -143,6 +147,20 @@ inline bool netLogFormatSockaddr(const struct sockaddr *sa, char *out, size_t ou
 // "block ALL UDP..."), nên giờ chỉ soi xem có gói nào chứa nội dung dạng chữ (JSON/HTTP/tracking
 // string...) lộ ra không, không đổi hành vi mạng - để biết chắc trước khi quyết định chặn gì.
 inline bool netLogPortInPeekRange(uint16_t port) { return port >= 10000 && port <= 10020; }
+
+// ===== Điều tiết (throttle) UDP gửi tới dải cổng nghi vấn (10000-10020): ngưng 5s / chạy 5s,
+// lặp lại liên tục - làm chậm nhịp request mà KHÔNG chặn hẳn. Trong khoảng "ngưng", hàm hook
+// vẫn trả về đúng số byte như gửi thành công (UDP vốn có thể mất gói bình thường) để không phá
+// logic reliability/retry riêng của game, chỉ đơn giản là gói bị bỏ, không thật sự ra khỏi máy.
+// Mốc thời gian tính từ lần init static đầu tiên (thread-safe theo C++11) - mọi fd dùng chung 1 nhịp.
+#define NETLOG_UDP_THROTTLE_PERIOD_SEC 5
+
+inline bool netLogUdpThrottlePaused() {
+    static time_t startTime = time(NULL);
+    long elapsed = (long)difftime(time(NULL), startTime);
+    long phase = elapsed % (NETLOG_UDP_THROTTLE_PERIOD_SEC * 2);
+    return phase < NETLOG_UDP_THROTTLE_PERIOD_SEC; // nửa đầu chu kỳ = ngưng, nửa sau = chạy
+}
 
 // Đổi buffer thành preview: ký tự in được giữ nguyên, còn lại thay '.', cắt ngắn cho vừa 1 dòng
 // log - không phải giải mã, chỉ để mắt người nhìn ra có chữ/JSON lộ trong payload hay không.
@@ -316,13 +334,18 @@ inline ssize_t hooked_sendto(int fd, const void *buf, size_t len, int flags,
             char ep[96];
             snprintf(ep, sizeof(ep), "%s:%d", ip, port);
             netLogRaw("UDP", ep);
-            if (netLogPortInPeekRange(port) && buf && len > 0 &&
-                netLogLongestPrintableRun(buf, len) >= NETLOG_UDP_PEEK_MIN_TEXT_RUN) {
-                std::string preview;
-                netLogPreviewPayload(buf, len, preview);
-                char detail[160];
-                snprintf(detail, sizeof(detail), "%s len=%zu | %s", ep, len, preview.c_str());
-                netLogRaw("UDP-PEEK", detail);
+            if (netLogPortInPeekRange(port)) {
+                if (buf && len > 0 && netLogLongestPrintableRun(buf, len) >= NETLOG_UDP_PEEK_MIN_TEXT_RUN) {
+                    std::string preview;
+                    netLogPreviewPayload(buf, len, preview);
+                    char detail[160];
+                    snprintf(detail, sizeof(detail), "%s len=%zu | %s", ep, len, preview.c_str());
+                    netLogRaw("UDP-PEEK", detail);
+                }
+                if (netLogUdpThrottlePaused()) {
+                    netLogRaw("UDP-THR", ep);
+                    return (ssize_t)len; // giả vờ gửi thành công, thực ra bỏ gói - điều tiết nhịp request
+                }
             }
         }
     }
@@ -462,29 +485,39 @@ inline bool sniInspectFirstWrite(int fd, const void *buf, size_t count) {
 
 // Soi payload UDP cho fd đã connect() tới dải cổng nghi vấn (udpPeekMark) - MỌI gói, không
 // phải chỉ gói đầu như TLS/HTTP, vì UDP là datagram rời rạc chứ không phải 1 bắt tay liên tục.
-inline void udpPeekInspectWrite(int fd, const void *buf, size_t count) {
-    if (!buf || count == 0) return;
+// Trả true nếu gói này đang bị điều tiết (ngưng) - caller trả về count giả vờ, không gọi
+// write()/send() gốc, xem netLogUdpThrottlePaused().
+inline bool udpPeekInspectWrite(int fd, const void *buf, size_t count) {
+    if (!buf || count == 0) return false;
     uint16_t port = udpPeekPort(fd);
-    if (port == 0) return; // fd không nằm trong dải cổng nghi vấn
-    if (netLogLongestPrintableRun(buf, count) < NETLOG_UDP_PEEK_MIN_TEXT_RUN) return;
-    std::string preview;
-    netLogPreviewPayload(buf, count, preview);
-    char detail[160];
-    snprintf(detail, sizeof(detail), "port=%d len=%zu | %s", port, count, preview.c_str());
-    netLogRaw("UDP-PEEK", detail);
+    if (port == 0) return false; // fd không nằm trong dải cổng nghi vấn
+    if (netLogLongestPrintableRun(buf, count) >= NETLOG_UDP_PEEK_MIN_TEXT_RUN) {
+        std::string preview;
+        netLogPreviewPayload(buf, count, preview);
+        char detail[160];
+        snprintf(detail, sizeof(detail), "port=%d len=%zu | %s", port, count, preview.c_str());
+        netLogRaw("UDP-PEEK", detail);
+    }
+    if (netLogUdpThrottlePaused()) {
+        char detail[64];
+        snprintf(detail, sizeof(detail), "port=%d len=%zu", port, count);
+        netLogRaw("UDP-THR", detail);
+        return true;
+    }
+    return false;
 }
 
 static ssize_t (*orig_write)(int, const void *, size_t);
 inline ssize_t hooked_write(int fd, const void *buf, size_t count) {
     if (sniInspectFirstWrite(fd, buf, count)) { errno = ECONNRESET; return -1; }
-    udpPeekInspectWrite(fd, buf, count);
+    if (udpPeekInspectWrite(fd, buf, count)) return (ssize_t)count;
     return orig_write(fd, buf, count);
 }
 
 static ssize_t (*orig_send)(int, const void *, size_t, int);
 inline ssize_t hooked_send(int fd, const void *buf, size_t count, int flags) {
     if (sniInspectFirstWrite(fd, buf, count)) { errno = ECONNRESET; return -1; }
-    udpPeekInspectWrite(fd, buf, count);
+    if (udpPeekInspectWrite(fd, buf, count)) return (ssize_t)count;
     return orig_send(fd, buf, count, flags);
 }
 
