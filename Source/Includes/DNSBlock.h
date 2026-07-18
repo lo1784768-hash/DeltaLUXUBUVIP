@@ -464,6 +464,15 @@ inline void netBlockLearnHostIPs(const char *host) {
 // thật. Phải cực nhanh, không I/O/mạng: chỉ so khớp IP với registry đã học sẵn ở trên.
 inline bool netBlockCheckConnect(const char *ip, uint16_t port, char *reasonOut, size_t reasonLen) {
     if (!ip || !ip[0]) return false;
+    // Chặn toàn bộ loopback (127.0.0.0/8 và ::1): game/anti-cheat hay dò cổng local kiểu
+    // 127.0.0.1:22, :2222 (SSH/Dropbear - dấu hiệu jailbreak), :27042 (cổng mặc định Frida) để
+    // phát hiện máy jailbreak/đang bị hook. Chặn ở đây làm connect() fail y hệt máy sạch không
+    // có gì chạy ở các cổng đó (ECONNREFUSED tự nhiên, không phải hành vi lạ).
+    if (strncmp(ip, "127.", 4) == 0 || strcmp(ip, "::1") == 0) {
+        dnsNoteBlocked(ip);
+        snprintf(reasonOut, reasonLen, "%s:%d (loopback probe)", ip, port);
+        return true;
+    }
     if (strcmp(ip, "8.8.8.8") == 0) {
         dnsNoteBlocked("8.8.8.8");
         snprintf(reasonOut, reasonLen, "8.8.8.8:%d", port);
