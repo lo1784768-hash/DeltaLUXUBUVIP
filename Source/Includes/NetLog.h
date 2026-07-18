@@ -14,10 +14,10 @@
 //   HTTP : full URL kèm path - do JunkAdURLProtocol gọi vào (xem DNSBlock.h)
 //
 // CHẶN:
-//   - UDP: CHẶN HẾT bất kể IP. Ngoại lệ duy nhất: DNS (port 53) để game còn phân
-//     giải được tên miền, và các IP tự thêm vào allowlist (netAllowUDPIP) khi phát
-//     hiện game cần. connect() UDP -> -1/ECONNREFUSED; sendto() -> nuốt gói, trả 'len'
-//     (giả thành công, khỏi kích nhánh lỗi netcode -> chặn êm).
+//   - UDP: chỉ chặn tới DẢI PORT 10000-10020 (telemetry/anti-cheat). Server trận đấu
+//     Free Fire nằm ngoài dải này nên game vẫn vào được. IP trong allowlist
+//     (netAllowUDPIP) được vượt rào kể cả khi trúng dải. connect() UDP bị chặn ->
+//     -1/ECONNREFUSED; sendto() -> nuốt gói, trả 'len' (giả thành công -> chặn êm).
 //   - TCP: chỉ chặn IP thuộc host đen mà DNSBlock.h học được (g_blockedIPs); còn lại
 //     cho qua bình thường.
 // Log gom trùng: mỗi chuỗi chỉ ghi 1 lần.
@@ -141,12 +141,24 @@ inline void netStripPort(const char *endpoint, char *outIP, size_t outLen) {
     outIP[n] = '\0';
 }
 
-// Lấy port đích từ sockaddr (0 nếu không phải IPv4/IPv6). Dùng để chừa DNS (port 53).
+// Lấy port đích từ sockaddr (0 nếu không phải IPv4/IPv6).
 inline int netSockPort(const struct sockaddr *sa) {
     if (!sa) return 0;
     if (sa->sa_family == AF_INET)  return ntohs(((const struct sockaddr_in *)sa)->sin_port);
     if (sa->sa_family == AF_INET6) return ntohs(((const struct sockaddr_in6 *)sa)->sin6_port);
     return 0;
+}
+
+// Dải port UDP cần chặn. Server trận đấu Free Fire nằm NGOÀI dải này nên game vẫn
+// vào được; chỉ UDP tới cổng 10000-10020 (telemetry/anti-cheat) bị nuốt.
+#define NETBLOCK_UDP_PORT_LO 10000
+#define NETBLOCK_UDP_PORT_HI 10020
+
+// UDP tới port này có bị chặn không? Chặn nếu port nằm trong dải VÀ IP không được
+// allowlist (netAllowUDPIP) cho phép vượt rào.
+inline bool netShouldBlockUDP(int port, const char *ip) {
+    if (port < NETBLOCK_UDP_PORT_LO || port > NETBLOCK_UDP_PORT_HI) return false;
+    return !netIsUDPAllowed(ip);
 }
 
 // sockaddr -> "ip:port". Chỉ nhận IPv4/IPv6, bỏ AF_UNIX... (trả false).
@@ -187,8 +199,8 @@ inline int hooked_connect(int fd, const struct sockaddr *addr, socklen_t len) {
         int port = netSockPort(addr);
 
         if (type == SOCK_DGRAM) {
-            // CHẶN HẾT UDP: trừ DNS (port 53) và các IP đã cho vào allowlist.
-            if (port != 53 && !netIsUDPAllowed(ip)) {
+            // Chỉ chặn UDP tới dải port 10000-10020 (khỏi đụng server game ở port khác).
+            if (netShouldBlockUDP(port, ip)) {
                 netNoteBlocked(ip);
                 netLogRaw("BLK-UDP", ep);
                 errno = ECONNREFUSED;
@@ -220,8 +232,8 @@ inline ssize_t hooked_sendto(int fd, const void *buf, size_t len, int flags,
             char ip[64];
             netStripPort(ep, ip, sizeof(ip));
             int port = netSockPort(dest);
-            // sendto = UDP. CHẶN HẾT, trừ DNS (port 53) và IP trong allowlist.
-            if (port != 53 && !netIsUDPAllowed(ip)) {
+            // sendto = UDP. Chỉ chặn dải port 10000-10020 (netShouldBlockUDP).
+            if (netShouldBlockUDP(port, ip)) {
                 netNoteBlocked(ip);
                 netLogRaw("BLK-UDP", ep);
                 // Nuốt gói UDP: báo với game là đã gửi 'len' byte (thành công) để không
