@@ -7,6 +7,7 @@
 #import <sys/socket.h>
 #import <netinet/in.h>
 #import <arpa/inet.h>
+#import <objc/runtime.h> // class_getInstanceMethod/method_setImplementation - swizzle NSURLSessionTask
 
 #include <string>
 #include <unordered_map>
@@ -561,6 +562,50 @@ inline void netBlockLearnIP(const char *ip) {
 }
 @end
 
+// ===== 4b. SWIZZLE -[NSURLSessionTask resume] (chặn HTTP/2 mà NSURLProtocol bỏ sót) =====
+// Vì sao cần: NSURLProtocol (canInitWithRequest ở trên) được biết là KHÔNG đáng tin cậy với
+// HTTP/2 - nhiều request HTTP/2 (đặc biệt khi CFNetwork tái dùng connection/multiplex) không
+// bao giờ được hỏi qua canInitWithRequest, nên trie chặn domain đúng nhưng không có cơ hội
+// chạy. Swizzle -resume chặn ở tầng Objective-C (luôn đi qua objc_msgSend, không phụ thuộc
+// NSURLProtocol lẫn việc symbol có nằm trong dyld shared cache hay không như các hook libc ở
+// NetLog.h) - kiểm tra URL ngay trước khi task thật sự chạy, [task cancel] thay vì gọi resume
+// gốc nếu domain nằm trong danh sách đen.
+static IMP g_origTaskResumeIMP = NULL;
+
+inline void hookedTaskResume(id self, SEL _cmd) {
+    NSURLSessionTask *task = (NSURLSessionTask *)self;
+    NSURL *url = task.currentRequest.URL ?: task.originalRequest.URL;
+    NSString *host = url.host;
+    if (host && isJunkDNSDomain([host UTF8String])) {
+        NSString *urlStr = url.absoluteString;
+        netLogRaw("HTTP-BLK", urlStr ? [urlStr UTF8String] : [host UTF8String]);
+        dnsNoteBlocked([host UTF8String]);
+        [task cancel]; // KHÔNG gọi resume gốc - request thật sự không bao giờ chạy
+        return;
+    }
+    NSString *urlStr = url.absoluteString;
+    if (urlStr) netLogRaw("HTTP", [urlStr UTF8String]);
+    ((void (*)(id, SEL))g_origTaskResumeIMP)(self, _cmd);
+}
+
+// Lớp runtime thật thi hành -resume là 1 private cluster class (vd __NSCFURLSessionTask),
+// KHÔNG phải NSURLSessionTask/NSURLSessionDataTask public - tên lớp private đổi qua từng bản
+// iOS nên không hardcode, mà tạo 1 task nháp (không resume - không gọi mạng thật) rồi soi
+// object_getClass() để lấy đúng lớp cần swizzle, làm việc ổn định qua mọi phiên bản iOS.
+inline void installTaskResumeSwizzle() {
+    NSURLSession *tmpSession = [NSURLSession sessionWithConfiguration:[NSURLSessionConfiguration defaultSessionConfiguration]];
+    NSURLSessionDataTask *tmpTask = [tmpSession dataTaskWithURL:[NSURL URLWithString:@"https://a.a"]];
+    Class taskCls = object_getClass(tmpTask);
+    tmpTask = nil;
+    [tmpSession invalidateAndCancel];
+    if (!taskCls) return;
+
+    Method m = class_getInstanceMethod(taskCls, @selector(resume));
+    if (!m) return;
+    g_origTaskResumeIMP = method_getImplementation(m);
+    method_setImplementation(m, (IMP)hookedTaskResume);
+}
+
 // ===== 5. KHỞI CHẠY HOOK =====
 inline void installDNSBlockHook() {
     orig_getaddrinfo    = (int (*)(const char *, const char *, const struct addrinfo *, struct addrinfo **))dlsym((void *)RTLD_DEFAULT, "getaddrinfo");
@@ -575,6 +620,7 @@ inline void installDNSBlockHook() {
     rebind_symbols(dnsRebindings, sizeof(dnsRebindings) / sizeof(dnsRebindings[0]));
 
     [NSURLProtocol registerClass:[JunkAdURLProtocol class]];
+    installTaskResumeSwizzle();
 
     // NetLog.h là nơi DUY NHẤT hook "connect"/"write"/"send" (fishhook rebind ai gọi sau cùng
     // thì thắng, hai hook cùng tên thì không build được) - đăng ký callback chặn để nó gọi hộ:
