@@ -24,6 +24,10 @@
 //              socket mới bắt được domain thật.
 //   TLS-BLK  : kết nối HTTPS không qua NSURLSession bị chặn theo SNI (write()/send() trả lỗi
 //              ECONNRESET ngay gói đầu, KHÔNG gửi ClientHello/request thật ra ngoài)
+//   UDP-PEEK : preview nội dung (ASCII, ký tự không in được thay '.') của gói UDP gửi tới dải
+//              cổng nghi vấn 10000-10020 (netLogPortInPeekRange) - CHỈ QUAN SÁT, không chặn gì
+//              (dải cổng này từng bị chặn nhầm với traffic server thật, xem log "Revert
+//              socket-layer UDP/TCP blocking"), để biết chắc nội dung trước khi quyết định chặn.
 //
 // Bản thân NetLog không tự quyết định chặn gì - việc chặn (connect theo IP, hay write/send
 // theo hostname từ SNI/Host) do module khác (DNSBlock.h) đăng ký qua netLogSetBlockCheck /
@@ -131,6 +135,43 @@ inline bool netLogFormatSockaddr(const struct sockaddr *sa, char *out, size_t ou
     return true;
 }
 
+// ===== Soi nội dung UDP gửi tới dải cổng nghi vấn (10000-10020) - CHỈ QUAN SÁT =====
+// Vì sao cần: dải cổng này trước đây từng bị chặn nhầm lẫn với traffic server thật (xem revert
+// "block ALL UDP..."), nên giờ chỉ soi xem có gói nào chứa nội dung dạng chữ (JSON/HTTP/tracking
+// string...) lộ ra không, không đổi hành vi mạng - để biết chắc trước khi quyết định chặn gì.
+inline bool netLogPortInPeekRange(uint16_t port) { return port >= 10000 && port <= 10020; }
+
+// Đổi buffer thành preview: ký tự in được giữ nguyên, còn lại thay '.', cắt ngắn cho vừa 1 dòng
+// log - không phải giải mã, chỉ để mắt người nhìn ra có chữ/JSON lộ trong payload hay không.
+inline void netLogPreviewPayload(const void *buf, size_t len, std::string &out) {
+    const unsigned char *p = (const unsigned char *)buf;
+    size_t n = len < 48 ? len : 48;
+    out.resize(n);
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = p[i];
+        out[i] = (c >= 0x20 && c < 0x7f) ? (char)c : '.';
+    }
+}
+
+// fd UDP đã connect() tới 1 peer trong dải cổng nghi vấn - soi MỌI gói write()/send() sau đó
+// (khác sniPendingFds: không phải "chỉ 1 lần", vì mỗi gói UDP là 1 đơn vị độc lập, không phải
+// 1 bắt tay như TLS). netLogRaw tự gom trùng nếu payload giống hệt, nên không lo log tràn.
+static std::mutex g_udpPeekMutex;
+static std::unordered_set<int> g_udpPeekFds;
+static std::atomic<int> g_udpPeekCount{0};
+
+inline void udpPeekMark(int fd) {
+    std::lock_guard<std::mutex> lock(g_udpPeekMutex);
+    if (g_udpPeekFds.size() > 256) { g_udpPeekFds.clear(); g_udpPeekCount.store(0, std::memory_order_relaxed); }
+    if (g_udpPeekFds.insert(fd).second) g_udpPeekCount.fetch_add(1, std::memory_order_relaxed);
+}
+
+inline bool udpPeekActive(int fd) {
+    if (g_udpPeekCount.load(std::memory_order_relaxed) == 0) return false; // hot-path bail, không lock
+    std::lock_guard<std::mutex> lock(g_udpPeekMutex);
+    return g_udpPeekFds.count(fd) > 0;
+}
+
 // fd TCP vừa connect() xong, đang đợi write()/send() đầu tiên để soi ClientHello (SNI)
 // hoặc header HTTP thuần - xem phần "SNI / plaintext-HTTP sniffer" bên dưới.
 //
@@ -188,6 +229,7 @@ inline int hooked_connect(int fd, const struct sockaddr *addr, socklen_t len) {
     // ClientHello (nếu có) là gói ĐẦU TIÊN client gửi sau khi kết nối TCP xong - đánh dấu fd
     // này để hook write()/send() bên dưới soi đúng gói đầu, không soi nhầm data sau đó.
     if (isTcp && (ret == 0 || errno == EINPROGRESS)) sniMarkPending(fd);
+    if (!isTcp && ret == 0 && netLogPortInPeekRange(port)) udpPeekMark(fd);
     return ret;
 }
 
@@ -227,6 +269,7 @@ inline int hooked_connectx(int fd, const sa_endpoints_t *endpoints, sae_associd_
 
     int ret = orig_connectx(fd, endpoints, associd, flags, iov, iovcnt, len, connid);
     if (isTcp && (ret == 0 || errno == EINPROGRESS)) sniMarkPending(fd);
+    if (!isTcp && ret == 0 && netLogPortInPeekRange(port)) udpPeekMark(fd);
     return ret;
 }
 
@@ -237,8 +280,20 @@ static ssize_t (*orig_sendto)(int, const void *, size_t, int, const struct socka
 inline ssize_t hooked_sendto(int fd, const void *buf, size_t len, int flags,
                              const struct sockaddr *dest, socklen_t dlen) {
     if (dest) {
-        char ep[96];
-        if (netLogFormatSockaddr(dest, ep, sizeof(ep))) netLogRaw("UDP", ep);
+        char ip[INET6_ADDRSTRLEN] = {0};
+        uint16_t port = 0;
+        if (netLogSplitSockaddr(dest, ip, sizeof(ip), &port)) {
+            char ep[96];
+            snprintf(ep, sizeof(ep), "%s:%d", ip, port);
+            netLogRaw("UDP", ep);
+            if (netLogPortInPeekRange(port) && buf && len > 0) {
+                std::string preview;
+                netLogPreviewPayload(buf, len, preview);
+                char detail[160];
+                snprintf(detail, sizeof(detail), "%s len=%zu | %s", ep, len, preview.c_str());
+                netLogRaw("UDP-PEEK", detail);
+            }
+        }
     }
     return orig_sendto(fd, buf, len, flags, dest, dlen);
 }
@@ -374,15 +429,28 @@ inline bool sniInspectFirstWrite(int fd, const void *buf, size_t count) {
     return false;
 }
 
+// Soi payload UDP cho fd đã connect() tới dải cổng nghi vấn (udpPeekMark) - MỌI gói, không
+// phải chỉ gói đầu như TLS/HTTP, vì UDP là datagram rời rạc chứ không phải 1 bắt tay liên tục.
+inline void udpPeekInspectWrite(int fd, const void *buf, size_t count) {
+    if (!buf || count == 0 || !udpPeekActive(fd)) return;
+    std::string preview;
+    netLogPreviewPayload(buf, count, preview);
+    char detail[160];
+    snprintf(detail, sizeof(detail), "fd=%d len=%zu | %s", fd, count, preview.c_str());
+    netLogRaw("UDP-PEEK", detail);
+}
+
 static ssize_t (*orig_write)(int, const void *, size_t);
 inline ssize_t hooked_write(int fd, const void *buf, size_t count) {
     if (sniInspectFirstWrite(fd, buf, count)) { errno = ECONNRESET; return -1; }
+    udpPeekInspectWrite(fd, buf, count);
     return orig_write(fd, buf, count);
 }
 
 static ssize_t (*orig_send)(int, const void *, size_t, int);
 inline ssize_t hooked_send(int fd, const void *buf, size_t count, int flags) {
     if (sniInspectFirstWrite(fd, buf, count)) { errno = ECONNRESET; return -1; }
+    udpPeekInspectWrite(fd, buf, count);
     return orig_send(fd, buf, count, flags);
 }
 
