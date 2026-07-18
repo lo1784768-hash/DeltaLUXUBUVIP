@@ -316,6 +316,35 @@ static void ar_writeMarker(const char *markerPath, const struct stat *zipSt) {
 //  PHẦN 2: ĐỊNH TUYẾN TRAFFIC (Bẻ hướng mọi lời gọi file của game sang Delta/)
 // ============================================================================
 
+// ===== ABHotUpdates OVERLAY: icon/texture tải qua CDN, cache LOCAL ở đâu đó trong container
+// app (Documents/Library, đổi theo UUID container/phiên bản OS - KHÔNG nằm trong app bundle) -
+// vd CDN URL "https://dl.cdn.freefiremobile.com/live/ABHotUpdates/IconCDN/ios/901000034_rgb.pvr"
+// (xem log HTTP tab INFO). Không biết trước thư mục cha tuyệt đối nên match theo LANDMARK
+// "/ABHotUpdates/" xuất hiện ở BẤT KỲ đâu trong path, thay vì so tiền tố tuyệt đối như bundle -
+// ổn định qua mọi container/phiên bản. OVERLAY (khác hẳn chính sách bundle ở dưới): kho asset
+// này có hàng nghìn file, Delta.zip thường chỉ chứa vài icon custom, nên MISS = đọc bản gốc,
+// không chặn hẳn - chặn hẳn sẽ làm hỏng/mất mọi icon không nằm trong Delta.zip.
+#define ABHOTUPDATES_MARKER "/ABHotUpdates/"
+
+static std::atomic<unsigned long long> g_abHotUpdatesHitCount{0};
+static std::atomic<unsigned long long> g_abHotUpdatesMissCount{0};
+inline unsigned long long DeltaVFS_abHotUpdatesHits()   { return g_abHotUpdatesHitCount.load(std::memory_order_relaxed); }
+inline unsigned long long DeltaVFS_abHotUpdatesMisses() { return g_abHotUpdatesMissCount.load(std::memory_order_relaxed); }
+
+// Trả path Delta tương ứng nếu `path` chứa mốc "/ABHotUpdates/", hoặc NULL nếu không khớp
+// (caller giữ nguyên path gốc). Buffer thread_local RIÊNG với redirectedBuffer của nhánh bundle
+// bên dưới, để 2 nhánh không ghi đè lẫn nhau.
+inline const char *redirectABHotUpdatesPath(const char *path) {
+    if (!path || g_moddedPrefixLen == 0) return NULL;
+    const char *marker = strstr(path, ABHOTUPDATES_MARKER);
+    if (!marker) return NULL;
+    const char *relative = marker + 1; // bỏ dấu '/' đầu, giữ nguyên "ABHotUpdates/..."
+    static thread_local char abBuffer[2048];
+    int written = snprintf(abBuffer, sizeof(abBuffer), "%s%s", g_moddedPrefixC, relative);
+    if (written < 0 || written >= (int)sizeof(abBuffer)) return NULL; // quá dài -> bỏ qua, đọc gốc
+    return abBuffer;
+}
+
 inline const char* redirectAllTrafficPath(const char *path) {
     if (!path) return path;
 
@@ -325,6 +354,19 @@ inline const char* redirectAllTrafficPath(const char *path) {
     g_deltaTotalCalls.fetch_add(1, std::memory_order_relaxed);
     strncpy(g_deltaLastAnyPath, path, sizeof(g_deltaLastAnyPath) - 1);
     g_deltaLastAnyPath[sizeof(g_deltaLastAnyPath) - 1] = '\0';
+
+    // ABHotUpdates chạy TRƯỚC bước kiểm tra bundle - asset này gần như luôn nằm NGOÀI
+    // FreeFire.app/ nên sẽ không khớp BƯỚC 1 bên dưới nếu để sau.
+    const char *abPath = redirectABHotUpdatesPath(path);
+    if (abPath) {
+        bool abExists = (orig_access && orig_access(abPath, F_OK) == 0);
+        if (abExists) {
+            g_abHotUpdatesHitCount.fetch_add(1, std::memory_order_relaxed);
+            return abPath;
+        }
+        g_abHotUpdatesMissCount.fetch_add(1, std::memory_order_relaxed);
+        return path; // OVERLAY: Delta không có icon này -> đọc bản gốc, KHÔNG chặn
+    }
 
     if (g_bundlePrefixLen == 0 || g_moddedPrefixLen == 0) return path;
 

@@ -940,7 +940,7 @@ game_sdk_t *game_sdk = new game_sdk_t();
     } else if (hits > 0) {
         verdict = isEnglishMode ? @"✅ Game IS reading through Delta" : @"✅ Game ĐANG đọc qua Delta";
     } else {
-        verdict = isEnglishMode ? @"⚠️ Bundle read, but files missing in Delta" : @"⚠️ Có đọc bundle nhưng Delta thiếu file";
+        verdict = isEnglishMode ? @"⚠️ Bundle calls seen, but ALL missing in Delta -> now failing (ENOENT), not reading original" : @"⚠️ Có gọi bundle nhưng Delta thiếu HẾT -> giờ LỖI (ENOENT), không đọc bản gốc";
     }
 
     // Thống kê chặn DNS/mạng
@@ -962,10 +962,13 @@ game_sdk_t *game_sdk = new game_sdk_t();
          "Tổng lời gọi file: %llu\n"
          "Trong bundle: %llu\n"
          "Hits  (đọc từ Delta): %llu\n"
-         "Miss  (đọc bundle gốc): %llu\n"
+         "Miss  (Delta thiếu -> LỖI, không đọc gốc): %llu\n"
          "Tỉ lệ qua Delta: %.1f%%\n\n"
          "Path bất kỳ gần nhất:\n%@\n"
          "File Delta gần nhất:\n%@\n\n"
+         "── ABHOTUPDATES (icon/texture CDN, OVERLAY) ──\n"
+         "Hits (từ Delta): %llu\n"
+         "Miss (đọc bản gốc - bình thường, Delta chỉ chứa vài icon custom): %llu\n\n"
          "── CHỮ KÝ DELTA ──\n"
          "%@\n\n"
          "── CHẶN DNS ──\n"
@@ -975,6 +978,7 @@ game_sdk_t *game_sdk = new game_sdk_t();
          "%@",
         verdict, hookLine, extractLine, dir,
         totalCalls, bundleCalls, hits, misses, pct, anyPath, last,
+        DeltaVFS_abHotUpdatesHits(), DeltaVFS_abHotUpdatesMisses(),
         signInfo,
         dnsBlocked, dnsHost,
         NetLog_count(), netLog];
