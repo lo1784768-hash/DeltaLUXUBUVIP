@@ -517,6 +517,7 @@ inline void netBlockLearnIP(const char *ip) {
             for (const char* junk : kJunkDNSDomains) {
                 if (strchr(junk, '.') == NULL) { // Nếu là từ khóa method, không phải domain
                     if ([absUrl containsJunkKeywordUTF8:junk]) {
+                        netLogRaw("HTTP-BLK", [absUrl UTF8String]);
                         return YES;
                     }
                 }
@@ -524,10 +525,15 @@ inline void netBlockLearnIP(const char *ip) {
         }
         return NO;
     }
-    
+
     NSString *url = request.URL.absoluteString;
     if (url) netLogRaw("HTTP", [url UTF8String]);
     if (isJunkDNSDomain([host UTF8String])) {
+        // Ghi rõ CÓ chặn (khác với dòng "HTTP" ở trên chỉ là "đã thấy request") - không có
+        // dòng này nghĩa là canInitWithRequest không được gọi cho request đó (vd session
+        // background/ephemeral riêng không consult NSURLProtocol đăng ký ở app), không phải
+        // do trie chặn domain sai.
+        if (url) netLogRaw("HTTP-BLK", [url UTF8String]);
         return YES;
     }
     return NO;
