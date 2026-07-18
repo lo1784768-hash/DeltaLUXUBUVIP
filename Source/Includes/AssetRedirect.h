@@ -39,6 +39,7 @@ static std::atomic<unsigned int> g_deltaExtractedFiles{0};   // Số file đã b
 static std::atomic<unsigned int> g_deltaHooksOK{0};          // Bitmask hook cài đặt thành công: 1=open 2=fopen 4=access 8=stat 16=lstat
 static std::atomic<bool> g_deltaExtractRan{false};           // Đã chạy bước giải nén trong phiên này chưa
 static std::atomic<bool> g_deltaZipFound{false};             // Có tìm thấy file Delta.zip tại đường dẫn nguồn không
+static std::atomic<bool> g_deltaActive{false};              // Thư mục Delta/ có tồn tại -> BẬT chế độ ép đọc toàn bộ trong Delta
 static char g_deltaLastHitPath[1024] = {0};                  // Đường dẫn (tương đối) được phục vụ từ Delta gần nhất
 static char g_deltaLastAnyPath[1024] = {0};                  // Path bất kỳ gần nhất game mở (debug: xem game đọc ở đâu)
 
@@ -51,6 +52,7 @@ inline unsigned int       DeltaVFS_extractedFiles(){ return g_deltaExtractedFile
 inline unsigned int       DeltaVFS_hooksOK()        { return g_deltaHooksOK.load(std::memory_order_relaxed); }
 inline bool               DeltaVFS_extractRan()     { return g_deltaExtractRan.load(std::memory_order_relaxed); }
 inline bool               DeltaVFS_zipFound()        { return g_deltaZipFound.load(std::memory_order_relaxed); }
+inline bool               DeltaVFS_active()           { return g_deltaActive.load(std::memory_order_relaxed); }
 inline const char*        DeltaVFS_lastHitPath()    { return g_deltaLastHitPath; }
 inline const char*        DeltaVFS_lastAnyPath()    { return g_deltaLastAnyPath; }
 inline const char*        DeltaVFS_deltaDir()       { return g_moddedPrefixC; }
@@ -313,18 +315,26 @@ inline const char* redirectAllTrafficPath(const char *path) {
         return path; // Nếu đường dẫn quá dài vượt bộ đệm, fallback về file gốc để an toàn
     }
 
-    // BƯỚC 3: KIỂM TRA TÍNH TOÀN VẸN (FALLBACK)
-    // Gọi hàm access gốc xem file này có tồn tại trong gói Delta đã giải nén hay không
-    if (orig_access && orig_access(redirectedBuffer, F_OK) == 0) {
-        // Ghi log: đếm số lần phục vụ từ Delta + lưu đường dẫn gần nhất để hiện lên menu
+    // BƯỚC 3: ÉP ĐỌC TRONG DELTA
+    // Kiểm tra file có tồn tại trong Delta không - CHỈ để đếm hit/miss cho tab INFO.
+    bool existsInDelta = (orig_access && orig_access(redirectedBuffer, F_OK) == 0);
+    if (existsInDelta) {
         g_deltaHitCount.fetch_add(1, std::memory_order_relaxed);
         strncpy(g_deltaLastHitPath, relative, sizeof(g_deltaLastHitPath) - 1);
         g_deltaLastHitPath[sizeof(g_deltaLastHitPath) - 1] = '\0';
-        return redirectedBuffer; // Tìm thấy file mod/file cấu hình cấu trúc mới -> Chuyển hướng thành công
+    } else {
+        g_deltaMissCount.fetch_add(1, std::memory_order_relaxed);
     }
 
-    g_deltaMissCount.fetch_add(1, std::memory_order_relaxed);
-    return path; // Nếu trong Delta.zip không có file này, trả về đường dẫn gốc ngoài App Bundle để game chạy bình thường
+    // Khi Delta ĐANG BẬT: ÉP TOÀN BỘ vào Delta, KHÔNG fallback về bundle gốc. File nào
+    // Delta thiếu thì trả path Delta (không tồn tại) -> game báo thiếu file chứ tuyệt đối
+    // không đọc bản gốc. Đây là yêu cầu "có Delta là đọc hết trong đó".
+    if (g_deltaActive.load(std::memory_order_relaxed)) {
+        return redirectedBuffer;
+    }
+
+    // Delta KHÔNG bật (không có gói Delta) -> hành xử overlay an toàn: có thì Delta, không thì gốc.
+    return existsInDelta ? redirectedBuffer : path;
 }
 
 static int (*orig_open)(const char *, int, ...);
@@ -409,6 +419,14 @@ static void initDeltaAllTrafficVFS() {
                     g_deltaExtractRan.store(true, std::memory_order_relaxed);
                     ar_extractZip(g_deltaZipPathC, g_moddedPrefixC);
                     ar_writeMarker(markerPath, &zipSt);
+                }
+
+                // BẬT chế độ ép đọc toàn bộ trong Delta: chỉ bật khi thư mục Delta/ thực sự
+                // tồn tại (giải nén xong). Nếu vì lý do gì Delta không có, để nguyên overlay
+                // an toàn -> game vẫn đọc bundle gốc, không tự brick lúc mở.
+                struct stat deltaDirSt;
+                if (stat(g_moddedPrefixC, &deltaDirSt) == 0 && S_ISDIR(deltaDirSt.st_mode)) {
+                    g_deltaActive.store(true, std::memory_order_relaxed);
                 }
             }
         }
