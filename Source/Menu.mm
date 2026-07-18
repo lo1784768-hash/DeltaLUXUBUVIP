@@ -900,6 +900,9 @@ game_sdk_t *game_sdk = new game_sdk_t();
     const char *dnsHostC = DNSBlock_lastHost();
     NSString *dnsHost = (dnsHostC && dnsHostC[0]) ? [NSString stringWithUTF8String:dnsHostC] : @"—";
 
+    // Log mạng thụ động: game gửi request gì lên server (DNS/TCP/UDP/HTTP, mới nhất ở trên)
+    NSString *netLog = NetLog_snapshot();
+
     NSString *text = [NSString stringWithFormat:
         @"%@\n\n"
          "%@\n"
@@ -914,10 +917,13 @@ game_sdk_t *game_sdk = new game_sdk_t();
          "File Delta gần nhất:\n%@\n\n"
          "── CHẶN DNS ──\n"
          "Đã chặn: %llu request\n"
-         "Host chặn gần nhất:\n%@",
+         "Host chặn gần nhất:\n%@\n\n"
+         "── NET LOG (%u endpoint) ──\n"
+         "%@",
         verdict, hookLine, extractLine, dir,
         totalCalls, bundleCalls, hits, misses, pct, anyPath, last,
-        dnsBlocked, dnsHost];
+        dnsBlocked, dnsHost,
+        NetLog_count(), netLog];
 
     _deltaLogView.text = text;
 }

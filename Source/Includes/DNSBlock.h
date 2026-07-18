@@ -11,6 +11,7 @@
 
 #import "MemoryUtils.h"
 #import "fishhook.h"
+#import "NetLog.h" // logger mạng thụ động (DNS/TCP/UDP/HTTP) - soi request game gửi lên server
 
 // ===== Thống kê chặn DNS (để tab INFO soi được có chặn thật không) =====
 static std::atomic<unsigned long long> g_dnsBlockCount{0};  // Tổng số request đã bị chặn
@@ -182,8 +183,10 @@ static int (*orig_getaddrinfo)(const char *, const char *, const struct addrinfo
 inline int hooked_getaddrinfo(const char *hostname, const char *servname, const struct addrinfo *hints, struct addrinfo **res) {
     if (isJunkDNSDomain(hostname)) {
         dnsNoteBlocked(hostname);
+        netLogRaw("DNS-BLK", hostname ? hostname : "");
         return EAI_NONAME; // Giả lập lỗi: Domain không tồn tại
     }
+    if (hostname) netLogRaw("DNS", hostname);
     return orig_getaddrinfo(hostname, servname, hints, res);
 }
 
@@ -196,18 +199,22 @@ static struct hostent *(*orig_gethostbyname2)(const char *, int);
 inline struct hostent *hooked_gethostbyname(const char *name) {
     if (isJunkDNSDomain(name)) {
         dnsNoteBlocked(name);
+        netLogRaw("DNS-BLK", name ? name : "");
         h_errno = HOST_NOT_FOUND;
         return NULL;
     }
+    if (name) netLogRaw("DNS", name);
     return orig_gethostbyname(name);
 }
 
 inline struct hostent *hooked_gethostbyname2(const char *name, int af) {
     if (isJunkDNSDomain(name)) {
         dnsNoteBlocked(name);
+        netLogRaw("DNS-BLK", name ? name : "");
         h_errno = HOST_NOT_FOUND;
         return NULL;
     }
+    if (name) netLogRaw("DNS", name);
     return orig_gethostbyname2(name, af);
 }
 
@@ -220,8 +227,12 @@ inline struct hostent *hooked_gethostbyname2(const char *name, int af) {
 + (BOOL)canInitWithRequest:(NSURLRequest *)request {
     NSString *host = request.URL.host;
     if (!host) return NO;
+    // Ghi log FULL URL (có cả path/đuôi đằng sau) cho MỌI request HTTP/HTTPS đi qua đây,
+    // kể cả cái không bị chặn - để soi game gọi endpoint gì.
+    NSString *url = request.URL.absoluteString;
+    if (url) netLogRaw("HTTP", [url UTF8String]);
     if (isJunkDNSDomain([host UTF8String])) {
-        return YES; 
+        return YES;
     }
     return NO;
 }
@@ -261,4 +272,7 @@ inline void installDNSBlockHook() {
 
     // Đăng ký URL Protocol (tầng HTTP/HTTPS cho traffic đi qua NSURLSession/NSURLConnection)
     [NSURLProtocol registerClass:[JunkAdURLProtocol class]];
+
+    // Cài logger mạng thụ động (connect/sendto) - soi TCP/UDP tới server, kể cả connect thẳng IP.
+    installNetLogHook();
 }
