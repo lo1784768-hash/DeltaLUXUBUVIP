@@ -8,6 +8,7 @@
 #import <netinet/in.h>
 #import <arpa/inet.h>
 #import <objc/runtime.h> // class_getInstanceMethod/method_setImplementation - swizzle NSURLSessionTask
+#import <dns_sd.h> // DNSServiceGetAddrInfo - đường phân giải Network.framework/CFNetwork hiện đại hay dùng, không qua getaddrinfo
 
 #include <string>
 #include <unordered_map>
@@ -414,6 +415,37 @@ inline struct hostent *hooked_gethostbyname2(const char *name, int af) {
     return orig_gethostbyname2(name, af);
 }
 
+// ===== 2b. HOOK DNSServiceGetAddrInfo (libsystem_dnssd/Bonjour - đường Network.framework/
+// CFNetwork hiện đại hay dùng, KHÔNG đi qua getaddrinfo/gethostbyname) =====
+// Vì sao cần: đã thấy DNS query gin.freefiremobile.com lộ ra ở tầng packet-sniffer dù
+// getaddrinfo/gethostbyname đã hook đủ - domain vẫn bị chặn thật ở tầng request (NSURLProtocol/
+// swizzle resume) nên không rò dữ liệu, nhưng bản thân query DNS đi qua đường khác. Đây là API
+// bất đồng bộ (kết quả trả qua callBack, không phải qua giá trị trả về) - callBack ở đây LUÔN
+// là con trỏ hàm THẬT của game/CFNetwork (ta không tự gọi nó), nên khi chặn chỉ cần trả lỗi
+// đồng bộ kDNSServiceErr_NoSuchName mà KHÔNG gọi callBack - đúng ngữ nghĩa API: trả lỗi khác 0
+// nghĩa là request chưa từng được khởi tạo, sdRef không được set, callBack không bao giờ chạy.
+//
+// Bản trước (revert vì "làm hỏng log INFO tab") hook luôn cả res_9_query/res_9_search/
+// getipnodebyname - lần này CHỈ hook đúng DNSServiceGetAddrInfo (đường khớp với triệu chứng
+// quan sát được), giảm diện tích rủi ro, và có guard NULL phòng dlsym không tìm thấy symbol.
+static DNSServiceErrorType (*orig_DNSServiceGetAddrInfo)(DNSServiceRef *, DNSServiceFlags, uint32_t,
+                                                          DNSServiceProtocol, const char *,
+                                                          DNSServiceGetAddrInfoReply, void *);
+
+inline DNSServiceErrorType hooked_DNSServiceGetAddrInfo(DNSServiceRef *sdRef, DNSServiceFlags flags,
+                                                          uint32_t interfaceIndex, DNSServiceProtocol protocol,
+                                                          const char *hostname, DNSServiceGetAddrInfoReply callBack,
+                                                          void *context) {
+    if (isJunkDNSDomain(hostname)) {
+        dnsNoteBlocked(hostname);
+        netLogRaw("DNS-BLK", hostname ? hostname : "");
+        return kDNSServiceErr_NoSuchName;
+    }
+    if (hostname) netLogRaw("DNS", hostname);
+    if (!orig_DNSServiceGetAddrInfo) return kDNSServiceErr_ServiceNotRunning; // symbol không tìm thấy lúc dlsym
+    return orig_DNSServiceGetAddrInfo(sdRef, flags, interfaceIndex, protocol, hostname, callBack, context);
+}
+
 // ===== 3. CHẶN TẦNG CONNECT() THEO IP (khi game bypass DNS, connect thẳng vào IP) =====
 // Vì sao cần: chặn DNS chỉ ăn khi game gọi getaddrinfo của libc. Nếu game tự nhớ sẵn IP rồi
 // connect() thẳng (không phân giải lại qua libc) thì hook DNS trượt hoàn toàn.
@@ -620,11 +652,15 @@ inline void installDNSBlockHook() {
     orig_getaddrinfo    = (int (*)(const char *, const char *, const struct addrinfo *, struct addrinfo **))dlsym((void *)RTLD_DEFAULT, "getaddrinfo");
     orig_gethostbyname  = (struct hostent *(*)(const char *))dlsym((void *)RTLD_DEFAULT, "gethostbyname");
     orig_gethostbyname2 = (struct hostent *(*)(const char *, int))dlsym((void *)RTLD_DEFAULT, "gethostbyname2");
+    orig_DNSServiceGetAddrInfo = (DNSServiceErrorType (*)(DNSServiceRef *, DNSServiceFlags, uint32_t,
+                                                           DNSServiceProtocol, const char *,
+                                                           DNSServiceGetAddrInfoReply, void *))dlsym((void *)RTLD_DEFAULT, "DNSServiceGetAddrInfo");
 
     struct rebinding dnsRebindings[] = {
-        {"getaddrinfo",    (void *)hooked_getaddrinfo,    (void **)&orig_getaddrinfo},
-        {"gethostbyname",  (void *)hooked_gethostbyname,  (void **)&orig_gethostbyname},
-        {"gethostbyname2", (void *)hooked_gethostbyname2, (void **)&orig_gethostbyname2},
+        {"getaddrinfo",           (void *)hooked_getaddrinfo,           (void **)&orig_getaddrinfo},
+        {"gethostbyname",         (void *)hooked_gethostbyname,         (void **)&orig_gethostbyname},
+        {"gethostbyname2",        (void *)hooked_gethostbyname2,        (void **)&orig_gethostbyname2},
+        {"DNSServiceGetAddrInfo", (void *)hooked_DNSServiceGetAddrInfo, (void **)&orig_DNSServiceGetAddrInfo},
     };
     rebind_symbols(dnsRebindings, sizeof(dnsRebindings) / sizeof(dnsRebindings[0]));
 
