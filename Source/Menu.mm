@@ -903,6 +903,9 @@ game_sdk_t *game_sdk = new game_sdk_t();
     // Log mạng thụ động: game gửi request gì lên server (DNS/TCP/UDP/HTTP, mới nhất ở trên)
     NSString *netLog = NetLog_snapshot();
 
+    // Chữ ký: Delta.zip / folder Delta có được ký vào app không (đọc CodeResources)
+    NSString *signInfo = DeltaVFS_signatureSummary();
+
     NSString *text = [NSString stringWithFormat:
         @"%@\n\n"
          "%@\n"
@@ -915,6 +918,8 @@ game_sdk_t *game_sdk = new game_sdk_t();
          "Tỉ lệ qua Delta: %.1f%%\n\n"
          "Path bất kỳ gần nhất:\n%@\n"
          "File Delta gần nhất:\n%@\n\n"
+         "── CHỮ KÝ DELTA ──\n"
+         "%@\n\n"
          "── CHẶN DNS ──\n"
          "Đã chặn: %llu request\n"
          "Host chặn gần nhất:\n%@\n\n"
@@ -922,6 +927,7 @@ game_sdk_t *game_sdk = new game_sdk_t();
          "%@",
         verdict, hookLine, extractLine, dir,
         totalCalls, bundleCalls, hits, misses, pct, anyPath, last,
+        signInfo,
         dnsBlocked, dnsHost,
         NetLog_count(), netLog];
 

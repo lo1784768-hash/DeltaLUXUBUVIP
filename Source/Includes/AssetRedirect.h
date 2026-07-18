@@ -59,6 +59,44 @@ inline const char*        DeltaVFS_deltaDir()       { return g_moddedPrefixC; }
 inline const char*        DeltaVFS_zipPath()         { return g_deltaZipPathC; }
 
 // ============================================================================
+//  KIỂM TRA CHỮ KÝ: Delta có nằm trong code signature của app không?
+// ----------------------------------------------------------------------------
+// Chữ ký app liệt kê hash MỌI file được ký trong FreeFire.app/_CodeSignature/
+// CodeResources (một plist). Ở đây ta đọc plist đó rồi đếm xem có entry nào của
+// Delta.zip và của thư mục Delta/... được ký vào không.
+//   - "Delta.zip trong chữ ký"  = bạn đã nhét Delta.zip vào .app TRƯỚC khi re-sign.
+//   - "file Delta/ trong chữ ký" = bạn bung sẵn folder Delta/ rồi mới ký (folder
+//     được ký thẳng vào app, không phải bung lúc chạy).
+// LƯU Ý: folder Delta/ do dylib TỰ BUNG lúc chạy thì KHÔNG bao giờ nằm trong chữ ký
+// (nó sinh ra sau khi app khởi động) -> phần "file Delta/ trong chữ ký" sẽ = 0.
+// ============================================================================
+inline NSString *DeltaVFS_signatureSummary() {
+    if (g_bundlePrefixLen == 0) return @"(chưa xác định bundle)";
+    char crPath[1200];
+    snprintf(crPath, sizeof(crPath), "%s_CodeSignature/CodeResources", g_bundlePrefixC);
+    NSString *p = [NSString stringWithUTF8String:crPath];
+    // dictionaryWithContentsOfFile đọc được cả plist nhị phân lẫn XML.
+    NSDictionary *cr = [NSDictionary dictionaryWithContentsOfFile:p];
+    if (!cr) return @"CodeResources: KHÔNG đọc được (app chưa ký / thiếu file?)";
+
+    BOOL zipSigned = NO;
+    unsigned deltaDirFiles = 0;
+    // Chữ ký format v2 dùng section "files2", format cũ dùng "files".
+    NSArray *sections = @[@"files2", @"files"];
+    for (NSString *sect in sections) {
+        NSDictionary *files = cr[sect];
+        if (![files isKindOfClass:[NSDictionary class]]) continue;
+        for (NSString *k in files) {
+            if ([k isEqualToString:@DELTA_ZIP_BUNDLE_NAME]) zipSigned = YES;
+            if ([k hasPrefix:@"Delta/"]) deltaDirFiles++;
+        }
+    }
+    return [NSString stringWithFormat:
+            @"Delta.zip trong chữ ký: %@\nFile Delta/ được ký: %u",
+            zipSigned ? @"CÓ ✓" : @"KHÔNG ✗", deltaDirFiles];
+}
+
+// ============================================================================
 //  PHẦN 1: GIẢI NÉN DELTA.ZIP (Bung gói mod vào thẳng thư mục Caches/Delta/)
 //  Dùng zlib (libz có sẵn trên iOS) để đọc trực tiếp cấu trúc ZIP, không cần
 //  thêm thư viện bên thứ 3. Chạy 1 lần duy nhất, có marker để bỏ qua lần sau.
