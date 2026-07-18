@@ -538,6 +538,24 @@ inline void netBlockLearnIP(const char *ip) {
     g_blockedIPs.insert(ip);
 }
 
+// Preview nội dung HTTPBody của 1 request SẮP bị chặn - để biết CHÍNH XÁC game định gửi gì
+// lên server đen (không chỉ mỗi URL/query string, vốn đã thấy được ở dòng "HTTP-BLK"). Chỉ đọc
+// request.HTTPBody (NSData sẵn có trong bộ nhớ) - KHÔNG đọc HTTPBodyStream vì đọc stream sẽ
+// tiêu thụ nó mất, lỡ request này thật ra không bị chặn (gọi nhầm) thì sẽ hỏng luôn upload thật.
+// Trả nil nếu không có body (GET thường không có, hoặc request dùng stream) - caller bỏ qua,
+// khỏi ghi 1 dòng log rỗng vô nghĩa.
+inline NSString *httpBlockedBodyPreview(NSData *body) {
+    if (!body || body.length == 0) return nil;
+    NSUInteger n = body.length < 120 ? body.length : 120;
+    const unsigned char *bytes = (const unsigned char *)body.bytes;
+    NSMutableString *preview = [NSMutableString stringWithCapacity:n];
+    for (NSUInteger i = 0; i < n; i++) {
+        unsigned char c = bytes[i];
+        [preview appendFormat:@"%c", (c >= 0x20 && c < 0x7f) ? c : '.'];
+    }
+    return [NSString stringWithFormat:@"len=%lu | %@", (unsigned long)body.length, preview];
+}
+
 // ===== 4. NSURLPROTOCOL (Cấp độ HTTP/HTTPS của iOS Cocoa) =====
 // Khai báo trước category NSString dùng để so khớp từ khóa method trong path (vd "logevent")
 // khi request không có host - dùng bên dưới, implement ở cuối file.
@@ -576,6 +594,8 @@ inline void netBlockLearnIP(const char *ip) {
         // background/ephemeral riêng không consult NSURLProtocol đăng ký ở app), không phải
         // do trie chặn domain sai.
         if (url) netLogRaw("HTTP-BLK", [url UTF8String]);
+        NSString *bodyPreview = httpBlockedBodyPreview(request.HTTPBody);
+        if (bodyPreview) netLogRaw("HTTP-BODY", [[NSString stringWithFormat:@"%@ %@", request.HTTPMethod ?: @"?", bodyPreview] UTF8String]);
         return YES;
     }
     return NO;
@@ -620,6 +640,12 @@ inline void hookedTaskResume(id self, SEL _cmd) {
     if (host && isJunkDNSDomain([host UTF8String])) {
         NSString *urlStr = url.absoluteString;
         netLogRaw("HTTP-BLK", urlStr ? [urlStr UTF8String] : [host UTF8String]);
+        NSData *body = task.currentRequest.HTTPBody ?: task.originalRequest.HTTPBody;
+        NSString *bodyPreview = httpBlockedBodyPreview(body);
+        if (bodyPreview) {
+            NSString *method = task.currentRequest.HTTPMethod ?: task.originalRequest.HTTPMethod ?: @"?";
+            netLogRaw("HTTP-BODY", [[NSString stringWithFormat:@"%@ %@", method, bodyPreview] UTF8String]);
+        }
         dnsNoteBlocked([host UTF8String]);
         [task cancel]; // KHÔNG gọi resume gốc - request thật sự không bao giờ chạy
         return;

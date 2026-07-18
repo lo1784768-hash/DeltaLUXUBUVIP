@@ -18,6 +18,10 @@
 //   HTTP     : full URL - do JunkAdURLProtocol gọi vào (NSURLSession), CỘNG với request HTTP
 //              thuần không qua NSURLSession bắt được từ write()/send() (xem dưới)
 //   HTTP-BLK : request HTTP thuần (không qua NSURLSession) bị chặn theo header Host
+//   HTTP-BODY: preview HTTPBody (method + nội dung, ASCII, ký tự không in được thay '.') của 1
+//              request NSURLSession SẮP bị chặn (do DNSBlock.h gọi vào, ngay cạnh dòng HTTP-BLK
+//              tương ứng) - để biết chính xác game định gửi gì lên chứ không chỉ mỗi URL. Chỉ
+//              ghi nếu request có HTTPBody (NSData sẵn trong bộ nhớ, không đọc HTTPBodyStream).
 //   TLS-SNI  : tên miền lấy từ ClientHello (SNI) của kết nối HTTPS không qua NSURLSession -
 //              game/thư viện TLS riêng (BoringSSL, libcurl tự vendor...) gọi write()/send()
 //              thẳng nên JunkAdURLProtocol không thấy được, phải soi gói ClientHello ở tầng
