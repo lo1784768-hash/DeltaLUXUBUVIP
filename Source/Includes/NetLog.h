@@ -13,11 +13,13 @@
 //   UDP  : connect()/sendto() tới socket SOCK_DGRAM -> ip:port (bắt cả khi connect thẳng IP)
 //   HTTP : full URL kèm path - do JunkAdURLProtocol gọi vào (xem DNSBlock.h)
 //
-// CHẶN: DNSBlock.h phân giải sẵn các host đen -> nạp IP của chúng vào g_blockedIPs
-// (netMarkBlockedIP). connect()/sendto() tới 1 IP nằm trong set đó bị chặn:
-//   - connect(): trả -1, errno=ECONNREFUSED (kể cả TCP lẫn UDP connect)
-//   - sendto() : lặng lẽ nuốt gói, trả 'len' như đã gửi (khỏi kích lỗi netcode game)
-// IP không nằm trong set -> log & cho qua y như cũ, không đổi hành vi mạng.
+// CHẶN:
+//   - UDP: CHẶN HẾT bất kể IP. Ngoại lệ duy nhất: DNS (port 53) để game còn phân
+//     giải được tên miền, và các IP tự thêm vào allowlist (netAllowUDPIP) khi phát
+//     hiện game cần. connect() UDP -> -1/ECONNREFUSED; sendto() -> nuốt gói, trả 'len'
+//     (giả thành công, khỏi kích nhánh lỗi netcode -> chặn êm).
+//   - TCP: chỉ chặn IP thuộc host đen mà DNSBlock.h học được (g_blockedIPs); còn lại
+//     cho qua bình thường.
 // Log gom trùng: mỗi chuỗi chỉ ghi 1 lần.
 // ============================================================================
 #import <Foundation/Foundation.h>
@@ -98,6 +100,25 @@ inline bool netIsBlockedIP(const char *ip) {
     return g_blockedIPs.find(ip) != g_blockedIPs.end();
 }
 
+// ===== ALLOWLIST UDP (ngoại lệ cho kiểu "chặn hết UDP") =====
+// Mặc định CHẶN MỌI UDP. Nếu về sau phát hiện game cần 1 IP UDP nào đó (vd server
+// trận đấu) mà bị đứt, thêm IP đó vào đây (netAllowUDPIP) -> IP đó được cho qua.
+// Rỗng lúc đầu = chặn tất tần tật UDP (trừ DNS port 53, xem hook bên dưới).
+static std::unordered_set<std::string> g_udpAllowIPs;
+static std::mutex g_udpAllowMutex;
+
+inline void netAllowUDPIP(const char *ip) {
+    if (!ip || !ip[0]) return;
+    std::lock_guard<std::mutex> lock(g_udpAllowMutex);
+    g_udpAllowIPs.insert(ip);
+}
+
+inline bool netIsUDPAllowed(const char *ip) {
+    if (!ip || !ip[0]) return false;
+    std::lock_guard<std::mutex> lock(g_udpAllowMutex);
+    return g_udpAllowIPs.find(ip) != g_udpAllowIPs.end();
+}
+
 inline unsigned long long NetBlock_count() { return g_netBlockCount.load(std::memory_order_relaxed); }
 inline const char *NetBlock_lastIP() { return g_netLastBlockedIP; }
 
@@ -118,6 +139,14 @@ inline void netStripPort(const char *endpoint, char *outIP, size_t outLen) {
     if (n >= outLen) n = outLen - 1;
     memcpy(outIP, endpoint, n);
     outIP[n] = '\0';
+}
+
+// Lấy port đích từ sockaddr (0 nếu không phải IPv4/IPv6). Dùng để chừa DNS (port 53).
+inline int netSockPort(const struct sockaddr *sa) {
+    if (!sa) return 0;
+    if (sa->sa_family == AF_INET)  return ntohs(((const struct sockaddr_in *)sa)->sin_port);
+    if (sa->sa_family == AF_INET6) return ntohs(((const struct sockaddr_in6 *)sa)->sin6_port);
+    return 0;
 }
 
 // sockaddr -> "ip:port". Chỉ nhận IPv4/IPv6, bỏ AF_UNIX... (trả false).
@@ -155,11 +184,24 @@ inline int hooked_connect(int fd, const struct sockaddr *addr, socklen_t len) {
         }
         char ip[64];
         netStripPort(ep, ip, sizeof(ip));
-        if (netIsBlockedIP(ip)) {
-            netNoteBlocked(ip);
-            netLogRaw("BLK", ep); // ghi rõ đã chặn để tab INFO soi được
-            errno = ECONNREFUSED;
-            return -1; // chặn: giả lập "connection refused", không cho bắt tay
+        int port = netSockPort(addr);
+
+        if (type == SOCK_DGRAM) {
+            // CHẶN HẾT UDP: trừ DNS (port 53) và các IP đã cho vào allowlist.
+            if (port != 53 && !netIsUDPAllowed(ip)) {
+                netNoteBlocked(ip);
+                netLogRaw("BLK-UDP", ep);
+                errno = ECONNREFUSED;
+                return -1;
+            }
+        } else {
+            // TCP: vẫn chặn theo IP host đen đã học được (giữ nguyên như cũ).
+            if (netIsBlockedIP(ip)) {
+                netNoteBlocked(ip);
+                netLogRaw("BLK", ep);
+                errno = ECONNREFUSED;
+                return -1;
+            }
         }
         netLogRaw(proto, ep);
     }
@@ -177,9 +219,11 @@ inline ssize_t hooked_sendto(int fd, const void *buf, size_t len, int flags,
         if (netLogFormatSockaddr(dest, ep, sizeof(ep))) {
             char ip[64];
             netStripPort(ep, ip, sizeof(ip));
-            if (netIsBlockedIP(ip)) {
+            int port = netSockPort(dest);
+            // sendto = UDP. CHẶN HẾT, trừ DNS (port 53) và IP trong allowlist.
+            if (port != 53 && !netIsUDPAllowed(ip)) {
                 netNoteBlocked(ip);
-                netLogRaw("BLK", ep);
+                netLogRaw("BLK-UDP", ep);
                 // Nuốt gói UDP: báo với game là đã gửi 'len' byte (thành công) để không
                 // kích nhánh xử lý lỗi trong netcode -> chặn êm, không làm game giật/khựng.
                 return (ssize_t)len;
