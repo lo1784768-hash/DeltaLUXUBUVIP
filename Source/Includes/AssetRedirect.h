@@ -353,8 +353,12 @@ inline const char* redirectAllTrafficPath(const char *path) {
         return path; // Nếu đường dẫn quá dài vượt bộ đệm, fallback về file gốc để an toàn
     }
 
-    // BƯỚC 3: ÉP ĐỌC TRONG DELTA
-    // Kiểm tra file có tồn tại trong Delta không - CHỈ để đếm hit/miss cho tab INFO.
+    // BƯỚC 3: ÉP ĐỌC TRONG DELTA - LUÔN LUÔN, KHÔNG CÓ NGOẠI LỆ.
+    // Kiểm tra tồn tại chỉ để đếm hit/miss cho tab INFO chẩn đoán - KHÔNG dùng kết quả này để
+    // quyết định fallback nữa (bản trước còn overlay "không có thì đọc gốc" khi g_deltaActive
+    // chưa kịp bật, đúng lúc đó lại là lỗ hổng: file thiếu trong Delta bị lặng lẽ đọc bundle
+    // gốc). Giờ: match tiền tố bundle là redirect thẳng vào Delta, file nào Delta không có thì
+    // trả path Delta (không tồn tại) -> game báo thiếu file, tuyệt đối không đọc bản gốc.
     bool existsInDelta = (orig_access && orig_access(redirectedBuffer, F_OK) == 0);
     if (existsInDelta) {
         g_deltaHitCount.fetch_add(1, std::memory_order_relaxed);
@@ -363,16 +367,7 @@ inline const char* redirectAllTrafficPath(const char *path) {
     } else {
         g_deltaMissCount.fetch_add(1, std::memory_order_relaxed);
     }
-
-    // Khi Delta ĐANG BẬT: ÉP TOÀN BỘ vào Delta, KHÔNG fallback về bundle gốc. File nào
-    // Delta thiếu thì trả path Delta (không tồn tại) -> game báo thiếu file chứ tuyệt đối
-    // không đọc bản gốc. Đây là yêu cầu "có Delta là đọc hết trong đó".
-    if (g_deltaActive.load(std::memory_order_relaxed)) {
-        return redirectedBuffer;
-    }
-
-    // Delta KHÔNG bật (không có gói Delta) -> hành xử overlay an toàn: có thì Delta, không thì gốc.
-    return existsInDelta ? redirectedBuffer : path;
+    return redirectedBuffer;
 }
 
 static int (*orig_open)(const char *, int, ...);
