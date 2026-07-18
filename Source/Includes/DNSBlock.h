@@ -180,50 +180,10 @@ inline bool isJunkDNSDomain(const char *hostname) {
 // ===== 2. HOOK DNS RESOLUTION (getaddrinfo + legacy gethostbyname/gethostbyname2) =====
 static int (*orig_getaddrinfo)(const char *, const char *, const struct addrinfo *, struct addrinfo **);
 
-// ---- Học IP của host đen rồi nạp vào registry chặn tầng socket (NetLog.h) ----
-// Vì sao cần: chặn DNS chỉ ăn khi game gọi getaddrinfo của libc. Nếu game tự phân
-// giải (resolver riêng/DoH) hoặc nhớ sẵn IP rồi bắn UDP thẳng vào IP thì hook DNS
-// trượt hoàn toàn. Ta chủ động phân giải THẬT các host đen (bằng orig_getaddrinfo)
-// để biết IP của chúng, đưa vào g_blockedIPs -> connect()/sendto() tới đó bị chặn.
-static std::mutex g_learnedHostsMutex;
-static std::unordered_map<std::string, bool> g_learnedHosts; // host đã học IP rồi -> khỏi phân giải lại
-
-// Phân giải THẬT 1 host (dùng hàm gốc, không đi qua hook) rồi mark từng IP tìm được.
-// Có thể chặn (blocking) nên chỉ gọi từ thread nền hoặc từ chính thread resolver của game.
-inline void learnBlockedHostIPs(const char *host) {
-    if (!host || !host[0] || !orig_getaddrinfo) return;
-    {   // Đã học host này rồi thì thôi (tránh phân giải lặp cho mỗi request)
-        std::lock_guard<std::mutex> lock(g_learnedHostsMutex);
-        if (!g_learnedHosts.emplace(host, true).second) return;
-    }
-    struct addrinfo hints;
-    memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_UNSPEC; // lấy cả IPv4 lẫn IPv6
-    struct addrinfo *res = NULL;
-    if (orig_getaddrinfo(host, NULL, &hints, &res) != 0 || !res) return;
-    for (struct addrinfo *ai = res; ai; ai = ai->ai_next) {
-        char ip[INET6_ADDRSTRLEN] = {0};
-        if (ai->ai_family == AF_INET) {
-            const struct sockaddr_in *s4 = (const struct sockaddr_in *)ai->ai_addr;
-            inet_ntop(AF_INET, &s4->sin_addr, ip, sizeof(ip));
-        } else if (ai->ai_family == AF_INET6) {
-            const struct sockaddr_in6 *s6 = (const struct sockaddr_in6 *)ai->ai_addr;
-            inet_ntop(AF_INET6, &s6->sin6_addr, ip, sizeof(ip));
-        } else {
-            continue;
-        }
-        if (ip[0]) netMarkBlockedIP(ip); // nạp vào registry chặn socket (NetLog.h)
-    }
-    freeaddrinfo(res);
-}
-
 inline int hooked_getaddrinfo(const char *hostname, const char *servname, const struct addrinfo *hints, struct addrinfo **res) {
     if (isJunkDNSDomain(hostname)) {
         dnsNoteBlocked(hostname);
         netLogRaw("DNS-BLK", hostname ? hostname : "");
-        // Tiện thể học IP host này để chặn luôn ở tầng socket, phòng khi có đường
-        // khác connect thẳng vào IP mà không qua getaddrinfo nữa (cache 1 lần/host).
-        learnBlockedHostIPs(hostname);
         return EAI_NONAME; // Giả lập lỗi: Domain không tồn tại
     }
     if (hostname) netLogRaw("DNS", hostname);
@@ -313,15 +273,6 @@ inline void installDNSBlockHook() {
     // Đăng ký URL Protocol (tầng HTTP/HTTPS cho traffic đi qua NSURLSession/NSURLConnection)
     [NSURLProtocol registerClass:[JunkAdURLProtocol class]];
 
-    // Cài hook tầng socket (connect/sendto) - soi & CHẶN TCP/UDP tới server theo IP.
+    // Cài logger mạng thụ động (connect/sendto) - soi TCP/UDP tới server, kể cả connect thẳng IP.
     installNetLogHook();
-
-    // Phân giải sẵn TOÀN BỘ host đen ở thread nền để nạp IP vào registry chặn socket.
-    // Nhờ vậy dù game tự phân giải (không đi qua getaddrinfo của libc) hay nhớ sẵn IP
-    // rồi bắn UDP thẳng vào IP, ta vẫn biết IP đó là host đen mà chặn. Chạy nền để
-    // không giữ luồng khởi động; getaddrinfo có thể chậm/chặn.
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_BACKGROUND, 0), ^{
-        size_t count = sizeof(kJunkDNSDomains) / sizeof(kJunkDNSDomains[0]);
-        for (size_t i = 0; i < count; i++) learnBlockedHostIPs(kJunkDNSDomains[i]);
-    });
 }

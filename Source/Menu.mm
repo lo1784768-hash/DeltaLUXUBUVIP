@@ -900,11 +900,6 @@ game_sdk_t *game_sdk = new game_sdk_t();
     const char *dnsHostC = DNSBlock_lastHost();
     NSString *dnsHost = (dnsHostC && dnsHostC[0]) ? [NSString stringWithUTF8String:dnsHostC] : @"—";
 
-    // Thống kê chặn tầng socket (UDP/TCP theo IP)
-    unsigned long long netBlocked = NetBlock_count();
-    const char *netIPC = NetBlock_lastIP();
-    NSString *netBlockIP = (netIPC && netIPC[0]) ? [NSString stringWithUTF8String:netIPC] : @"—";
-
     // Log mạng thụ động: game gửi request gì lên server (DNS/TCP/UDP/HTTP, mới nhất ở trên)
     NSString *netLog = NetLog_snapshot();
 
@@ -923,15 +918,11 @@ game_sdk_t *game_sdk = new game_sdk_t();
          "── CHẶN DNS ──\n"
          "Đã chặn: %llu request\n"
          "Host chặn gần nhất:\n%@\n\n"
-         "── CHẶN UDP/TCP (theo IP) ──\n"
-         "Đã chặn: %llu gói/kết nối\n"
-         "IP chặn gần nhất: %@\n\n"
          "── NET LOG (%u endpoint) ──\n"
          "%@",
         verdict, hookLine, extractLine, dir,
         totalCalls, bundleCalls, hits, misses, pct, anyPath, last,
         dnsBlocked, dnsHost,
-        netBlocked, netBlockIP,
         NetLog_count(), netLog];
 
     _deltaLogView.text = text;
