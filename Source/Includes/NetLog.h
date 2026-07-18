@@ -34,9 +34,12 @@
 //              socket-layer UDP/TCP blocking"), để biết chắc nội dung trước khi quyết định chặn.
 //              Chỉ ghi log nếu gói có đoạn ký tự in-được liên tục >= 10 (netLogLongestPrintableRun)
 //              - lọc bớt noise binary thuần của gameplay netcode (đa số traffic ở dải cổng này).
-//   UDP-BLK  : gói UDP gửi tới dải cổng 10000-10020 bị CHẶN HẲN khi công tắc
-//              netLogSetUdpPortBlockEnabled(true) đang bật (bật/tắt từ menu) - gói bị bỏ nhưng
-//              hook vẫn trả về như gửi thành công để không phá logic reliability/retry của game.
+//   UDP-BLK  : gói UDP gửi tới dải cổng 10000-10020 bị CHẶN khi công tắc
+//              netLogSetUdpPortBlockEnabled(true) đang bật (bật/tắt từ menu) VÀ độ dài gói nằm
+//              trong [NETLOG_UDP_BLOCK_LEN_MIN, NETLOG_UDP_BLOCK_LEN_MAX] (mặc định 2000-3000
+//              byte) - gói ngoài dải len này vẫn đi qua bình thường dù công tắc đang bật. Gói bị
+//              chặn thì bỏ hẳn nhưng hook vẫn trả về như gửi thành công để không phá logic
+//              reliability/retry của game.
 //
 // Bản thân NetLog không tự quyết định chặn gì - việc chặn (connect theo IP, hay write/send
 // theo hostname từ SNI/Host) do module khác (DNSBlock.h) đăng ký qua netLogSetBlockCheck /
@@ -151,15 +154,21 @@ inline bool netLogFormatSockaddr(const struct sockaddr *sa, char *out, size_t ou
 // string...) lộ ra không, không đổi hành vi mạng - để biết chắc trước khi quyết định chặn gì.
 inline bool netLogPortInPeekRange(uint16_t port) { return port >= 10000 && port <= 10020; }
 
-// ===== Công tắc bật/tắt chặn hoàn toàn UDP gửi tới dải cổng nghi vấn (10000-10020) =====
+// ===== Công tắc bật/tắt chặn UDP gửi tới dải cổng nghi vấn (10000-10020) =====
 // Vì sao: người dùng điều khiển trực tiếp từ 1 switch trong menu (Menu.mm gọi
 // netLogSetUdpPortBlockEnabled) - không còn phụ thuộc đồng hồ hệ thống như bản điều tiết theo
-// thời gian trước đó. Khi bật, MỌI gói UDP gửi tới dải cổng này bị bỏ (không thật sự ra khỏi
-// máy) nhưng hook vẫn trả về đúng số byte như gửi thành công, để không phá logic
-// reliability/retry riêng của game.
+// thời gian trước đó. Khi bật, CHỈ những gói có kích thước nằm trong khoảng
+// [NETLOG_UDP_BLOCK_LEN_MIN, NETLOG_UDP_BLOCK_LEN_MAX] byte bị bỏ (không thật sự ra khỏi máy)
+// - gói có độ dài khác vẫn đi qua bình thường dù công tắc đang bật, vì dải cổng này còn lẫn
+// traffic gameplay thật (xem log "Revert socket-layer UDP/TCP blocking"), lọc theo len giúp
+// tránh chặn nhầm những gói không phải mục tiêu. Hook vẫn trả về đúng số byte như gửi thành
+// công cho gói bị bỏ, để không phá logic reliability/retry riêng của game.
+#define NETLOG_UDP_BLOCK_LEN_MIN 2000
+#define NETLOG_UDP_BLOCK_LEN_MAX 3000
 static std::atomic<bool> g_udpPortBlockEnabled{false};
 inline void netLogSetUdpPortBlockEnabled(bool enabled) { g_udpPortBlockEnabled.store(enabled, std::memory_order_relaxed); }
 inline bool netLogUdpPortBlockEnabled() { return g_udpPortBlockEnabled.load(std::memory_order_relaxed); }
+inline bool netLogUdpLenInBlockRange(size_t len) { return len >= NETLOG_UDP_BLOCK_LEN_MIN && len <= NETLOG_UDP_BLOCK_LEN_MAX; }
 
 // Đổi buffer thành preview: ký tự in được giữ nguyên, còn lại thay '.', cắt ngắn cho vừa 1 dòng
 // log - không phải giải mã, chỉ để mắt người nhìn ra có chữ/JSON lộ trong payload hay không.
@@ -341,9 +350,9 @@ inline ssize_t hooked_sendto(int fd, const void *buf, size_t len, int flags,
                     snprintf(detail, sizeof(detail), "%s len=%zu | %s", ep, len, preview.c_str());
                     netLogRaw("UDP-PEEK", detail);
                 }
-                if (netLogUdpPortBlockEnabled()) {
+                if (netLogUdpPortBlockEnabled() && netLogUdpLenInBlockRange(len)) {
                     netLogRaw("UDP-BLK", ep);
-                    return (ssize_t)len; // giả vờ gửi thành công, thực ra bỏ gói - công tắc đang bật
+                    return (ssize_t)len; // giả vờ gửi thành công, thực ra bỏ gói - đúng dải len bị chặn
                 }
             }
         }
@@ -497,7 +506,7 @@ inline bool udpPeekInspectWrite(int fd, const void *buf, size_t count) {
         snprintf(detail, sizeof(detail), "port=%d len=%zu | %s", port, count, preview.c_str());
         netLogRaw("UDP-PEEK", detail);
     }
-    if (netLogUdpPortBlockEnabled()) {
+    if (netLogUdpPortBlockEnabled() && netLogUdpLenInBlockRange(count)) {
         char detail[64];
         snprintf(detail, sizeof(detail), "port=%d len=%zu", port, count);
         netLogRaw("UDP-BLK", detail);
