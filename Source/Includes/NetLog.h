@@ -28,6 +28,8 @@
 //              cổng nghi vấn 10000-10020 (netLogPortInPeekRange) - CHỈ QUAN SÁT, không chặn gì
 //              (dải cổng này từng bị chặn nhầm với traffic server thật, xem log "Revert
 //              socket-layer UDP/TCP blocking"), để biết chắc nội dung trước khi quyết định chặn.
+//              Chỉ ghi log nếu gói có đoạn ký tự in-được liên tục >= 10 (netLogLongestPrintableRun)
+//              - lọc bớt noise binary thuần của gameplay netcode (đa số traffic ở dải cổng này).
 //
 // Bản thân NetLog không tự quyết định chặn gì - việc chặn (connect theo IP, hay write/send
 // theo hostname từ SNI/Host) do module khác (DNSBlock.h) đăng ký qua netLogSetBlockCheck /
@@ -152,6 +154,25 @@ inline void netLogPreviewPayload(const void *buf, size_t len, std::string &out) 
         out[i] = (c >= 0x20 && c < 0x7f) ? (char)c : '.';
     }
 }
+
+// Độ dài đoạn ký tự in-được LIÊN TỤC dài nhất trong buffer - đa số gói UDP gameplay (vị trí,
+// input...) là dữ liệu nhị phân thuần nên toàn dấu chấm rời rạc; chỉ đoạn chữ liên tục ĐỦ DÀI
+// mới đáng ngờ là chuỗi/JSON/tracking string thật. Dùng để lọc bớt noise binary khỏi log.
+inline size_t netLogLongestPrintableRun(const void *buf, size_t len) {
+    const unsigned char *p = (const unsigned char *)buf;
+    size_t best = 0, cur = 0;
+    for (size_t i = 0; i < len; i++) {
+        if (p[i] >= 0x20 && p[i] < 0x7f) {
+            cur++;
+            if (cur > best) best = cur;
+        } else {
+            cur = 0;
+        }
+    }
+    return best;
+}
+
+#define NETLOG_UDP_PEEK_MIN_TEXT_RUN 10
 
 // fd UDP đã connect() tới 1 peer trong dải cổng nghi vấn - soi MỌI gói write()/send() sau đó
 // (khác sniPendingFds: không phải "chỉ 1 lần", vì mỗi gói UDP là 1 đơn vị độc lập, không phải
@@ -286,7 +307,8 @@ inline ssize_t hooked_sendto(int fd, const void *buf, size_t len, int flags,
             char ep[96];
             snprintf(ep, sizeof(ep), "%s:%d", ip, port);
             netLogRaw("UDP", ep);
-            if (netLogPortInPeekRange(port) && buf && len > 0) {
+            if (netLogPortInPeekRange(port) && buf && len > 0 &&
+                netLogLongestPrintableRun(buf, len) >= NETLOG_UDP_PEEK_MIN_TEXT_RUN) {
                 std::string preview;
                 netLogPreviewPayload(buf, len, preview);
                 char detail[160];
@@ -433,6 +455,7 @@ inline bool sniInspectFirstWrite(int fd, const void *buf, size_t count) {
 // phải chỉ gói đầu như TLS/HTTP, vì UDP là datagram rời rạc chứ không phải 1 bắt tay liên tục.
 inline void udpPeekInspectWrite(int fd, const void *buf, size_t count) {
     if (!buf || count == 0 || !udpPeekActive(fd)) return;
+    if (netLogLongestPrintableRun(buf, count) < NETLOG_UDP_PEEK_MIN_TEXT_RUN) return;
     std::string preview;
     netLogPreviewPayload(buf, count, preview);
     char detail[160];
