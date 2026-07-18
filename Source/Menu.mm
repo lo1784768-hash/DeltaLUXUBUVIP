@@ -142,6 +142,7 @@ static NSString *LOC(NSString *key) {
 // Info tab
 @property (nonatomic, strong) UILabel *statusLabel;
 @property (nonatomic, strong) UITextView *deltaLogView;
+@property (nonatomic, strong) UITextView *udpLogView;
 
 // Localization
 @property (nonatomic, strong) NSMutableArray<dispatch_block_t> *localizationRefreshers;
@@ -848,7 +849,16 @@ game_sdk_t *game_sdk = new game_sdk_t();
     logHeader.text = @"DELTA VFS";
     [page addSubview:logHeader];
 
-    _deltaLogView = [[UITextView alloc] initWithFrame:CGRectMake(4, 96, frame.size.width - 8, frame.size.height - 100)];
+    // Chia phần còn lại của trang làm 2: log chính (DELTA VFS/DNS/HTTP...) ở trên, log UDP
+    // riêng ở dưới - UDP (đặc biệt UDP-PEEK ở dải cổng 10000-10020) bắn dày hơn hẳn các tầng
+    // khác nên tách hẳn ring buffer + khung hiển thị, khỏi lấn chỗ các dòng *-BLK hiếm hơn.
+    CGFloat logsTop = 96;
+    CGFloat logsAvail = frame.size.height - logsTop - 4;
+    CGFloat mainLogH = logsAvail * 0.55f;
+    CGFloat udpHeaderH = 14;
+    CGFloat udpLogH = logsAvail - mainLogH - udpHeaderH - 4;
+
+    _deltaLogView = [[UITextView alloc] initWithFrame:CGRectMake(4, logsTop, frame.size.width - 8, mainLogH)];
     _deltaLogView.backgroundColor = COLOR_CARD_BG;
     _deltaLogView.layer.cornerRadius = 10.0f;
     _deltaLogView.layer.borderWidth = 1.0f;
@@ -861,12 +871,35 @@ game_sdk_t *game_sdk = new game_sdk_t();
     _deltaLogView.textContainerInset = UIEdgeInsetsMake(8, 8, 8, 8);
     [page addSubview:_deltaLogView];
 
+    UILabel *udpLogHeader = [[UILabel alloc] initWithFrame:CGRectMake(6, logsTop + mainLogH + 4, frame.size.width - 12, udpHeaderH)];
+    udpLogHeader.font = [UIFont systemFontOfSize:10 weight:UIFontWeightHeavy];
+    udpLogHeader.textColor = COLOR_PURPLE;
+    udpLogHeader.text = @"UDP LOG";
+    [page addSubview:udpLogHeader];
+
+    _udpLogView = [[UITextView alloc] initWithFrame:CGRectMake(4, logsTop + mainLogH + udpHeaderH + 4, frame.size.width - 8, udpLogH)];
+    _udpLogView.backgroundColor = COLOR_CARD_BG;
+    _udpLogView.layer.cornerRadius = 10.0f;
+    _udpLogView.layer.borderWidth = 1.0f;
+    _udpLogView.layer.borderColor = COLOR_CARD_BORDER.CGColor;
+    _udpLogView.editable = NO;
+    _udpLogView.selectable = NO;
+    _udpLogView.scrollEnabled = YES;
+    _udpLogView.textColor = COLOR_TEXT;
+    _udpLogView.font = [UIFont fontWithName:@"Menlo" size:9.5f] ?: [UIFont systemFontOfSize:9.5f];
+    _udpLogView.textContainerInset = UIEdgeInsetsMake(8, 8, 8, 8);
+    [page addSubview:_udpLogView];
+
     return page;
 }
 
 // Cập nhật bảng log DELTA VFS - gọi định kỳ từ updateMenu (khi menu đang mở).
 - (void)refreshDeltaLog {
     if (!_deltaLogView) return;
+
+    if (_udpLogView) {
+        _udpLogView.text = [NSString stringWithFormat:@"(%u dòng) port 10000-10020\n%@", NetLog_udpCount(), NetLog_udpSnapshot()];
+    }
 
     unsigned long long hits = DeltaVFS_hits();
     unsigned long long misses = DeltaVFS_misses();
@@ -938,7 +971,7 @@ game_sdk_t *game_sdk = new game_sdk_t();
          "── CHẶN DNS ──\n"
          "Đã chặn: %llu request\n"
          "Host chặn gần nhất:\n%@\n\n"
-         "── NET LOG (%u endpoint) ──\n"
+         "── NET LOG (%u dòng, không gồm UDP - xem khung UDP LOG) ──\n"
          "%@",
         verdict, hookLine, extractLine, dir,
         totalCalls, bundleCalls, hits, misses, pct, anyPath, last,

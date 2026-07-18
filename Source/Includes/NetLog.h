@@ -35,11 +35,12 @@
 //              Chỉ ghi log nếu gói có đoạn ký tự in-được liên tục >= 10 (netLogLongestPrintableRun)
 //              - lọc bớt noise binary thuần của gameplay netcode (đa số traffic ở dải cổng này).
 //   UDP-BLK  : gói UDP gửi tới dải cổng 10000-10020 bị CHẶN khi công tắc
-//              netLogSetUdpPortBlockEnabled(true) đang bật (bật/tắt từ menu) VÀ độ dài gói nằm
-//              trong [NETLOG_UDP_BLOCK_LEN_MIN, NETLOG_UDP_BLOCK_LEN_MAX] (mặc định 2000-3000
-//              byte) - gói ngoài dải len này vẫn đi qua bình thường dù công tắc đang bật. Gói bị
-//              chặn thì bỏ hẳn nhưng hook vẫn trả về như gửi thành công để không phá logic
-//              reliability/retry của game.
+//              netLogSetUdpPortBlockEnabled(true) đang bật (bật/tắt từ menu) VÀ độ dài gói rơi
+//              vào 1 trong 2 khoảng 50-100 hoặc 2000-4000 byte (netLogUdpLenInBlockRange) - gói
+//              ngoài 2 khoảng này vẫn đi qua bình thường dù công tắc đang bật. Gói bị chặn thì
+//              bỏ hẳn nhưng hook vẫn trả về như gửi thành công để không phá logic
+//              reliability/retry của game. Log tầng này (và UDP/UDP-PEEK) nằm ở ring buffer
+//              riêng, xem NetLog_udpSnapshot() - không lẫn vào NET LOG chính.
 //
 // Bản thân NetLog không tự quyết định chặn gì - việc chặn (connect theo IP, hay write/send
 // theo hostname từ SNI/Host) do module khác (DNSBlock.h) đăng ký qua netLogSetBlockCheck /
@@ -67,52 +68,70 @@
 #define NETLOG_MAX_LINES 100
 #define NETLOG_LINE_LEN  200
 
-static char g_netLog[NETLOG_MAX_LINES][NETLOG_LINE_LEN];
-static int  g_netLogHead = 0;                       // vị trí ghi kế tiếp (ring buffer)
-static std::atomic<unsigned int> g_netLogTotal{0};  // tổng dòng đã ghi (đã trừ trùng)
-static std::mutex g_netLogMutex;
-static std::unordered_set<std::string> g_netLogSeen; // gom trùng: chuỗi nào ghi rồi thì bỏ
+// Ring buffer dùng chung cho cả log chính (DNS/TCP/HTTP/TLS...) LẪN log UDP riêng - tách ra
+// struct để không phải chép 2 lần y hệt logic ghi/dedup/snapshot cho 2 buffer độc lập.
+struct NetLogRing {
+    char lines[NETLOG_MAX_LINES][NETLOG_LINE_LEN];
+    int head = 0;
+    std::atomic<unsigned int> total{0};
+    std::mutex mutex;
+    std::unordered_set<std::string> seen; // gom trùng: chuỗi nào ghi rồi thì bỏ
+};
+static NetLogRing g_netLogMain;
+// Tầng UDP/UDP-PEEK/UDP-BLK ghi RIÊNG vào đây, không lẫn vào log chính - traffic UDP ở dải
+// cổng 10000-10020 dày đặc hơn hẳn DNS/HTTP, nếu gộm chung sẽ đẩy trôi mất các dòng chặn hiếm
+// (DNS-BLK/HTTP-BLK...) ra khỏi ring buffer trước khi kịp xem trong tab INFO.
+static NetLogRing g_netLogUdp;
 
-// Ghi 1 dòng "[HH:MM:SS] [TẦNG] chi_tiết". Trùng thì bỏ qua, giữ log gọn & nhiều tín hiệu -
-// TRỪ các tầng *-BLK (chặn thật): game hay retry đúng 1 URL nhiều lần, nếu gộp trùng thì chỉ
-// lần chặn ĐẦU TIÊN hiện ra rồi dần trôi khỏi ring buffer khi traffic khác đè lên, làm tưởng
-// nhầm là "báo chặn" (Host chặn gần nhất, không gộp trùng) nhưng NET LOG lại không thấy gì -
-// nên *-BLK luôn ghi, để mỗi lần chặn thật đều thấy rõ trong log.
+inline bool netLogLayerIsUdp(const char *layer) {
+    return layer && strncmp(layer, "UDP", 3) == 0; // khớp UDP / UDP-PEEK / UDP-BLK
+}
+
+// Ghi 1 dòng "[HH:MM:SS] [TẦNG] chi_tiết" vào đúng ring (chính hoặc UDP riêng). Trùng thì bỏ
+// qua, giữ log gọn & nhiều tín hiệu - TRỪ các tầng *-BLK (chặn thật): game hay retry đúng 1
+// URL nhiều lần, nếu gộp trùng thì chỉ lần chặn ĐẦU TIÊN hiện ra rồi dần trôi khỏi ring buffer
+// khi traffic khác đè lên, làm tưởng nhầm là "báo chặn" (Host chặn gần nhất, không gộp trùng)
+// nhưng NET LOG lại không thấy gì - nên *-BLK luôn ghi, để mỗi lần chặn thật đều thấy rõ.
 inline void netLogRaw(const char *layer, const char *detail) {
     if (!layer || !detail) return;
     size_t layerLen = strlen(layer);
     bool isBlockEvent = layerLen >= 4 && strcmp(layer + layerLen - 4, "-BLK") == 0;
-    std::lock_guard<std::mutex> lock(g_netLogMutex);
+    NetLogRing &ring = netLogLayerIsUdp(layer) ? g_netLogUdp : g_netLogMain;
+
+    std::lock_guard<std::mutex> lock(ring.mutex);
     if (!isBlockEvent) {
         std::string key = std::string(layer) + "|" + detail;
-        if (!g_netLogSeen.insert(key).second) return; // đã có -> bỏ (chỉ áp dụng log quan sát thường)
+        if (!ring.seen.insert(key).second) return; // đã có -> bỏ (chỉ áp dụng log quan sát thường)
     }
 
     time_t t = time(NULL);
     struct tm tmv;
     localtime_r(&t, &tmv);
-    snprintf(g_netLog[g_netLogHead], NETLOG_LINE_LEN, "%02d:%02d:%02d [%s] %s",
+    snprintf(ring.lines[ring.head], NETLOG_LINE_LEN, "%02d:%02d:%02d [%s] %s",
              tmv.tm_hour, tmv.tm_min, tmv.tm_sec, layer, detail);
-    g_netLogHead = (g_netLogHead + 1) % NETLOG_MAX_LINES;
-    g_netLogTotal.fetch_add(1, std::memory_order_relaxed);
+    ring.head = (ring.head + 1) % NETLOG_MAX_LINES;
+    ring.total.fetch_add(1, std::memory_order_relaxed);
 }
 
-inline unsigned int NetLog_count() { return g_netLogTotal.load(std::memory_order_relaxed); }
+inline unsigned int NetLog_count() { return g_netLogMain.total.load(std::memory_order_relaxed); }
+inline unsigned int NetLog_udpCount() { return g_netLogUdp.total.load(std::memory_order_relaxed); }
 
 // Bản chụp log để tab INFO hiển thị - MỚI NHẤT ở trên cùng (đỡ phải cuộn).
-inline NSString *NetLog_snapshot() {
-    std::lock_guard<std::mutex> lock(g_netLogMutex);
-    unsigned int total = g_netLogTotal.load(std::memory_order_relaxed);
+inline NSString *netLogRingSnapshot(NetLogRing &ring) {
+    std::lock_guard<std::mutex> lock(ring.mutex);
+    unsigned int total = ring.total.load(std::memory_order_relaxed);
     unsigned int n = total < NETLOG_MAX_LINES ? total : NETLOG_MAX_LINES;
     if (n == 0) return @"(chưa bắt được request nào)";
     NSMutableString *s = [NSMutableString string];
-    int last = (g_netLogHead - 1 + NETLOG_MAX_LINES) % NETLOG_MAX_LINES;
+    int last = (ring.head - 1 + NETLOG_MAX_LINES) % NETLOG_MAX_LINES;
     for (unsigned int i = 0; i < n; i++) {
         int idx = (last - (int)i + NETLOG_MAX_LINES * 2) % NETLOG_MAX_LINES;
-        [s appendFormat:@"%s\n", g_netLog[idx]];
+        [s appendFormat:@"%s\n", ring.lines[idx]];
     }
     return s;
 }
+inline NSString *NetLog_snapshot() { return netLogRingSnapshot(g_netLogMain); }
+inline NSString *NetLog_udpSnapshot() { return netLogRingSnapshot(g_netLogUdp); }
 
 // ===== Điểm cắm chặn tuỳ chọn cho connect() (DNSBlock.h đăng ký qua netLogSetBlockCheck) =====
 // NetLog tự nó luôn chỉ quan sát; việc CHẶN (nếu có) do module khác quyết định, NetLog chỉ
@@ -157,18 +176,24 @@ inline bool netLogPortInPeekRange(uint16_t port) { return port >= 10000 && port 
 // ===== Công tắc bật/tắt chặn UDP gửi tới dải cổng nghi vấn (10000-10020) =====
 // Vì sao: người dùng điều khiển trực tiếp từ 1 switch trong menu (Menu.mm gọi
 // netLogSetUdpPortBlockEnabled) - không còn phụ thuộc đồng hồ hệ thống như bản điều tiết theo
-// thời gian trước đó. Khi bật, CHỈ những gói có kích thước nằm trong khoảng
-// [NETLOG_UDP_BLOCK_LEN_MIN, NETLOG_UDP_BLOCK_LEN_MAX] byte bị bỏ (không thật sự ra khỏi máy)
-// - gói có độ dài khác vẫn đi qua bình thường dù công tắc đang bật, vì dải cổng này còn lẫn
-// traffic gameplay thật (xem log "Revert socket-layer UDP/TCP blocking"), lọc theo len giúp
-// tránh chặn nhầm những gói không phải mục tiêu. Hook vẫn trả về đúng số byte như gửi thành
-// công cho gói bị bỏ, để không phá logic reliability/retry riêng của game.
-#define NETLOG_UDP_BLOCK_LEN_MIN 2000
-#define NETLOG_UDP_BLOCK_LEN_MAX 3000
+// thời gian trước đó. Khi bật, CHỈ những gói có kích thước rơi vào 1 trong 2 khoảng
+// [NETLOG_UDP_BLOCK_LEN1_MIN, NETLOG_UDP_BLOCK_LEN1_MAX] hoặc
+// [NETLOG_UDP_BLOCK_LEN2_MIN, NETLOG_UDP_BLOCK_LEN2_MAX] byte mới bị bỏ (không thật sự ra khỏi
+// máy) - gói có độ dài ngoài 2 khoảng này vẫn đi qua bình thường dù công tắc đang bật, vì dải
+// cổng này còn lẫn traffic gameplay thật (xem log "Revert socket-layer UDP/TCP blocking"), lọc
+// theo len giúp tránh chặn nhầm những gói không phải mục tiêu. Hook vẫn trả về đúng số byte như
+// gửi thành công cho gói bị bỏ, để không phá logic reliability/retry riêng của game.
+#define NETLOG_UDP_BLOCK_LEN1_MIN 50
+#define NETLOG_UDP_BLOCK_LEN1_MAX 100
+#define NETLOG_UDP_BLOCK_LEN2_MIN 2000
+#define NETLOG_UDP_BLOCK_LEN2_MAX 4000
 static std::atomic<bool> g_udpPortBlockEnabled{false};
 inline void netLogSetUdpPortBlockEnabled(bool enabled) { g_udpPortBlockEnabled.store(enabled, std::memory_order_relaxed); }
 inline bool netLogUdpPortBlockEnabled() { return g_udpPortBlockEnabled.load(std::memory_order_relaxed); }
-inline bool netLogUdpLenInBlockRange(size_t len) { return len >= NETLOG_UDP_BLOCK_LEN_MIN && len <= NETLOG_UDP_BLOCK_LEN_MAX; }
+inline bool netLogUdpLenInBlockRange(size_t len) {
+    return (len >= NETLOG_UDP_BLOCK_LEN1_MIN && len <= NETLOG_UDP_BLOCK_LEN1_MAX) ||
+           (len >= NETLOG_UDP_BLOCK_LEN2_MIN && len <= NETLOG_UDP_BLOCK_LEN2_MAX);
+}
 
 // Đổi buffer thành preview: ký tự in được giữ nguyên, còn lại thay '.', cắt ngắn cho vừa 1 dòng
 // log - không phải giải mã, chỉ để mắt người nhìn ra có chữ/JSON lộ trong payload hay không.
