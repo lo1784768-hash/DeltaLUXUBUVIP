@@ -10,9 +10,11 @@
 // 8 tầng được ghi:
 //   DNS      : hostname xin phân giải (getaddrinfo/gethostbyname...) - do DNSBlock.h gọi vào
 //   DNS-BLK  : domain đen bị chặn ngay ở bước phân giải (do DNSBlock.h gọi vào)
-//   TCP/UDP  : connect()/sendto() -> ip:port (bắt cả khi connect thẳng IP, không qua DNS)
-//   CONN-BLK : connect() bị chặn theo IP (netLogSetBlockCheck) - domain đen đã học IP trước,
-//              hoặc IP DNS cố định (8.8.8.8)
+//   TCP/UDP  : connect()/connectx()/sendto() -> ip:port (bắt cả khi connect thẳng IP, không qua
+//              DNS, và cả kết nối TCP đi qua connectx() thay vì connect() cổ điển - CFNetwork/
+//              Network.framework ngày càng dùng connectx() cho Happy Eyeballs/TFO)
+//   CONN-BLK : connect()/connectx() bị chặn theo IP (netLogSetBlockCheck) - domain đen đã học
+//              IP trước, hoặc IP DNS cố định (8.8.8.8)
 //   HTTP     : full URL - do JunkAdURLProtocol gọi vào (NSURLSession), CỘNG với request HTTP
 //              thuần không qua NSURLSession bắt được từ write()/send() (xem dưới)
 //   HTTP-BLK : request HTTP thuần (không qua NSURLSession) bị chặn theo header Host
@@ -30,6 +32,7 @@
 // ============================================================================
 #import <Foundation/Foundation.h>
 #import <sys/socket.h>
+#import <sys/uio.h> // struct iovec - tham số của connectx()
 #import <netinet/in.h>
 #import <arpa/inet.h>
 #import <time.h>
@@ -176,6 +179,45 @@ inline int hooked_connect(int fd, const struct sockaddr *addr, socklen_t len) {
     int ret = orig_connect(fd, addr, len);
     // ClientHello (nếu có) là gói ĐẦU TIÊN client gửi sau khi kết nối TCP xong - đánh dấu fd
     // này để hook write()/send() bên dưới soi đúng gói đầu, không soi nhầm data sau đó.
+    if (isTcp && (ret == 0 || errno == EINPROGRESS)) sniMarkPending(fd);
+    return ret;
+}
+
+// ===== HOOK connectx() - biến thể connect() hỗ trợ Multipath TCP/TCP Fast Open =====
+// Vì sao cần: CFNetwork/NSURLSession và Network.framework (NWConnection) ngày càng dùng
+// connectx() thay vì connect() cổ điển cho TCP (Happy Eyeballs, TFO...) - 1 kết nối "realtime"
+// dài hạn (vd server sự kiện ggblueshark.com) có thể đi thẳng qua đường này, không lộ ra ở
+// TCP/DNS log dù connect() đã hook đủ. Chung logic block-check/log/đánh dấu SNI với connect().
+static int (*orig_connectx)(int, const sa_endpoints_t *, sae_associd_t, unsigned int,
+                             const struct iovec *, unsigned int, size_t *, sae_connid_t *);
+
+inline int hooked_connectx(int fd, const sa_endpoints_t *endpoints, sae_associd_t associd, unsigned int flags,
+                            const struct iovec *iov, unsigned int iovcnt, size_t *len, sae_connid_t *connid) {
+    const struct sockaddr *dst = endpoints ? endpoints->sae_dstaddr : NULL;
+    char ip[INET6_ADDRSTRLEN] = {0};
+    uint16_t port = 0;
+    bool haveAddr = dst && netLogSplitSockaddr(dst, ip, sizeof(ip), &port);
+    int type = 0;
+    socklen_t tl = sizeof(type);
+    bool isTcp = getsockopt(fd, SOL_SOCKET, SO_TYPE, &type, &tl) == 0 && type == SOCK_STREAM;
+
+    if (haveAddr && g_netBlockCheck) {
+        char reason[256];
+        if (g_netBlockCheck(ip, port, reason, sizeof(reason))) {
+            netLogRaw("CONN-BLK", reason);
+            errno = ECONNREFUSED;
+            return -1;
+        }
+    }
+
+    if (haveAddr) {
+        const char *proto = isTcp ? "TCP" : (type == SOCK_DGRAM ? "UDP" : "SOCK");
+        char ep[96];
+        snprintf(ep, sizeof(ep), "%s:%d", ip, port);
+        netLogRaw(proto, ep);
+    }
+
+    int ret = orig_connectx(fd, endpoints, associd, flags, iov, iovcnt, len, connid);
     if (isTcp && (ret == 0 || errno == EINPROGRESS)) sniMarkPending(fd);
     return ret;
 }
@@ -338,16 +380,19 @@ inline ssize_t hooked_send(int fd, const void *buf, size_t count, int flags) {
 
 // Cài hook tầng socket. Gọi 1 lần lúc khởi động (từ installDNSBlockHook).
 inline void installNetLogHook() {
-    orig_connect = (int (*)(int, const struct sockaddr *, socklen_t))dlsym((void *)RTLD_DEFAULT, "connect");
-    orig_sendto  = (ssize_t (*)(int, const void *, size_t, int, const struct sockaddr *, socklen_t))dlsym((void *)RTLD_DEFAULT, "sendto");
-    orig_write   = (ssize_t (*)(int, const void *, size_t))dlsym((void *)RTLD_DEFAULT, "write");
-    orig_send    = (ssize_t (*)(int, const void *, size_t, int))dlsym((void *)RTLD_DEFAULT, "send");
+    orig_connect  = (int (*)(int, const struct sockaddr *, socklen_t))dlsym((void *)RTLD_DEFAULT, "connect");
+    orig_connectx = (int (*)(int, const sa_endpoints_t *, sae_associd_t, unsigned int,
+                              const struct iovec *, unsigned int, size_t *, sae_connid_t *))dlsym((void *)RTLD_DEFAULT, "connectx");
+    orig_sendto   = (ssize_t (*)(int, const void *, size_t, int, const struct sockaddr *, socklen_t))dlsym((void *)RTLD_DEFAULT, "sendto");
+    orig_write    = (ssize_t (*)(int, const void *, size_t))dlsym((void *)RTLD_DEFAULT, "write");
+    orig_send     = (ssize_t (*)(int, const void *, size_t, int))dlsym((void *)RTLD_DEFAULT, "send");
 
     struct rebinding netRebindings[] = {
-        {"connect", (void *)hooked_connect, (void **)&orig_connect},
-        {"sendto",  (void *)hooked_sendto,  (void **)&orig_sendto},
-        {"write",   (void *)hooked_write,   (void **)&orig_write},
-        {"send",    (void *)hooked_send,    (void **)&orig_send},
+        {"connect",  (void *)hooked_connect,  (void **)&orig_connect},
+        {"connectx", (void *)hooked_connectx, (void **)&orig_connectx},
+        {"sendto",   (void *)hooked_sendto,   (void **)&orig_sendto},
+        {"write",    (void *)hooked_write,    (void **)&orig_write},
+        {"send",     (void *)hooked_send,     (void **)&orig_send},
     };
     rebind_symbols(netRebindings, sizeof(netRebindings) / sizeof(netRebindings[0]));
 }
