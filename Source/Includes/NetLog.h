@@ -30,10 +30,9 @@
 //              socket-layer UDP/TCP blocking"), để biết chắc nội dung trước khi quyết định chặn.
 //              Chỉ ghi log nếu gói có đoạn ký tự in-được liên tục >= 10 (netLogLongestPrintableRun)
 //              - lọc bớt noise binary thuần của gameplay netcode (đa số traffic ở dải cổng này).
-//   UDP-THR  : gói UDP gửi tới dải cổng 10000-10020 bị ĐIỀU TIẾT (không phải chặn hẳn) -
-//              netLogUdpThrottlePaused() luân phiên ngưng 5s / chạy 5s liên tục theo mốc thời
-//              gian toàn cục; trong 5s "ngưng", gói bị bỏ nhưng hook vẫn trả về như gửi thành
-//              công (UDP vốn mất gói bình thường) để làm chậm nhịp request mà không phá kết nối.
+//   UDP-BLK  : gói UDP gửi tới dải cổng 10000-10020 bị CHẶN HẲN khi công tắc
+//              netLogSetUdpPortBlockEnabled(true) đang bật (bật/tắt từ menu) - gói bị bỏ nhưng
+//              hook vẫn trả về như gửi thành công để không phá logic reliability/retry của game.
 //
 // Bản thân NetLog không tự quyết định chặn gì - việc chặn (connect theo IP, hay write/send
 // theo hostname từ SNI/Host) do module khác (DNSBlock.h) đăng ký qua netLogSetBlockCheck /
@@ -148,19 +147,15 @@ inline bool netLogFormatSockaddr(const struct sockaddr *sa, char *out, size_t ou
 // string...) lộ ra không, không đổi hành vi mạng - để biết chắc trước khi quyết định chặn gì.
 inline bool netLogPortInPeekRange(uint16_t port) { return port >= 10000 && port <= 10020; }
 
-// ===== Điều tiết (throttle) UDP gửi tới dải cổng nghi vấn (10000-10020): ngưng 5s / chạy 5s,
-// lặp lại liên tục - làm chậm nhịp request mà KHÔNG chặn hẳn. Trong khoảng "ngưng", hàm hook
-// vẫn trả về đúng số byte như gửi thành công (UDP vốn có thể mất gói bình thường) để không phá
-// logic reliability/retry riêng của game, chỉ đơn giản là gói bị bỏ, không thật sự ra khỏi máy.
-// Mốc thời gian tính từ lần init static đầu tiên (thread-safe theo C++11) - mọi fd dùng chung 1 nhịp.
-#define NETLOG_UDP_THROTTLE_PERIOD_SEC 5
-
-inline bool netLogUdpThrottlePaused() {
-    static time_t startTime = time(NULL);
-    long elapsed = (long)difftime(time(NULL), startTime);
-    long phase = elapsed % (NETLOG_UDP_THROTTLE_PERIOD_SEC * 2);
-    return phase < NETLOG_UDP_THROTTLE_PERIOD_SEC; // nửa đầu chu kỳ = ngưng, nửa sau = chạy
-}
+// ===== Công tắc bật/tắt chặn hoàn toàn UDP gửi tới dải cổng nghi vấn (10000-10020) =====
+// Vì sao: người dùng điều khiển trực tiếp từ 1 switch trong menu (Menu.mm gọi
+// netLogSetUdpPortBlockEnabled) - không còn phụ thuộc đồng hồ hệ thống như bản điều tiết theo
+// thời gian trước đó. Khi bật, MỌI gói UDP gửi tới dải cổng này bị bỏ (không thật sự ra khỏi
+// máy) nhưng hook vẫn trả về đúng số byte như gửi thành công, để không phá logic
+// reliability/retry riêng của game.
+static std::atomic<bool> g_udpPortBlockEnabled{false};
+inline void netLogSetUdpPortBlockEnabled(bool enabled) { g_udpPortBlockEnabled.store(enabled, std::memory_order_relaxed); }
+inline bool netLogUdpPortBlockEnabled() { return g_udpPortBlockEnabled.load(std::memory_order_relaxed); }
 
 // Đổi buffer thành preview: ký tự in được giữ nguyên, còn lại thay '.', cắt ngắn cho vừa 1 dòng
 // log - không phải giải mã, chỉ để mắt người nhìn ra có chữ/JSON lộ trong payload hay không.
@@ -342,9 +337,9 @@ inline ssize_t hooked_sendto(int fd, const void *buf, size_t len, int flags,
                     snprintf(detail, sizeof(detail), "%s len=%zu | %s", ep, len, preview.c_str());
                     netLogRaw("UDP-PEEK", detail);
                 }
-                if (netLogUdpThrottlePaused()) {
-                    netLogRaw("UDP-THR", ep);
-                    return (ssize_t)len; // giả vờ gửi thành công, thực ra bỏ gói - điều tiết nhịp request
+                if (netLogUdpPortBlockEnabled()) {
+                    netLogRaw("UDP-BLK", ep);
+                    return (ssize_t)len; // giả vờ gửi thành công, thực ra bỏ gói - công tắc đang bật
                 }
             }
         }
@@ -485,8 +480,8 @@ inline bool sniInspectFirstWrite(int fd, const void *buf, size_t count) {
 
 // Soi payload UDP cho fd đã connect() tới dải cổng nghi vấn (udpPeekMark) - MỌI gói, không
 // phải chỉ gói đầu như TLS/HTTP, vì UDP là datagram rời rạc chứ không phải 1 bắt tay liên tục.
-// Trả true nếu gói này đang bị điều tiết (ngưng) - caller trả về count giả vờ, không gọi
-// write()/send() gốc, xem netLogUdpThrottlePaused().
+// Trả true nếu gói này đang bị chặn (công tắc netLogUdpPortBlockEnabled đang bật) - caller trả
+// về count giả vờ, không gọi write()/send() gốc.
 inline bool udpPeekInspectWrite(int fd, const void *buf, size_t count) {
     if (!buf || count == 0) return false;
     uint16_t port = udpPeekPort(fd);
@@ -498,10 +493,10 @@ inline bool udpPeekInspectWrite(int fd, const void *buf, size_t count) {
         snprintf(detail, sizeof(detail), "port=%d len=%zu | %s", port, count, preview.c_str());
         netLogRaw("UDP-PEEK", detail);
     }
-    if (netLogUdpThrottlePaused()) {
+    if (netLogUdpPortBlockEnabled()) {
         char detail[64];
         snprintf(detail, sizeof(detail), "port=%d len=%zu", port, count);
-        netLogRaw("UDP-THR", detail);
+        netLogRaw("UDP-BLK", detail);
         return true;
     }
     return false;

@@ -58,6 +58,8 @@ static NSDictionary<NSString *, NSArray<NSString *> *> *LocStrings() {
             @"section_display": @[@"Hiển Thị", @"Display"],
             @"section_aim": @[@"Tự Động Ngắm", @"Auto Aim"],
             @"section_boost": @[@"Tăng Cường", @"Boost"],
+            @"section_network": @[@"Mạng", @"Network"],
+            @"block_udp_ports": @[@"Chặn Cổng UDP 10000-10020", @"Block UDP Ports 10000-10020"],
             @"aim_mode_always": @[@"Luôn Bật", @"Always"],
             @"aim_mode_fire": @[@"Khi Bắn/Ngắm", @"Fire/Scope"],
             @"aim_prefer_low_hp": @[@"Ưu Tiên Máu Vàng/Đỏ (Ngẫu Nhiên)", @"Prefer Yellow/Red HP (Random)"],
@@ -128,6 +130,7 @@ static NSString *LOC(NSString *key) {
 @property (nonatomic, strong) UISwitch *speedX8Switch;
 @property (nonatomic, strong) UISwitch *noRecoilSwitch;
 @property (nonatomic, strong) UISwitch *spinBotSwitch;
+@property (nonatomic, strong) UISwitch *blockUdpPortsSwitch;
 @property (nonatomic, strong) UISlider *spinSpeedSlider;
 @property (nonatomic, strong) UILabel *spinSpeedLabel;
 @property (nonatomic, assign) BOOL hasSelectedGoc;
@@ -567,6 +570,12 @@ game_sdk_t *game_sdk = new game_sdk_t();
     [scroll addSubview:_spinSpeedSlider];
     btnY += 20 + btnGap;
 
+    [self addSectionHeaderWithLocKey:@"section_network" frame:CGRectMake(btnX + 2, btnY, btnW, 12) toView:scroll];
+    btnY += 12 + 6;
+
+    _blockUdpPortsSwitch = [self addToggleCardWithLocKey:@"block_udp_ports" symbol:@"wifi.slash" frame:CGRectMake(btnX, btnY, btnW, cardH) action:@selector(toggleBlockUdpPorts:) toView:scroll];
+    btnY += cardH + btnGap;
+
     UIButton *actionBtn = [self createButtonWithLocKey:@"action" frame:CGRectMake(btnX, btnY, btnW, 32)];
     [actionBtn setTitleColor:COLOR_CYAN forState:UIControlStateNormal];
     [actionBtn addTarget:self action:@selector(showGocList) forControlEvents:UIControlEventTouchUpInside];
@@ -772,6 +781,12 @@ game_sdk_t *game_sdk = new game_sdk_t();
     BOOL state = sender.on;
     [self showToast:[NSString stringWithFormat:@"%@ %@", LOC(@"spin_bot"), LOC(state ? @"on" : @"off")]];
     Vars.SpinBot = state;
+}
+
+- (void)toggleBlockUdpPorts:(UISwitch *)sender {
+    BOOL state = sender.on;
+    [self showToast:[NSString stringWithFormat:@"%@ %@", LOC(@"block_udp_ports"), LOC(state ? @"on" : @"off")]];
+    netLogSetUdpPortBlockEnabled(state);
 }
 
 - (void)spinSpeedChanged:(UISlider *)sender {
