@@ -442,7 +442,10 @@ inline void netBlockLearnHostIPs(const char *host) {
     struct addrinfo *res = NULL;
     if (orig_getaddrinfo(host, NULL, &hints, &res) != 0 || !res) return;
     std::lock_guard<std::mutex> lock(g_blockedIPsMutex);
-    for (struct addrinfo *ai = res; ai; ai = ai->ai_next) {
+    // Chặn số vòng lặp (phòng addrinfo trả về bất thường/vòng lặp ai_next) - 1 host thật
+    // không bao giờ có quá vài chục bản ghi A/AAAA, 64 đã rất dư.
+    int guard = 64;
+    for (struct addrinfo *ai = res; ai && guard > 0; ai = ai->ai_next, guard--) {
         char ip[INET6_ADDRSTRLEN] = {0};
         if (ai->ai_family == AF_INET) {
             inet_ntop(AF_INET, &((struct sockaddr_in *)ai->ai_addr)->sin_addr, ip, sizeof(ip));
@@ -576,11 +579,11 @@ inline void installDNSBlockHook() {
     netLogSetLearnBlockedIP(netBlockLearnIP);
     installNetLogHook();
 
-    // Phân giải sẵn TOÀN BỘ host đen ở thread nền để nạp IP vào registry chặn connect().
-    // Nhờ vậy dù game tự nhớ sẵn IP rồi connect() thẳng (không phân giải lại qua libc) ta vẫn
-    // biết IP đó là host đen mà chặn. Chạy nền để không giữ thread khởi động.
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_BACKGROUND, 0), ^{
-        size_t count = sizeof(kJunkDNSDomains) / sizeof(kJunkDNSDomains[0]);
-        for (size_t i = 0; i < count; i++) netBlockLearnHostIPs(kJunkDNSDomains[i]);
-    });
+    // KHÔNG preload/resolve toàn bộ ~200 host đen ở đây: installDNSBlockHook() chạy trong
+    // +[DeltaMenu load], tức là NGAY khi dylib nạp - còn trước cả lúc dyld chạy xong initializer
+    // của Foundation/CoreFoundation cho tiến trình (đã tận mắt thấy crash: dispatch_async 1 vòng
+    // lặp 200 lần gọi getaddrinfo() + insert vào std::unordered_map/set ở background queue lúc
+    // này làm hỏng state của container -> std::__next_prime ném overflow_error -> abort() ngay
+    // lúc mở app). IP của từng host đen giờ chỉ được học LAZY, từng cái một, ngay tại
+    // hooked_getaddrinfo() khi game thật sự query domain đó - lúc đó app đã chạy ổn định.
 }
