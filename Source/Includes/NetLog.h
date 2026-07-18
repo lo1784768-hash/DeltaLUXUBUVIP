@@ -56,12 +56,20 @@ static std::atomic<unsigned int> g_netLogTotal{0};  // tổng dòng đã ghi (đ
 static std::mutex g_netLogMutex;
 static std::unordered_set<std::string> g_netLogSeen; // gom trùng: chuỗi nào ghi rồi thì bỏ
 
-// Ghi 1 dòng "[HH:MM:SS] [TẦNG] chi_tiết". Trùng thì bỏ qua, giữ log gọn & nhiều tín hiệu.
+// Ghi 1 dòng "[HH:MM:SS] [TẦNG] chi_tiết". Trùng thì bỏ qua, giữ log gọn & nhiều tín hiệu -
+// TRỪ các tầng *-BLK (chặn thật): game hay retry đúng 1 URL nhiều lần, nếu gộp trùng thì chỉ
+// lần chặn ĐẦU TIÊN hiện ra rồi dần trôi khỏi ring buffer khi traffic khác đè lên, làm tưởng
+// nhầm là "báo chặn" (Host chặn gần nhất, không gộp trùng) nhưng NET LOG lại không thấy gì -
+// nên *-BLK luôn ghi, để mỗi lần chặn thật đều thấy rõ trong log.
 inline void netLogRaw(const char *layer, const char *detail) {
     if (!layer || !detail) return;
-    std::string key = std::string(layer) + "|" + detail;
+    size_t layerLen = strlen(layer);
+    bool isBlockEvent = layerLen >= 4 && strcmp(layer + layerLen - 4, "-BLK") == 0;
     std::lock_guard<std::mutex> lock(g_netLogMutex);
-    if (!g_netLogSeen.insert(key).second) return; // đã có -> bỏ
+    if (!isBlockEvent) {
+        std::string key = std::string(layer) + "|" + detail;
+        if (!g_netLogSeen.insert(key).second) return; // đã có -> bỏ (chỉ áp dụng log quan sát thường)
+    }
 
     time_t t = time(NULL);
     struct tm tmv;
