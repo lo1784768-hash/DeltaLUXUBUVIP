@@ -1,29 +1,46 @@
 #pragma once
 // ============================================================================
-// NetLog - logger MẠNG THỤ ĐỘNG (chỉ quan sát, KHÔNG chặn)
+// NetLog - logger MẠNG kiêm điểm cắm CHẶN tầng thấp (connect/write/send)
 // ----------------------------------------------------------------------------
 // Mục đích: soi xem game gửi request gì lên server, ở tầng nào - để biết đường
-// nào (vd server realtime ggblueshark.com) đi qua đâu mà chặn cho trúng.
+// nào (vd server realtime ggblueshark.com) đi qua đâu mà chặn cho trúng, VÀ chặn
+// được cả những request bay tắt qua thư viện mạng riêng của game (không qua
+// NSURLSession nên JunkAdURLProtocol/DNSBlock không thấy được).
 //
-// 4 tầng được ghi:
-//   DNS  : hostname xin phân giải (getaddrinfo/gethostbyname...) - do DNSBlock.h gọi vào
-//   TCP  : connect() tới socket SOCK_STREAM  -> ip:port
-//   UDP  : connect()/sendto() tới socket SOCK_DGRAM -> ip:port (bắt cả khi connect thẳng IP)
-//   HTTP : full URL kèm path - do JunkAdURLProtocol gọi vào (xem DNSBlock.h)
+// 8 tầng được ghi:
+//   DNS      : hostname xin phân giải (getaddrinfo/gethostbyname...) - do DNSBlock.h gọi vào
+//   DNS-BLK  : domain đen bị chặn ngay ở bước phân giải (do DNSBlock.h gọi vào)
+//   TCP/UDP  : connect()/sendto() -> ip:port (bắt cả khi connect thẳng IP, không qua DNS)
+//   CONN-BLK : connect() bị chặn theo IP (netLogSetBlockCheck) - domain đen đã học IP trước,
+//              hoặc IP DNS cố định (8.8.8.8)
+//   HTTP     : full URL - do JunkAdURLProtocol gọi vào (NSURLSession), CỘNG với request HTTP
+//              thuần không qua NSURLSession bắt được từ write()/send() (xem dưới)
+//   HTTP-BLK : request HTTP thuần (không qua NSURLSession) bị chặn theo header Host
+//   TLS-SNI  : tên miền lấy từ ClientHello (SNI) của kết nối HTTPS không qua NSURLSession -
+//              game/thư viện TLS riêng (BoringSSL, libcurl tự vendor...) gọi write()/send()
+//              thẳng nên JunkAdURLProtocol không thấy được, phải soi gói ClientHello ở tầng
+//              socket mới bắt được domain thật.
+//   TLS-BLK  : kết nối HTTPS không qua NSURLSession bị chặn theo SNI (write()/send() trả lỗi
+//              ECONNRESET ngay gói đầu, KHÔNG gửi ClientHello/request thật ra ngoài)
 //
-// TẤT CẢ hook đều gọi hàm gốc rồi trả nguyên kết quả -> không đổi hành vi mạng,
-// không làm hỏng luồng như bản blocking trước. Log gom trùng: mỗi chuỗi chỉ ghi 1 lần.
+// Bản thân NetLog không tự quyết định chặn gì - việc chặn (connect theo IP, hay write/send
+// theo hostname từ SNI/Host) do module khác (DNSBlock.h) đăng ký qua netLogSetBlockCheck /
+// netLogSetHostBlockCheck, NetLog chỉ gọi hộ đúng lúc rồi trả lỗi thay vì gọi hàm gốc.
+// Log gom trùng: mỗi chuỗi chỉ ghi 1 lần.
 // ============================================================================
 #import <Foundation/Foundation.h>
 #import <sys/socket.h>
 #import <netinet/in.h>
 #import <arpa/inet.h>
 #import <time.h>
+#import <errno.h>
+#import <string.h>
 
 #include <string>
 #include <unordered_set>
 #include <mutex>
 #include <atomic>
+#include <cstdint>
 
 #import "fishhook.h"
 
@@ -69,23 +86,63 @@ inline NSString *NetLog_snapshot() {
     return s;
 }
 
-// sockaddr -> "ip:port". Chỉ nhận IPv4/IPv6, bỏ AF_UNIX... (trả false).
-inline bool netLogFormatSockaddr(const struct sockaddr *sa, char *out, size_t outLen) {
+// ===== Điểm cắm chặn tuỳ chọn cho connect() (DNSBlock.h đăng ký qua netLogSetBlockCheck) =====
+// NetLog tự nó luôn chỉ quan sát; việc CHẶN (nếu có) do module khác quyết định, NetLog chỉ
+// gọi hộ ngay trước khi connect() thật sự diễn ra - tránh phải hook "connect" hai lần
+// (fishhook rebind lần sau sẽ đè mất lần trước, hai hook cùng tên trong 1 TU thì không build được).
+typedef bool (*NetBlockCheckFn)(const char *ip, uint16_t port, char *reasonOut, size_t reasonLen);
+static NetBlockCheckFn g_netBlockCheck = NULL;
+inline void netLogSetBlockCheck(NetBlockCheckFn fn) { g_netBlockCheck = fn; }
+
+// sockaddr -> ip riêng + port riêng. Chỉ nhận IPv4/IPv6, bỏ AF_UNIX... (trả false).
+inline bool netLogSplitSockaddr(const struct sockaddr *sa, char *ipOut, size_t ipOutLen, uint16_t *portOut) {
     if (!sa) return false;
-    char ip[INET6_ADDRSTRLEN] = {0};
-    int port = 0;
     if (sa->sa_family == AF_INET) {
         const struct sockaddr_in *s4 = (const struct sockaddr_in *)sa;
-        inet_ntop(AF_INET, &s4->sin_addr, ip, sizeof(ip));
-        port = ntohs(s4->sin_port);
+        inet_ntop(AF_INET, &s4->sin_addr, ipOut, ipOutLen);
+        *portOut = ntohs(s4->sin_port);
     } else if (sa->sa_family == AF_INET6) {
         const struct sockaddr_in6 *s6 = (const struct sockaddr_in6 *)sa;
-        inet_ntop(AF_INET6, &s6->sin6_addr, ip, sizeof(ip));
-        port = ntohs(s6->sin6_port);
+        inet_ntop(AF_INET6, &s6->sin6_addr, ipOut, ipOutLen);
+        *portOut = ntohs(s6->sin6_port);
     } else {
         return false;
     }
+    return true;
+}
+
+// sockaddr -> "ip:port". Chỉ nhận IPv4/IPv6, bỏ AF_UNIX... (trả false).
+inline bool netLogFormatSockaddr(const struct sockaddr *sa, char *out, size_t outLen) {
+    char ip[INET6_ADDRSTRLEN] = {0};
+    uint16_t port = 0;
+    if (!netLogSplitSockaddr(sa, ip, sizeof(ip), &port)) return false;
     snprintf(out, outLen, "%s:%d", ip, port);
+    return true;
+}
+
+// fd TCP vừa connect() xong, đang đợi write()/send() đầu tiên để soi ClientHello (SNI)
+// hoặc header HTTP thuần - xem phần "SNI / plaintext-HTTP sniffer" bên dưới.
+//
+// write() bị hook CHO MỌI fd của cả process (file, pipe, asset...), không riêng socket, nên
+// hot path phải né khoá mutex khi rõ ràng không có gì để soi: g_sniPendingCount là gợi ý
+// nhanh (không cần chính xác tuyệt đối) để hooked_write/hooked_send bail ngay không cần lock.
+static std::mutex g_sniPendingMutex;
+static std::unordered_set<int> g_sniPendingFds;
+static std::atomic<int> g_sniPendingCount{0};
+
+inline void sniMarkPending(int fd) {
+    std::lock_guard<std::mutex> lock(g_sniPendingMutex);
+    // fd không hook close() nên không dọn được lúc đóng socket - tự dọn nếu phình to,
+    // rơi rớt vài fd không sao vì đây chỉ là gợi ý "soi 1 lần", không phải state bắt buộc đúng.
+    if (g_sniPendingFds.size() > 1024) { g_sniPendingFds.clear(); g_sniPendingCount.store(0, std::memory_order_relaxed); }
+    if (g_sniPendingFds.insert(fd).second) g_sniPendingCount.fetch_add(1, std::memory_order_relaxed);
+}
+
+inline bool sniTakePending(int fd) {
+    if (g_sniPendingCount.load(std::memory_order_relaxed) == 0) return false; // hot-path bail, không lock
+    std::lock_guard<std::mutex> lock(g_sniPendingMutex);
+    if (g_sniPendingFds.erase(fd) == 0) return false;
+    g_sniPendingCount.fetch_sub(1, std::memory_order_relaxed);
     return true;
 }
 
@@ -93,18 +150,34 @@ inline bool netLogFormatSockaddr(const struct sockaddr *sa, char *out, size_t ou
 static int (*orig_connect)(int, const struct sockaddr *, socklen_t);
 
 inline int hooked_connect(int fd, const struct sockaddr *addr, socklen_t len) {
-    char ep[96];
-    if (addr && netLogFormatSockaddr(addr, ep, sizeof(ep))) {
-        int type = 0;
-        socklen_t tl = sizeof(type);
-        // SO_TYPE cho biết SOCK_STREAM (TCP) hay SOCK_DGRAM (UDP)
-        const char *proto = "SOCK";
-        if (getsockopt(fd, SOL_SOCKET, SO_TYPE, &type, &tl) == 0) {
-            proto = (type == SOCK_DGRAM) ? "UDP" : (type == SOCK_STREAM ? "TCP" : "SOCK");
+    char ip[INET6_ADDRSTRLEN] = {0};
+    uint16_t port = 0;
+    bool haveAddr = addr && netLogSplitSockaddr(addr, ip, sizeof(ip), &port);
+    int type = 0;
+    socklen_t tl = sizeof(type);
+    bool isTcp = getsockopt(fd, SOL_SOCKET, SO_TYPE, &type, &tl) == 0 && type == SOCK_STREAM;
+
+    if (haveAddr && g_netBlockCheck) {
+        char reason[256];
+        if (g_netBlockCheck(ip, port, reason, sizeof(reason))) {
+            netLogRaw("CONN-BLK", reason);
+            errno = ECONNREFUSED;
+            return -1;
         }
+    }
+
+    if (haveAddr) {
+        const char *proto = isTcp ? "TCP" : (type == SOCK_DGRAM ? "UDP" : "SOCK");
+        char ep[96];
+        snprintf(ep, sizeof(ep), "%s:%d", ip, port);
         netLogRaw(proto, ep);
     }
-    return orig_connect(fd, addr, len);
+
+    int ret = orig_connect(fd, addr, len);
+    // ClientHello (nếu có) là gói ĐẦU TIÊN client gửi sau khi kết nối TCP xong - đánh dấu fd
+    // này để hook write()/send() bên dưới soi đúng gói đầu, không soi nhầm data sau đó.
+    if (isTcp && (ret == 0 || errno == EINPROGRESS)) sniMarkPending(fd);
+    return ret;
 }
 
 // ===== HOOK sendto() - UDP connectionless (netcode game hay bắn UDP không connect()) =====
@@ -120,14 +193,161 @@ inline ssize_t hooked_sendto(int fd, const void *buf, size_t len, int flags,
     return orig_sendto(fd, buf, len, flags, dest, dlen);
 }
 
+// ===== SNI / plaintext-HTTP sniffer =====
+// Vì sao cần: JunkAdURLProtocol chỉ soi được request đi qua NSURLSession/NSURLConnection.
+// Game hay thư viện mạng riêng (BoringSSL/OpenSSL/libcurl tự vendor, socket thuần) gọi
+// write()/send() thẳng, không đụng NSURLProtocol -> tầng đó vô hình với NetLog. ClientHello
+// (bước đầu tiên của bắt tay TLS) và request-line HTTP thuần đều đi ở dạng RÕ trên chính gói
+// write() ĐẦU TIÊN sau khi connect() xong, nên chặn đúng gói đó là bắt được tên miền HTTPS/HTTP
+// thật sự đang gọi, không cần giải mã TLS.
+
+// Đọc extension server_name (SNI) từ 1 gói TLS ClientHello (RFC 6066 §3). Trả false nếu
+// buffer không phải ClientHello hợp lệ hoặc không có SNI (vd nối thẳng bằng IP).
+inline bool tlsParseSNI(const unsigned char *p, size_t len, std::string &outHost) {
+    if (len < 43 || p[0] != 0x16 /* Handshake */) return false;
+    const unsigned char *hs = p + 5;
+    size_t hsLen = len - 5;
+    if (hsLen < 39 || hs[0] != 0x01 /* ClientHello */) return false;
+
+    size_t pos = 4 + 2 + 32; // handshake header(4) + client_version(2) + random(32)
+    if (pos >= hsLen) return false;
+    size_t sidLen = hs[pos]; pos += 1 + sidLen;
+    if (pos + 2 > hsLen) return false;
+    size_t csLen = ((size_t)hs[pos] << 8) | hs[pos + 1]; pos += 2 + csLen;
+    if (pos + 1 > hsLen) return false;
+    size_t cmLen = hs[pos]; pos += 1 + cmLen;
+    if (pos + 2 > hsLen) return false;
+    size_t extTotalLen = ((size_t)hs[pos] << 8) | hs[pos + 1]; pos += 2;
+    size_t extEnd = pos + extTotalLen;
+    if (extEnd > hsLen) extEnd = hsLen;
+
+    while (pos + 4 <= extEnd) {
+        unsigned int extType = ((unsigned int)hs[pos] << 8) | hs[pos + 1];
+        unsigned int extLen  = ((unsigned int)hs[pos + 2] << 8) | hs[pos + 3];
+        pos += 4;
+        if (pos + extLen > extEnd) break;
+        if (extType == 0x0000 /* server_name */ && extLen >= 5) {
+            size_t sp = pos + 2; // bỏ server_name_list length(2)
+            size_t listEnd = pos + extLen;
+            if (sp + 3 <= listEnd && hs[sp] == 0x00 /* host_name */) {
+                size_t nameLen = ((size_t)hs[sp + 1] << 8) | hs[sp + 2];
+                sp += 3;
+                if (sp + nameLen <= listEnd) {
+                    outHost.assign((const char *)hs + sp, nameLen);
+                    return true;
+                }
+            }
+        }
+        pos += extLen;
+    }
+    return false;
+}
+
+// Nhận diện request HTTP thuần (không TLS) từ gói write() đầu tiên: "METHOD /path HTTP/1.1"
+// + header "Host:". Trả false nếu không giống HTTP (vd giao thức nhị phân riêng của game).
+// outHost rỗng nếu request không có header Host (vẫn coi là HTTP để log, nhưng không chặn được
+// theo domain vì không biết host).
+inline bool httpParsePlaintext(const char *p, size_t len, std::string &outHost, std::string &outSummary) {
+    static const char *kMethods[] = {"GET ", "POST ", "PUT ", "HEAD ", "DELETE ", "OPTIONS ", "PATCH "};
+    bool looksHttp = false;
+    for (size_t i = 0; i < sizeof(kMethods) / sizeof(kMethods[0]); i++) {
+        size_t mlen = strlen(kMethods[i]);
+        if (len >= mlen && memcmp(p, kMethods[i], mlen) == 0) { looksHttp = true; break; }
+    }
+    if (!looksHttp) return false;
+
+    const char *lineEnd = (const char *)memchr(p, '\r', len);
+    std::string reqLine = lineEnd ? std::string(p, lineEnd - p) : std::string(p, len < 200 ? len : 200);
+
+    outHost.clear();
+    const void *hp = memmem(p, len, "Host:", 5);
+    if (hp) {
+        const char *hostStart = (const char *)hp + 5;
+        const char *bufEnd = p + len;
+        while (hostStart < bufEnd && *hostStart == ' ') hostStart++;
+        const char *hostEnd = (const char *)memchr(hostStart, '\r', bufEnd - hostStart);
+        if (hostEnd) outHost.assign(hostStart, hostEnd - hostStart);
+    }
+    outSummary = outHost.empty() ? reqLine : ("http://" + outHost + " | " + reqLine);
+    return true;
+}
+
+// ===== Điểm cắm chặn tuỳ chọn theo hostname (DNSBlock.h đăng ký qua netLogSetHostBlockCheck) =====
+// Gọi khi soi được tên miền thật từ ClientHello (SNI) hoặc header Host của request HTTP thuần
+// - tức là request đã bay tới tận write()/send(), không qua NSURLProtocol nên JunkAdURLProtocol
+// không chặn được. Nếu bị chặn, netLogSetLearnBlockedIP (nếu có) được gọi để nạp luôn IP peer
+// vào registry chặn connect() - lần sau gặp lại IP này không cần soi SNI nữa.
+typedef bool (*NetHostBlockCheckFn)(const char *host);
+typedef void (*NetLearnBlockedIPFn)(const char *ip);
+static NetHostBlockCheckFn g_netHostBlockCheck = NULL;
+static NetLearnBlockedIPFn g_netLearnBlockedIP = NULL;
+inline void netLogSetHostBlockCheck(NetHostBlockCheckFn fn) { g_netHostBlockCheck = fn; }
+inline void netLogSetLearnBlockedIP(NetLearnBlockedIPFn fn) { g_netLearnBlockedIP = fn; }
+
+inline void netLogLearnPeerIP(int fd) {
+    if (!g_netLearnBlockedIP) return;
+    struct sockaddr_storage ss;
+    socklen_t sl = sizeof(ss);
+    if (getpeername(fd, (struct sockaddr *)&ss, &sl) != 0) return;
+    char ip[INET6_ADDRSTRLEN] = {0};
+    uint16_t port = 0;
+    if (netLogSplitSockaddr((struct sockaddr *)&ss, ip, sizeof(ip), &port)) g_netLearnBlockedIP(ip);
+}
+
+// Soi gói write()/send() nếu fd đang được đánh dấu "vừa connect() TCP xong, chưa gửi gì".
+// Dù có tìm ra gì hay không cũng chỉ soi ĐÚNG 1 LẦN cho fd đó (sniTakePending), tránh phải
+// parse mọi byte đi qua mọi kết nối - handshake/HTTP header chỉ nằm ở gói đầu.
+// Trả true nếu gói này bị CHẶN (caller không được gọi hàm write/send gốc).
+inline bool sniInspectFirstWrite(int fd, const void *buf, size_t count) {
+    if (!buf || count == 0 || !sniTakePending(fd)) return false;
+
+    std::string host;
+    if (tlsParseSNI((const unsigned char *)buf, count, host)) {
+        netLogRaw("TLS-SNI", host.c_str());
+        if (!host.empty() && g_netHostBlockCheck && g_netHostBlockCheck(host.c_str())) {
+            netLogRaw("TLS-BLK", host.c_str());
+            netLogLearnPeerIP(fd);
+            return true;
+        }
+        return false;
+    }
+
+    std::string reqHost, summary;
+    if (httpParsePlaintext((const char *)buf, count, reqHost, summary)) {
+        netLogRaw("HTTP", summary.c_str());
+        if (!reqHost.empty() && g_netHostBlockCheck && g_netHostBlockCheck(reqHost.c_str())) {
+            netLogRaw("HTTP-BLK", summary.c_str());
+            netLogLearnPeerIP(fd);
+            return true;
+        }
+    }
+    return false;
+}
+
+static ssize_t (*orig_write)(int, const void *, size_t);
+inline ssize_t hooked_write(int fd, const void *buf, size_t count) {
+    if (sniInspectFirstWrite(fd, buf, count)) { errno = ECONNRESET; return -1; }
+    return orig_write(fd, buf, count);
+}
+
+static ssize_t (*orig_send)(int, const void *, size_t, int);
+inline ssize_t hooked_send(int fd, const void *buf, size_t count, int flags) {
+    if (sniInspectFirstWrite(fd, buf, count)) { errno = ECONNRESET; return -1; }
+    return orig_send(fd, buf, count, flags);
+}
+
 // Cài hook tầng socket. Gọi 1 lần lúc khởi động (từ installDNSBlockHook).
 inline void installNetLogHook() {
     orig_connect = (int (*)(int, const struct sockaddr *, socklen_t))dlsym((void *)RTLD_DEFAULT, "connect");
     orig_sendto  = (ssize_t (*)(int, const void *, size_t, int, const struct sockaddr *, socklen_t))dlsym((void *)RTLD_DEFAULT, "sendto");
+    orig_write   = (ssize_t (*)(int, const void *, size_t))dlsym((void *)RTLD_DEFAULT, "write");
+    orig_send    = (ssize_t (*)(int, const void *, size_t, int))dlsym((void *)RTLD_DEFAULT, "send");
 
     struct rebinding netRebindings[] = {
         {"connect", (void *)hooked_connect, (void **)&orig_connect},
         {"sendto",  (void *)hooked_sendto,  (void **)&orig_sendto},
+        {"write",   (void *)hooked_write,   (void **)&orig_write},
+        {"send",    (void *)hooked_send,    (void **)&orig_send},
     };
     rebind_symbols(netRebindings, sizeof(netRebindings) / sizeof(netRebindings[0]));
 }

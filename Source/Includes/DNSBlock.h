@@ -4,16 +4,21 @@
 #import <string.h>
 #import <strings.h>
 #import <ctype.h> // tolower
+#import <sys/socket.h>
+#import <netinet/in.h>
+#import <arpa/inet.h>
 
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
+#include <mutex>
 #include <atomic>
 
 #import "MemoryUtils.h"
 #import "fishhook.h"
 #import "NetLog.h" // logger mạng thụ động (DNS/TCP/UDP/HTTP) - soi request game gửi lên server
 
-// ===== Thống kê chặn DNS (để tab INFO soi được có chặn thật không) =====
+// ===== Thống kê chặn DNS & HTTP =====
 static std::atomic<unsigned long long> g_dnsBlockCount{0};  // Tổng số request đã bị chặn
 static char g_dnsLastBlocked[256] = {0};                    // Host bị chặn gần nhất
 
@@ -358,14 +363,26 @@ inline bool isJunkDNSDomain(const char *hostname) {
     return junkDomainTrie().matches(hostname);
 }
 
-// ===== 2. HOOK DNS RESOLUTION (getaddrinfo + legacy gethostbyname/gethostbyname2) =====
+// ===== 2. HOOK DNS RESOLUTION (getaddrinfo + legacy gethostbyname) =====
 static int (*orig_getaddrinfo)(const char *, const char *, const struct addrinfo *, struct addrinfo **);
+
+// Định nghĩa đầy đủ ở mục 3 bên dưới - forward declare để hooked_getaddrinfo gọi được.
+inline void netBlockLearnHostIPs(const char *host);
 
 inline int hooked_getaddrinfo(const char *hostname, const char *servname, const struct addrinfo *hints, struct addrinfo **res) {
     if (isJunkDNSDomain(hostname)) {
         dnsNoteBlocked(hostname);
         netLogRaw("DNS-BLK", hostname ? hostname : "");
-        return EAI_NONAME; 
+        // Học IP thật của host này ở nền: lỡ game né DNS (nhớ sẵn IP rồi connect() thẳng,
+        // không phân giải lại) thì vẫn chặn được ở tầng connect() (mục 3, netBlockCheckConnect).
+        // Dispatch async vì orig_getaddrinfo có thể chậm/chặn mạng - không giữ thread gọi hàm này.
+        if (hostname) {
+            std::string host(hostname);
+            dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_BACKGROUND, 0), ^{
+                netBlockLearnHostIPs(host.c_str());
+            });
+        }
+        return EAI_NONAME;
     }
     if (hostname) netLogRaw("DNS", hostname);
     return orig_getaddrinfo(hostname, servname, hints, res);
@@ -396,7 +413,93 @@ inline struct hostent *hooked_gethostbyname2(const char *name, int af) {
     return orig_gethostbyname2(name, af);
 }
 
-// ===== 3. NSURLPROTOCOL (Cấp độ HTTP/HTTPS) =====
+// ===== 3. CHẶN TẦNG CONNECT() THEO IP (khi game bypass DNS, connect thẳng vào IP) =====
+// Vì sao cần: chặn DNS chỉ ăn khi game gọi getaddrinfo của libc. Nếu game tự nhớ sẵn IP rồi
+// connect() thẳng (không phân giải lại qua libc) thì hook DNS trượt hoàn toàn.
+//
+// Cách làm AN TOÀN (khác bản trước đã bị revert vì treo game): KHÔNG bao giờ gọi DNS đồng bộ
+// trên đường connect() - từng thử gethostbyaddr() đồng bộ ngay trong hook, mỗi connect() phải
+// đợi 1 vòng reverse-DNS qua mạng nên game lag/treo. Giờ học IP trước, ở thread nền, rồi
+// connect() chỉ so khớp chuỗi IP với registry đã học sẵn (O(1), không I/O).
+static std::mutex g_blockedIPsMutex;
+static std::unordered_set<std::string> g_blockedIPs;
+static std::mutex g_learnedHostsMutex;
+static std::unordered_map<std::string, bool> g_learnedHosts; // host đã học IP rồi -> khỏi lặp lại
+
+// Phân giải THẬT 1 host (dùng hàm gốc, không qua hook) rồi nạp từng IP tìm được vào registry
+// chặn. Có thể block khi chờ mạng nên LUÔN gọi từ thread nền (dispatch_async) - xem
+// installDNSBlockHook() và hooked_getaddrinfo() bên dưới, không bao giờ gọi trực tiếp từ
+// đường connect() đang được game chờ.
+inline void netBlockLearnHostIPs(const char *host) {
+    if (!host || !host[0] || !orig_getaddrinfo) return;
+    {
+        std::lock_guard<std::mutex> lock(g_learnedHostsMutex);
+        if (!g_learnedHosts.emplace(host, true).second) return;
+    }
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC; // lấy cả IPv4 lẫn IPv6
+    struct addrinfo *res = NULL;
+    if (orig_getaddrinfo(host, NULL, &hints, &res) != 0 || !res) return;
+    std::lock_guard<std::mutex> lock(g_blockedIPsMutex);
+    for (struct addrinfo *ai = res; ai; ai = ai->ai_next) {
+        char ip[INET6_ADDRSTRLEN] = {0};
+        if (ai->ai_family == AF_INET) {
+            inet_ntop(AF_INET, &((struct sockaddr_in *)ai->ai_addr)->sin_addr, ip, sizeof(ip));
+        } else if (ai->ai_family == AF_INET6) {
+            inet_ntop(AF_INET6, &((struct sockaddr_in6 *)ai->ai_addr)->sin6_addr, ip, sizeof(ip));
+        } else {
+            continue;
+        }
+        if (ip[0]) g_blockedIPs.insert(ip);
+    }
+    freeaddrinfo(res);
+}
+
+// Callback đăng ký với NetLog.h (netLogSetBlockCheck) - NetLog gọi hộ ngay trước MỌI connect()
+// thật. Phải cực nhanh, không I/O/mạng: chỉ so khớp IP với registry đã học sẵn ở trên.
+inline bool netBlockCheckConnect(const char *ip, uint16_t port, char *reasonOut, size_t reasonLen) {
+    if (!ip || !ip[0]) return false;
+    if (strcmp(ip, "8.8.8.8") == 0) {
+        dnsNoteBlocked("8.8.8.8");
+        snprintf(reasonOut, reasonLen, "8.8.8.8:%d", port);
+        return true;
+    }
+    std::lock_guard<std::mutex> lock(g_blockedIPsMutex);
+    if (g_blockedIPs.count(ip)) {
+        dnsNoteBlocked(ip);
+        snprintf(reasonOut, reasonLen, "%s:%d (IP-bypass)", ip, port);
+        return true;
+    }
+    return false;
+}
+
+// Callback đăng ký với NetLog.h (netLogSetHostBlockCheck) - NetLog gọi hộ khi soi được tên
+// miền thật từ ClientHello (SNI) hoặc header Host của 1 request HTTP thuần không qua
+// NSURLSession (nên JunkAdURLProtocol không thấy được). Dùng lại đúng trie chặn domain hiện
+// có, để danh sách đen chỉ cần khai báo 1 chỗ (kJunkDNSDomains) cho mọi tầng chặn.
+inline bool netBlockCheckHost(const char *host) {
+    if (!host || !host[0] || !isJunkDNSDomain(host)) return false;
+    dnsNoteBlocked(host);
+    return true;
+}
+
+// Callback đăng ký với NetLog.h (netLogSetLearnBlockedIP) - khi 1 kết nối bị chặn theo SNI/Host
+// (tức chỉ phát hiện được sau khi đã connect() xong), nạp luôn IP đó vào registry chặn
+// connect() để lần sau gặp lại IP này bị chặn ngay từ connect(), khỏi phải soi SNI lại.
+inline void netBlockLearnIP(const char *ip) {
+    if (!ip || !ip[0]) return;
+    std::lock_guard<std::mutex> lock(g_blockedIPsMutex);
+    g_blockedIPs.insert(ip);
+}
+
+// ===== 4. NSURLPROTOCOL (Cấp độ HTTP/HTTPS của iOS Cocoa) =====
+// Khai báo trước category NSString dùng để so khớp từ khóa method trong path (vd "logevent")
+// khi request không có host - dùng bên dưới, implement ở cuối file.
+@interface NSString (JunkKeywordMatch)
+- (BOOL)containsJunkKeywordUTF8:(const char *)str;
+@end
+
 @interface JunkAdURLProtocol : NSURLProtocol
 @end
 
@@ -404,7 +507,20 @@ inline struct hostent *hooked_gethostbyname2(const char *name, int af) {
 
 + (BOOL)canInitWithRequest:(NSURLRequest *)request {
     NSString *host = request.URL.host;
-    if (!host) return NO;
+    if (!host) {
+        // Kiểm tra chặn chuỗi method đặc biệt xuất hiện trong URL Path
+        NSString *absUrl = request.URL.absoluteString;
+        if (absUrl) {
+            for (const char* junk : kJunkDNSDomains) {
+                if (strchr(junk, '.') == NULL) { // Nếu là từ khóa method, không phải domain
+                    if ([absUrl containsJunkKeywordUTF8:junk]) {
+                        return YES;
+                    }
+                }
+            }
+        }
+        return NO;
+    }
     
     NSString *url = request.URL.absoluteString;
     if (url) netLogRaw("HTTP", [url UTF8String]);
@@ -429,7 +545,14 @@ inline struct hostent *hooked_gethostbyname2(const char *name, int af) {
 
 @end
 
-// ===== 4. KHỞI CHẠY HOOK =====
+// Trợ giúp kiểm tra chuỗi NSString chứa UTF8 C-String nhanh
+@implementation NSString (JunkKeywordMatch)
+- (BOOL)containsJunkKeywordUTF8:(const char *)str {
+    return [self rangeOfString:[NSString stringWithUTF8String:str] options:NSCaseInsensitiveSearch].location != NSNotFound;
+}
+@end
+
+// ===== 5. KHỞI CHẠY HOOK =====
 inline void installDNSBlockHook() {
     orig_getaddrinfo    = (int (*)(const char *, const char *, const struct addrinfo *, struct addrinfo **))dlsym((void *)RTLD_DEFAULT, "getaddrinfo");
     orig_gethostbyname  = (struct hostent *(*)(const char *))dlsym((void *)RTLD_DEFAULT, "gethostbyname");
@@ -443,5 +566,21 @@ inline void installDNSBlockHook() {
     rebind_symbols(dnsRebindings, sizeof(dnsRebindings) / sizeof(dnsRebindings[0]));
 
     [NSURLProtocol registerClass:[JunkAdURLProtocol class]];
+
+    // NetLog.h là nơi DUY NHẤT hook "connect"/"write"/"send" (fishhook rebind ai gọi sau cùng
+    // thì thắng, hai hook cùng tên thì không build được) - đăng ký callback chặn để nó gọi hộ:
+    // theo IP lúc connect(), và theo hostname (SNI/Host) lúc write()/send() gói đầu tiên - chặn
+    // được cả HTTPS/HTTP đi bằng thư viện mạng riêng của game, không qua NSURLSession.
+    netLogSetBlockCheck(netBlockCheckConnect);
+    netLogSetHostBlockCheck(netBlockCheckHost);
+    netLogSetLearnBlockedIP(netBlockLearnIP);
     installNetLogHook();
+
+    // Phân giải sẵn TOÀN BỘ host đen ở thread nền để nạp IP vào registry chặn connect().
+    // Nhờ vậy dù game tự nhớ sẵn IP rồi connect() thẳng (không phân giải lại qua libc) ta vẫn
+    // biết IP đó là host đen mà chặn. Chạy nền để không giữ thread khởi động.
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_BACKGROUND, 0), ^{
+        size_t count = sizeof(kJunkDNSDomains) / sizeof(kJunkDNSDomains[0]);
+        for (size_t i = 0; i < count; i++) netBlockLearnHostIPs(kJunkDNSDomains[i]);
+    });
 }
