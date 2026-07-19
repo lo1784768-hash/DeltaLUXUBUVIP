@@ -149,7 +149,20 @@ static void hwbreakArmAllExistingThreads(uint64_t addr) {
 // Unity/game tạo thread mới liên tục - debug register là TÀI NGUYÊN RIÊNG CỦA TỪNG THREAD,
 // không có cách nào "set 1 lần cho cả tiến trình". Poll định kỳ để bắt thread mới thay vì cố
 // hook điểm tạo thread (đơn giản hơn, đủ dùng cho bản thử nghiệm).
+//
+// CHỜ 1 NHỊP TRƯỚC KHI ARM LẦN ĐẦU: log FreeFire-2026-07-20-*.debug.log (2 lần liên tiếp, cùng
+// 1 chỗ) cho thấy app treo cứng NGAY sau dòng "ĐÃ KÍCH HOẠT", không còn log gì thêm - tức là
+// treo ngay trong lúc dyld vẫn còn đang nạp nốt các thư viện còn lại (constructor này chạy TRƯỚC
+// main()/UIApplicationMain). Nếu arm breakpoint cho main thread ngay lập tức (như bản cũ), 1 lệnh
+// open() của CHÍNH dyld gọi để nạp thư viện tiếp theo - rất có thể đang được gọi trong lúc dyld
+// giữ khoá nội bộ riêng của nó - sẽ bị chặn lại chờ reply từ exception handler; nếu handler đó
+// cần bất kỳ thứ gì (VD: lazy-bind 1 hàm Foundation lần đầu) mà cũng cần đúng khoá dyld đang bị
+// giữ bởi chính thread đang bị treo -> deadlock vĩnh viễn, không crash, không log thêm - khớp
+// chính xác với triệu chứng quan sát được. Không có cách nào biết chắc chắn dyld đã nạp xong hay
+// chưa (không có API công khai), nên dùng 1 khoảng chờ cố định trước khi arm THẬT lần đầu tiên -
+// giảm mạnh khả năng trúng đúng lúc dyld đang giữ khoá, nhưng KHÔNG đảm bảo tuyệt đối 100%.
 static void *hwbreakRearmPollThreadFn(void *ctx) {
+    usleep(400 * 1000); // chờ 400ms trước lần arm đầu tiên - xem giải thích ở trên
     while (g_hwbreakActive.load(std::memory_order_relaxed)) {
         if (g_hwbreakOpenAddr != 0) {
             hwbreakArmAllExistingThreads(g_hwbreakOpenAddr);
@@ -357,8 +370,11 @@ inline bool HWBreakHook_tryInstallForOpen() {
         return false;
     }
 
+    // KHÔNG arm tất cả thread (kể cả main thread) ngay tại đây - vẫn đang chạy trong constructor,
+    // tức là TRƯỚC main()/UIApplicationMain, đúng lúc dyld có thể vẫn đang nạp nốt các thư viện
+    // còn lại. hwbreakRearmPollThreadFn (spawn ngay dưới đây) tự chờ 1 nhịp trước khi thực hiện
+    // lần arm đầu tiên - xem giải thích chi tiết ở khai báo hàm đó.
     g_hwbreakActive.store(true, std::memory_order_relaxed);
-    hwbreakArmAllExistingThreads(g_hwbreakOpenAddr);
 
     pthread_t rearmThread;
     if (pthread_create(&rearmThread, NULL, hwbreakRearmPollThreadFn, NULL) == 0) {
