@@ -180,9 +180,11 @@ game_sdk_t *game_sdk = new game_sdk_t();
         // keyWindow/rootViewController, so nothing of the game gets a chance to render), throw up
         // our own full-screen "updating" window, unzip, then crash on purpose so the player's
         // manual relaunch starts clean with Delta/ already fully populated.
+        DeltaVFS_debugLog("Menu +load: needsFirstRunExtraction=true, entering poll");
         [DeltaMenu pollUntilAppReadyThenBlockAndUpdate];
         return;
     }
+    DeltaVFS_debugLog("Menu +load: needsFirstRunExtraction=false, normal menu flow");
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         mainWindow = [UIApplication sharedApplication].keyWindow;
@@ -211,8 +213,12 @@ game_sdk_t *game_sdk = new game_sdk_t();
         });
         return;
     }
+    DeltaVFS_debugLog("Menu poll: UIApplication ready, showing block window + popup");
     [DeltaMenu showUpdatingPopupThenRelaunch];
 }
+
+static UILabel *deltaDebugLogLabel;
+static NSTimer *deltaDebugLogTimer;
 
 + (void)showUpdatingPopupThenRelaunch {
     // Our own full-screen, top-level window - deliberately NOT the game's keyWindow/rootViewController,
@@ -226,6 +232,20 @@ game_sdk_t *game_sdk = new game_sdk_t();
     [blockWindow makeKeyAndVisible];
     mainWindow = blockWindow; // keep a strong ref so ARC doesn't tear it down
 
+    // Live debug panel, no Filza/SSH/Mac needed - reads straight from the in-RAM ring buffer
+    // that DeltaVFS_debugLog() also feeds (see AssetRedirect.h). Sits below the alert so it's
+    // visible the whole time, and freezes on whatever it last showed if the process gets killed.
+    deltaDebugLogLabel = [[UILabel alloc] initWithFrame:CGRectMake(16, kHeight - 220, kWidth - 32, 200)];
+    deltaDebugLogLabel.numberOfLines = 0;
+    deltaDebugLogLabel.font = [UIFont fontWithName:@"Courier" size:10] ?: [UIFont systemFontOfSize:10];
+    deltaDebugLogLabel.textColor = [UIColor colorWithWhite:1.0 alpha:0.55];
+    deltaDebugLogLabel.textAlignment = NSTextAlignmentLeft;
+    [blockVC.view addSubview:deltaDebugLogLabel];
+    deltaDebugLogTimer = [NSTimer scheduledTimerWithTimeInterval:0.25 repeats:YES block:^(NSTimer *timer) {
+        deltaDebugLogLabel.text = DeltaVFS_debugLogSnapshot(14);
+    }];
+    [[NSRunLoop mainRunLoop] addTimer:deltaDebugLogTimer forMode:NSRunLoopCommonModes];
+
     // Explicitly tells the player we're freezing the game on purpose and to NOT force-quit -
     // without this, a few seconds of a frozen screen reads as a crash/bug and people bail out
     // mid-extraction, leaving Delta/ half-written for the next launch to retry.
@@ -238,8 +258,11 @@ game_sdk_t *game_sdk = new game_sdk_t();
                                                                      message:message
                                                               preferredStyle:UIAlertControllerStyleAlert];
 
+    DeltaVFS_debugLog("Menu popup: presenting block+alert");
     [blockVC presentViewController:popup animated:YES completion:^{
+        DeltaVFS_debugLog("Menu popup: presented, calling DeltaVFS_runFirstRunExtraction");
         DeltaVFS_runFirstRunExtraction(^{
+            DeltaVFS_debugLog("Menu popup: extraction completion fired, aborting in 0.6s");
             // Keep the popup on screen a moment so it doesn't just flash, then relaunch.
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                 abort();
@@ -1042,6 +1065,9 @@ game_sdk_t *game_sdk = new game_sdk_t();
          "Miss (đọc bản gốc - bình thường, Delta chỉ chứa vài icon custom): %llu\n\n"
          "── CHỮ KÝ DELTA ──\n"
          "%@\n\n"
+         "── EXTRACT LOG (constructor + first-run popup, 20 dòng gần nhất) ──\n"
+         "File (cần Mac+Xcode\"Download Container\" hoặc Filza, KHÔNG bắt buộc):\n%@\n"
+         "%@\n"
          "── CHẶN DNS ──\n"
          "Đã chặn: %llu request\n"
          "Host chặn gần nhất:\n%@\n\n"
@@ -1051,6 +1077,7 @@ game_sdk_t *game_sdk = new game_sdk_t();
         totalCalls, bundleCalls, hits, misses, pct, anyPath, last,
         DeltaVFS_abHotUpdatesHits(), DeltaVFS_abHotUpdatesMisses(),
         signInfo,
+        DeltaVFS_debugLogPath(), DeltaVFS_debugLogSnapshot(20),
         dnsBlocked, dnsHost,
         NetLog_count(), netLog];
 

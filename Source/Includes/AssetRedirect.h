@@ -9,8 +9,11 @@
 #import <sys/mman.h>
 #import <zlib.h>
 #include <atomic>
+#include <mutex>
 #import <objc/runtime.h>
 #import <dlfcn.h>
+#import <time.h>
+#import <errno.h>
 
 #import "MemoryUtils.h"
 #import "fishhook.h"
@@ -52,6 +55,85 @@ static char g_deltaLastAnyPath[1024] = {0};
 static std::atomic<bool> g_deltaNeedsFirstRun{false};
 static char g_deltaMarkerPathC[1152] = {0};
 static struct stat g_deltaZipStat;
+
+// ============================================================================
+//  LOG GIẢI NÉN SỐNG SÓT QUA CRASH - ar_extractZip mmap nguyên Delta.zip (có thể
+//  vài trăm MB) và chạy trên background queue ngay lúc app mới mở, đúng lúc bộ
+//  nhớ căng nhất; nếu bị iOS kill (Jetsam) hay bất kỳ điểm return sớm nào bên
+//  trong, mọi state đang nằm trong atomic RAM sẽ mất sạch không cách nào soi lại.
+//  Ghi thẳng write() syscall (không qua libc buffer, không cần fflush) vào 1 file
+//  cố định ở GỐC bundle (dùng dlsym trực tiếp thay vì orig_open của constructor,
+//  vì hàm log này có thể được gọi trước khi constructor cài xong fishhook) - lấy
+//  ra bằng Xcode > Devices and Simulators > (chọn app) > "Download Container..."
+//  nếu có Mac (không cần jailbreak). KHÔNG có Filza/SSH/Mac thì dùng bản trong RAM
+//  (DeltaVFS_debugLogSnapshot) mà Menu.mm hiện thẳng lên màn hình lúc chặn/giải nén.
+// ============================================================================
+static int g_deltaLogFd = -1;
+static std::mutex g_deltaLogMutex;
+
+#define DELTA_LOG_RING_LINES 40
+static char g_deltaLogRingLines[DELTA_LOG_RING_LINES][160];
+static int g_deltaLogRingHead = 0;
+static unsigned int g_deltaLogRingTotal = 0;
+static std::mutex g_deltaLogRingMutex;
+
+inline void deltaLogEnsureOpen() {
+    if (g_deltaLogFd >= 0) return;
+    std::lock_guard<std::mutex> lock(g_deltaLogMutex);
+    if (g_deltaLogFd >= 0) return;
+    if (g_bundlePrefixLen == 0) return;
+    int (*rawOpen)(const char *, int, ...) = (int (*)(const char *, int, ...))dlsym(RTLD_DEFAULT, "open");
+    if (!rawOpen) return;
+    char logPath[1200];
+    snprintf(logPath, sizeof(logPath), "%sDeltaExtractLog.txt", g_bundlePrefixC);
+    g_deltaLogFd = rawOpen(logPath, O_WRONLY | O_CREAT | O_APPEND, 0644);
+}
+
+inline void DeltaVFS_debugLog(const char *msg) {
+    deltaLogEnsureOpen();
+    char buf[512];
+    int n = snprintf(buf, sizeof(buf), "[t=%.0f] %s\n", (double)time(NULL), msg);
+    if (n <= 0) return;
+    size_t writeLen = ((size_t)n < sizeof(buf)) ? (size_t)n : sizeof(buf) - 1;
+
+    if (g_deltaLogFd >= 0) write(g_deltaLogFd, buf, writeLen);
+
+    // In-RAM ring, no filesystem access needed to read it back - Menu.mm polls
+    // DeltaVFS_debugLogSnapshot() straight onto the blocking "please wait" screen.
+    std::lock_guard<std::mutex> lock(g_deltaLogRingMutex);
+    strncpy(g_deltaLogRingLines[g_deltaLogRingHead], msg, sizeof(g_deltaLogRingLines[0]) - 1);
+    g_deltaLogRingLines[g_deltaLogRingHead][sizeof(g_deltaLogRingLines[0]) - 1] = '\0';
+    g_deltaLogRingHead = (g_deltaLogRingHead + 1) % DELTA_LOG_RING_LINES;
+    g_deltaLogRingTotal++;
+}
+
+inline NSString *DeltaVFS_debugLogSnapshot(int maxLines) {
+    std::lock_guard<std::mutex> lock(g_deltaLogRingMutex);
+    int count = (int)((g_deltaLogRingTotal < DELTA_LOG_RING_LINES) ? g_deltaLogRingTotal : DELTA_LOG_RING_LINES);
+    int show = (maxLines < count) ? maxLines : count;
+    if (show <= 0) return @"(chưa có log)";
+    int start = ((g_deltaLogRingHead - show) % DELTA_LOG_RING_LINES + DELTA_LOG_RING_LINES) % DELTA_LOG_RING_LINES;
+    NSMutableString *out = [NSMutableString string];
+    for (int i = 0; i < show; i++) {
+        int idx = (start + i) % DELTA_LOG_RING_LINES;
+        [out appendFormat:@"%s\n", g_deltaLogRingLines[idx]];
+    }
+    return out;
+}
+
+inline void DeltaVFS_debugLogf(const char *fmt, ...) {
+    char msg[400];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(msg, sizeof(msg), fmt, args);
+    va_end(args);
+    DeltaVFS_debugLog(msg);
+}
+
+inline NSString *DeltaVFS_debugLogPath() {
+    if (g_bundlePrefixLen == 0) return @"(chưa xác định bundle)";
+    return [NSString stringWithFormat:@"%sDeltaExtractLog.txt", g_bundlePrefixC];
+}
 
 // API cho Menu.mm đọc trạng thái
 inline unsigned long long DeltaVFS_hits()          { return g_deltaHitCount.load(std::memory_order_relaxed); }
@@ -147,16 +229,23 @@ static bool ar_inflateToFd(const uint8_t *src, size_t srcLen, int outFd) {
 }
 
 static void ar_extractZip(const char *zipPath, const char *destDir) {
+    DeltaVFS_debugLogf("ar_extractZip: start zip=%s dest=%s", zipPath, destDir);
+
     int fd = open(zipPath, O_RDONLY);
-    if (fd < 0) return;
+    if (fd < 0) { DeltaVFS_debugLogf("ar_extractZip: ABORT open(zip) failed errno=%d", errno); return; }
 
     struct stat st;
-    if (fstat(fd, &st) != 0 || st.st_size < 22) { close(fd); return; }
+    if (fstat(fd, &st) != 0 || st.st_size < 22) {
+        DeltaVFS_debugLogf("ar_extractZip: ABORT fstat failed or size<22 (size=%lld)", (long long)st.st_size);
+        close(fd);
+        return;
+    }
     size_t fileSize = (size_t)st.st_size;
+    DeltaVFS_debugLogf("ar_extractZip: zip size=%zu", fileSize);
 
     uint8_t *base = (uint8_t *)mmap(NULL, fileSize, PROT_READ, MAP_PRIVATE, fd, 0);
     close(fd);
-    if (base == MAP_FAILED) return;
+    if (base == MAP_FAILED) { DeltaVFS_debugLogf("ar_extractZip: ABORT mmap failed errno=%d", errno); return; }
 
     const uint8_t *eocd = NULL;
     size_t maxBack = (fileSize < (22 + 65535)) ? fileSize : (22 + 65535);
@@ -164,7 +253,7 @@ static void ar_extractZip(const char *zipPath, const char *destDir) {
         const uint8_t *p = base + fileSize - i;
         if (ar_rd32(p) == 0x06054b50) { eocd = p; break; }
     }
-    if (!eocd) { munmap(base, fileSize); return; }
+    if (!eocd) { DeltaVFS_debugLog("ar_extractZip: ABORT no EOCD signature found"); munmap(base, fileSize); return; }
 
     uint64_t totalEntries = ar_rd16(eocd + 10);
     uint64_t cdOffset     = ar_rd32(eocd + 16);
@@ -180,16 +269,18 @@ static void ar_extractZip(const char *zipPath, const char *destDir) {
             }
         }
     }
+    DeltaVFS_debugLogf("ar_extractZip: totalEntries=%llu cdOffset=%llu", (unsigned long long)totalEntries, (unsigned long long)cdOffset);
 
-    if (cdOffset >= fileSize) { munmap(base, fileSize); return; }
+    if (cdOffset >= fileSize) { DeltaVFS_debugLog("ar_extractZip: ABORT cdOffset >= fileSize"); munmap(base, fileSize); return; }
 
     const uint8_t *cd = base + cdOffset;
     char pathBuf[2048];
     char nameBuf[1024];
 
     for (uint64_t e = 0; e < totalEntries; e++) {
-        if ((size_t)(cd - base) + 46 > fileSize) break;
-        if (ar_rd32(cd) != 0x02014b50) break;
+        if (e % 500 == 0) DeltaVFS_debugLogf("ar_extractZip: progress entry=%llu/%llu written=%u", (unsigned long long)e, (unsigned long long)totalEntries, g_deltaExtractedFiles.load(std::memory_order_relaxed));
+        if ((size_t)(cd - base) + 46 > fileSize) { DeltaVFS_debugLogf("ar_extractZip: STOP cd+46>fileSize at entry=%llu", (unsigned long long)e); break; }
+        if (ar_rd32(cd) != 0x02014b50) { DeltaVFS_debugLogf("ar_extractZip: STOP bad CD signature at entry=%llu", (unsigned long long)e); break; }
 
         uint16_t method     = ar_rd16(cd + 10);
         uint32_t uncompSize = ar_rd32(cd + 24);
@@ -257,6 +348,7 @@ static void ar_extractZip(const char *zipPath, const char *destDir) {
         g_deltaExtractedFiles.fetch_add(1, std::memory_order_relaxed);
     }
 
+    DeltaVFS_debugLogf("ar_extractZip: DONE written=%u", g_deltaExtractedFiles.load(std::memory_order_relaxed));
     munmap(base, fileSize);
 }
 
@@ -286,9 +378,12 @@ static void ar_writeMarker(const char *markerPath, const struct stat *zipSt) {
 // While this is in flight, redirectAllTrafficPath() passes bundle paths through untouched
 // (g_deltaActive is still false), so the game keeps reading the original, unmodded bundle.
 inline void DeltaVFS_runFirstRunExtraction(dispatch_block_t completion) {
+    DeltaVFS_debugLog("runFirstRunExtraction: dispatching to background queue");
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        DeltaVFS_debugLog("runFirstRunExtraction: background block entered, calling ar_extractZip");
         ar_extractZip(g_deltaZipPathC, g_moddedPrefixC);
         ar_writeMarker(g_deltaMarkerPathC, &g_deltaZipStat);
+        DeltaVFS_debugLog("runFirstRunExtraction: marker written, g_deltaActive=true");
         g_deltaActive.store(true, std::memory_order_relaxed);
         g_deltaNeedsFirstRun.store(false, std::memory_order_relaxed);
         if (completion) dispatch_async(dispatch_get_main_queue(), completion);
@@ -487,9 +582,11 @@ static void initDeltaAllTrafficVFS() {
         }
 
         // 1. KIỂM TRA XEM CÓ CẦN GIẢI NÉN KHÔNG (chưa từng giải nén, hoặc Delta.zip đã đổi)
+        DeltaVFS_debugLogf("constructor: bundle=%s zip=%s", g_bundlePrefixC, g_deltaZipPathC);
         if (g_moddedPrefixLen > 0 && g_deltaZipPathC[0]) {
             if (stat(g_deltaZipPathC, &g_deltaZipStat) == 0) {
                 g_deltaZipFound.store(true, std::memory_order_relaxed);
+                DeltaVFS_debugLogf("constructor: Delta.zip found, size=%lld mtime=%lld", (long long)g_deltaZipStat.st_size, (long long)g_deltaZipStat.st_mtime);
                 ar_mkpath(g_moddedPrefixC);
 
                 snprintf(g_deltaMarkerPathC, sizeof(g_deltaMarkerPathC), "%s.delta_extracted", g_moddedPrefixC);
@@ -497,14 +594,20 @@ static void initDeltaAllTrafficVFS() {
                 if (ar_needExtract(g_deltaMarkerPathC, &g_deltaZipStat)) {
                     // Too early for UIKit here — defer the actual unzip to Menu.mm, which shows
                     // the "updating..." popup first, then calls DeltaVFS_runFirstRunExtraction().
+                    DeltaVFS_debugLog("constructor: marker missing/stale -> needs first-run extraction, deferring to Menu.mm");
                     g_deltaExtractRan.store(true, std::memory_order_relaxed);
                     g_deltaNeedsFirstRun.store(true, std::memory_order_relaxed);
                 } else {
                     struct stat deltaDirSt;
                     if (stat(g_moddedPrefixC, &deltaDirSt) == 0 && S_ISDIR(deltaDirSt.st_mode)) {
                         g_deltaActive.store(true, std::memory_order_relaxed);
+                        DeltaVFS_debugLog("constructor: marker matches -> already extracted, Delta VFS active immediately");
+                    } else {
+                        DeltaVFS_debugLog("constructor: marker matches but Delta/ dir missing/not a dir - VFS stays inactive");
                     }
                 }
+            } else {
+                DeltaVFS_debugLogf("constructor: Delta.zip NOT FOUND at %s (stat errno=%d) - VFS stays inactive, nothing redirected", g_deltaZipPathC, errno);
             }
         }
         
