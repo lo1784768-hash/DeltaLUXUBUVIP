@@ -20,7 +20,10 @@
 
 // Gói Delta.zip nằm NGAY TRONG App Bundle: FreeFire.app/Delta.zip
 #define DELTA_ZIP_BUNDLE_NAME "Delta.zip"
-static char g_deltaZipPathC[1152] = {0};   
+// Tên thư mục đích trong Documents/ - cố tình không phải "Delta" để không lộ ra là thư mục mod
+// nếu ai đó duyệt Documents qua Files app (user bật File Sharing để tự xem log/debug).
+#define DELTA_DEST_DIR_NAME "a3f8c91e2b47d6089d2a71c5f8e93b06"
+static char g_deltaZipPathC[1152] = {0};
 
 // Quản lý tiền tố đường dẫn gốc của App Bundle và thư mục Delta trong Cache
 static char g_bundlePrefixC[1024] = {0};
@@ -62,10 +65,10 @@ static struct stat g_deltaZipStat;
 //  nhớ căng nhất; nếu bị iOS kill (Jetsam) hay bất kỳ điểm return sớm nào bên
 //  trong, mọi state đang nằm trong atomic RAM sẽ mất sạch không cách nào soi lại.
 //  Ghi thẳng write() syscall (không qua libc buffer, không cần fflush) vào 1 file
-//  cố định ở GỐC bundle (dùng dlsym trực tiếp thay vì orig_open của constructor,
-//  vì hàm log này có thể được gọi trước khi constructor cài xong fishhook) - lấy
-//  ra bằng Xcode > Devices and Simulators > (chọn app) > "Download Container..."
-//  nếu có Mac (không cần jailbreak). KHÔNG có Filza/SSH/Mac thì dùng bản trong RAM
+//  cố định trong Documents/<hash>/ (dùng dlsym trực tiếp thay vì orig_open của
+//  constructor, vì hàm log này có thể được gọi trước khi constructor cài xong
+//  fishhook) - user đã bật File Sharing nên xem trực tiếp qua Files app trên
+//  điện thoại được, không cần Mac/Xcode. KHÔNG có Filza/SSH/Mac thì dùng bản trong RAM
 //  (DeltaVFS_debugLogSnapshot) mà Menu.mm hiện thẳng lên màn hình lúc chặn/giải nén.
 // ============================================================================
 static int g_deltaLogFd = -1;
@@ -81,14 +84,14 @@ inline void deltaLogEnsureOpen() {
     if (g_deltaLogFd >= 0) return;
     std::lock_guard<std::mutex> lock(g_deltaLogMutex);
     if (g_deltaLogFd >= 0) return;
-    // g_moddedPrefixC (Application Support/Delta/), NOT the bundle root - the .app bundle itself
-    // turned out to be sandbox-read-only on-device (confirmed: EPERM from mkdir()), so a log file
+    // g_moddedPrefixC (Documents/<hash>/), NOT the bundle root - the .app bundle itself turned
+    // out to be sandbox-read-only on-device (confirmed: EPERM from mkdir()), so a log file
     // written there would have been silently failing this whole time same as the real extraction.
     if (g_moddedPrefixLen == 0) return;
     int (*rawOpen)(const char *, int, ...) = (int (*)(const char *, int, ...))dlsym(RTLD_DEFAULT, "open");
     if (!rawOpen) return;
     char logPath[1200];
-    snprintf(logPath, sizeof(logPath), "%sDeltaExtractLog.txt", g_moddedPrefixC);
+    snprintf(logPath, sizeof(logPath), "%s.debug.log", g_moddedPrefixC);
     g_deltaLogFd = rawOpen(logPath, O_WRONLY | O_CREAT | O_APPEND, 0644);
 }
 
@@ -144,7 +147,7 @@ inline void DeltaVFS_debugLogf(const char *fmt, ...) {
 
 inline NSString *DeltaVFS_debugLogPath() {
     if (g_moddedPrefixLen == 0) return @"(chưa xác định)";
-    return [NSString stringWithFormat:@"%sDeltaExtractLog.txt", g_moddedPrefixC];
+    return [NSString stringWithFormat:@"%s.debug.log", g_moddedPrefixC];
 }
 
 // API cho Menu.mm đọc trạng thái
@@ -174,20 +177,17 @@ inline NSString *DeltaVFS_signatureSummary() {
     NSDictionary *cr = [NSDictionary dictionaryWithContentsOfFile:p];
     if (!cr) return @"CodeResources: KHÔNG đọc được (app chưa ký / thiếu file?)";
 
+    // Chỉ còn kiểm tra Delta.zip (nguồn, vẫn nằm trong bundle) có được ký không - thư mục đích
+    // (g_moddedPrefixC) giờ nằm trong Documents/, được tạo ra lúc chạy, KHÔNG thuộc payload IPA
+    // nên không bao giờ có mặt trong CodeResources - không còn gì để kiểm tra ở đó nữa.
     BOOL zipSigned = NO;
-    unsigned deltaDirFiles = 0;
     NSArray *sections = @[@"files2", @"files"];
     for (NSString *sect in sections) {
         NSDictionary *files = cr[sect];
         if (![files isKindOfClass:[NSDictionary class]]) continue;
-        for (NSString *k in files) {
-            if ([k isEqualToString:@DELTA_ZIP_BUNDLE_NAME]) zipSigned = YES;
-            if ([k hasPrefix:@"Delta/"]) deltaDirFiles++;
-        }
+        if ([files objectForKey:@DELTA_ZIP_BUNDLE_NAME]) { zipSigned = YES; break; }
     }
-    return [NSString stringWithFormat:
-            @"Delta.zip trong chữ ký: %@\nFile Delta/ được ký: %u",
-            zipSigned ? @"CÓ ✓" : @"KHÔNG ✗", deltaDirFiles];
+    return [NSString stringWithFormat:@"Delta.zip trong chữ ký: %@", zipSigned ? @"CÓ ✓" : @"KHÔNG ✗"];
 }
 
 // ============================================================================
@@ -476,12 +476,13 @@ inline void ar_ensureFirstRunChecked() {
 
                 // Delta/ must NOT live inside the .app bundle - confirmed on-device that the
                 // sandbox denies mkdir() there with EPERM (the bundle is read-only/immutable for
-                // a properly code-signed app, jailbreak or not). Use Library/Application Support/
-                // instead: writable, private to the app, persists across relaunches, and iOS never
-                // purges it under disk pressure the way it can with Library/Caches/.
-                NSArray<NSString *> *appSupportDirs = NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, YES);
-                NSString *appSupportDir = appSupportDirs.firstObject;
-                NSString *moddedDataDir = [appSupportDir stringByAppendingString:@"/Delta/"];
+                // a properly code-signed app, jailbreak or not). Use Documents/ instead - this
+                // build's Info.plist has UIFileSharingEnabled on, so the user can browse it via
+                // the Files app without Filza/a Mac. Folder is named a hash rather than "Delta" so
+                // it doesn't stick out among the app's real Documents files.
+                NSArray<NSString *> *documentsDirs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+                NSString *documentsDir = documentsDirs.firstObject;
+                NSString *moddedDataDir = [documentsDir stringByAppendingString:@"/" DELTA_DEST_DIR_NAME "/"];
                 strncpy(g_moddedPrefixC, [moddedDataDir UTF8String], sizeof(g_moddedPrefixC) - 1);
                 g_moddedPrefixLen = strlen(g_moddedPrefixC);
 
@@ -524,7 +525,7 @@ inline void ar_ensureFirstRunChecked() {
                 }
             }
 
-            snprintf(g_deltaMarkerPathC, sizeof(g_deltaMarkerPathC), "%s.delta_extracted", g_moddedPrefixC);
+            snprintf(g_deltaMarkerPathC, sizeof(g_deltaMarkerPathC), "%s.state", g_moddedPrefixC);
 
             if (ar_needExtract(g_deltaMarkerPathC, &g_deltaZipStat)) {
                 DeltaVFS_debugLog("ar_ensureFirstRunChecked: marker missing/stale -> needs first-run extraction");
