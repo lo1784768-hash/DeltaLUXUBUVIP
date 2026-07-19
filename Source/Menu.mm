@@ -155,7 +155,6 @@ static NSString *LOC(NSString *key) {
 // Info tab
 @property (nonatomic, strong) UILabel *statusLabel;
 @property (nonatomic, strong) UITextView *deltaLogView;
-@property (nonatomic, strong) UITextView *extractLogView;
 @property (nonatomic, strong) UITextView *redirectedFilesView;
 
 // Spy tab (dõi dylib B - gọi hàm nào, sửa bộ nhớ đâu, xem DylibSpy.h)
@@ -1069,16 +1068,15 @@ static NSTimer *deltaDebugLogTimer;
     logHeader.text = @"DELTA VFS";
     [page addSubview:logHeader];
 
-    // Chia phần còn lại của trang làm 3 khung riêng: DELTA VFS (thống kê hit/miss), EXTRACT LOG
-    // (log constructor + first-run popup, tách riêng để dễ chụp/đọc), và REDIRECTED FILES (danh
-    // sách path THẬT SỰ được phục vụ từ Delta/, thay cho NET LOG/UDP LOG cũ - user muốn thấy
-    // đúng file nào bị redirect thay vì traffic mạng chung chung).
+    // Chia phần còn lại của trang làm 2 khung: DELTA VFS (thống kê hit/miss) và REDIRECTED FILES
+    // (danh sách path THẬT SỰ được phục vụ từ Delta/). EXTRACT LOG (log constructor/first-run
+    // popup) đã bị bỏ theo yêu cầu user - việc đó chỉ cần lúc debug crash-loop lúc đầu, giờ đã
+    // ổn định, nhường hẳn không gian cho REDIRECTED FILES to hơn, dễ đọc hơn để verify redirect.
     CGFloat logsTop = 96;
     CGFloat logsAvail = frame.size.height - logsTop - 4;
     CGFloat headerH = 14;
-    CGFloat mainLogH = logsAvail * 0.38f;
-    CGFloat extractLogH = logsAvail * 0.32f;
-    CGFloat redirectedH = logsAvail - mainLogH - extractLogH - headerH * 2 - 8;
+    CGFloat mainLogH = logsAvail * 0.32f;
+    CGFloat redirectedH = logsAvail - mainLogH - headerH - 4;
 
     _deltaLogView = [[UITextView alloc] initWithFrame:CGRectMake(4, logsTop, frame.size.width - 8, mainLogH)];
     _deltaLogView.backgroundColor = COLOR_CARD_BG;
@@ -1093,27 +1091,7 @@ static NSTimer *deltaDebugLogTimer;
     _deltaLogView.textContainerInset = UIEdgeInsetsMake(8, 8, 8, 8);
     [page addSubview:_deltaLogView];
 
-    CGFloat extractLogTop = logsTop + mainLogH + 4;
-    UILabel *extractLogHeader = [[UILabel alloc] initWithFrame:CGRectMake(6, extractLogTop, frame.size.width - 12, headerH)];
-    extractLogHeader.font = [UIFont systemFontOfSize:10 weight:UIFontWeightHeavy];
-    extractLogHeader.textColor = COLOR_CYAN;
-    extractLogHeader.text = @"EXTRACT LOG";
-    [page addSubview:extractLogHeader];
-
-    _extractLogView = [[UITextView alloc] initWithFrame:CGRectMake(4, extractLogTop + headerH, frame.size.width - 8, extractLogH)];
-    _extractLogView.backgroundColor = COLOR_CARD_BG;
-    _extractLogView.layer.cornerRadius = 10.0f;
-    _extractLogView.layer.borderWidth = 1.0f;
-    _extractLogView.layer.borderColor = COLOR_CARD_BORDER.CGColor;
-    _extractLogView.editable = NO;
-    _extractLogView.selectable = YES; // cho phép nhấn giữ -> Select All -> Copy
-    _extractLogView.scrollEnabled = YES;
-    _extractLogView.textColor = COLOR_TEXT;
-    _extractLogView.font = [UIFont fontWithName:@"Menlo" size:9.5f] ?: [UIFont systemFontOfSize:9.5f];
-    _extractLogView.textContainerInset = UIEdgeInsetsMake(8, 8, 8, 8);
-    [page addSubview:_extractLogView];
-
-    CGFloat redirectedTop = extractLogTop + headerH + extractLogH + 4;
+    CGFloat redirectedTop = logsTop + mainLogH + 4;
     UILabel *redirectedHeader = [[UILabel alloc] initWithFrame:CGRectMake(6, redirectedTop, frame.size.width - 12, headerH)];
     redirectedHeader.font = [UIFont systemFontOfSize:10 weight:UIFontWeightHeavy];
     redirectedHeader.textColor = COLOR_PURPLE;
@@ -1141,13 +1119,7 @@ static NSTimer *deltaDebugLogTimer;
     if (!_deltaLogView) return;
 
     if (_redirectedFilesView) {
-        _redirectedFilesView.text = DeltaVFS_hitPathsSnapshot(40);
-    }
-
-    if (_extractLogView) {
-        _extractLogView.text = [NSString stringWithFormat:
-            @"File (cần Mac+Xcode \"Download Container\" hoặc Filza, KHÔNG bắt buộc):\n%@\n\n%@",
-            DeltaVFS_debugLogPath(), DeltaVFS_debugLogSnapshot(30)];
+        _redirectedFilesView.text = DeltaVFS_hitPathsSnapshot(120);
     }
 
     unsigned long long hits = DeltaVFS_hits();

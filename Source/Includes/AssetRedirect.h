@@ -85,7 +85,7 @@ static std::mutex g_deltaLogRingMutex;
 // generic NET LOG panel in the INFO tab per user request: they want to see exactly WHICH files
 // got redirected, not raw network traffic (that's what DELTA VFS's hit/miss counters already
 // summarize numerically).
-#define DELTA_HIT_RING_LINES 40
+#define DELTA_HIT_RING_LINES 120
 static char g_deltaHitRingLines[DELTA_HIT_RING_LINES][200];
 static int g_deltaHitRingHead = 0;
 static unsigned int g_deltaHitRingTotal = 0;
@@ -698,9 +698,18 @@ inline const char* redirectAllTrafficPath(const char *path) {
     bool existsInDelta = (orig_access && orig_access(redirectedBuffer, F_OK) == 0);
     if (existsInDelta) {
         g_deltaHitCount.fetch_add(1, std::memory_order_relaxed);
-        strncpy(g_deltaLastHitPath, relative, sizeof(g_deltaLastHitPath) - 1);
+        // Log "requested -> actual destination" when they differ (e.g. the FreeFire -> FreeFire2
+        // rename above) so the INFO tab is actually usable to VERIFY the rename happened, instead
+        // of always showing the originally-requested name and hiding whether a special case fired.
+        char hitLabel[210];
+        if (strcmp(relative, destRelative) != 0) {
+            snprintf(hitLabel, sizeof(hitLabel), "%s -> %s", relative, destRelative);
+        } else {
+            snprintf(hitLabel, sizeof(hitLabel), "%s", relative);
+        }
+        strncpy(g_deltaLastHitPath, hitLabel, sizeof(g_deltaLastHitPath) - 1);
         g_deltaLastHitPath[sizeof(g_deltaLastHitPath) - 1] = '\0';
-        deltaHitRingPush(relative);
+        deltaHitRingPush(hitLabel);
     } else {
         g_deltaMissCount.fetch_add(1, std::memory_order_relaxed);
     }
