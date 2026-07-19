@@ -373,7 +373,11 @@ static void ar_extractZip(const char *zipPath, const char *destDir) {
             if (g_arSkipOpenFailed.load(std::memory_order_relaxed) <= 3) {
                 // Log the first few in full - almost certainly the same reason (e.g. bundle dir
                 // not writable) for all of them, no need to spam one line per failed file.
-                DeltaVFS_debugLogf("ar_extractZip: open(write) FAILED path=%s errno=%d", pathBuf, errno);
+                // errno/strerror FIRST - the ring buffer line is only 160 chars and the full
+                // absolute path alone can eat that whole budget, silently truncating errno off
+                // the end (exactly what happened on-device: saw "...FreeFire.app/Del" and
+                // nothing else). Log just the short in-zip name instead of the full pathBuf.
+                DeltaVFS_debugLogf("ar_extractZip: open(write) FAILED errno=%d (%s) name=%s", errno, strerror(errno), nameBuf);
             }
             continue;
         }
@@ -471,6 +475,21 @@ inline void ar_ensureFirstRunChecked() {
             g_deltaZipFound.store(true, std::memory_order_relaxed);
             DeltaVFS_debugLogf("ar_ensureFirstRunChecked: Delta.zip found, size=%lld mtime=%lld", (long long)g_deltaZipStat.st_size, (long long)g_deltaZipStat.st_mtime);
             ar_mkpath(g_moddedPrefixC);
+            {
+                // Does the bundle actually let us create/write Delta/? If mkdir() succeeded but
+                // the dir still can't be stat'd back, or a canary file inside it can't be opened,
+                // every single file write in ar_extractZip will silently fail the same way.
+                struct stat checkSt;
+                bool dirExists = (stat(g_moddedPrefixC, &checkSt) == 0 && S_ISDIR(checkSt.st_mode));
+                char canaryPath[1200];
+                snprintf(canaryPath, sizeof(canaryPath), "%s.write_test", g_moddedPrefixC);
+                int canaryFd = open(canaryPath, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+                bool canaryWritable = (canaryFd >= 0);
+                int canaryErrno = errno;
+                if (canaryFd >= 0) { close(canaryFd); unlink(canaryPath); }
+                DeltaVFS_debugLogf("ar_ensureFirstRunChecked: Delta/ dirExists=%d writable=%d (errno=%d %s)",
+                    dirExists, canaryWritable, canaryWritable ? 0 : canaryErrno, canaryWritable ? "" : strerror(canaryErrno));
+            }
 
             snprintf(g_deltaMarkerPathC, sizeof(g_deltaMarkerPathC), "%s.delta_extracted", g_moddedPrefixC);
 
