@@ -80,6 +80,38 @@ static int g_deltaLogRingHead = 0;
 static unsigned int g_deltaLogRingTotal = 0;
 static std::mutex g_deltaLogRingMutex;
 
+// Ring of relative paths that actually got served from Delta/ (a "hit") - replaces the old
+// generic NET LOG panel in the INFO tab per user request: they want to see exactly WHICH files
+// got redirected, not raw network traffic (that's what DELTA VFS's hit/miss counters already
+// summarize numerically).
+#define DELTA_HIT_RING_LINES 40
+static char g_deltaHitRingLines[DELTA_HIT_RING_LINES][200];
+static int g_deltaHitRingHead = 0;
+static unsigned int g_deltaHitRingTotal = 0;
+static std::mutex g_deltaHitRingMutex;
+
+inline void deltaHitRingPush(const char *relativePath) {
+    std::lock_guard<std::mutex> lock(g_deltaHitRingMutex);
+    strncpy(g_deltaHitRingLines[g_deltaHitRingHead], relativePath, sizeof(g_deltaHitRingLines[0]) - 1);
+    g_deltaHitRingLines[g_deltaHitRingHead][sizeof(g_deltaHitRingLines[0]) - 1] = '\0';
+    g_deltaHitRingHead = (g_deltaHitRingHead + 1) % DELTA_HIT_RING_LINES;
+    g_deltaHitRingTotal++;
+}
+
+inline NSString *DeltaVFS_hitPathsSnapshot(int maxLines) {
+    std::lock_guard<std::mutex> lock(g_deltaHitRingMutex);
+    int count = (int)((g_deltaHitRingTotal < DELTA_HIT_RING_LINES) ? g_deltaHitRingTotal : DELTA_HIT_RING_LINES);
+    int show = (maxLines < count) ? maxLines : count;
+    if (show <= 0) return @"(chưa có file nào được redirect qua Delta)";
+    int start = ((g_deltaHitRingHead - show) % DELTA_HIT_RING_LINES + DELTA_HIT_RING_LINES) % DELTA_HIT_RING_LINES;
+    NSMutableString *out = [NSMutableString string];
+    for (int i = 0; i < show; i++) {
+        int idx = (start + i) % DELTA_HIT_RING_LINES;
+        [out appendFormat:@"%s\n", g_deltaHitRingLines[idx]];
+    }
+    return out;
+}
+
 inline void deltaLogEnsureOpen() {
     if (g_deltaLogFd >= 0) return;
     std::lock_guard<std::mutex> lock(g_deltaLogMutex);
@@ -647,6 +679,7 @@ inline const char* redirectAllTrafficPath(const char *path) {
         g_deltaHitCount.fetch_add(1, std::memory_order_relaxed);
         strncpy(g_deltaLastHitPath, relative, sizeof(g_deltaLastHitPath) - 1);
         g_deltaLastHitPath[sizeof(g_deltaLastHitPath) - 1] = '\0';
+        deltaHitRingPush(relative);
     } else {
         g_deltaMissCount.fetch_add(1, std::memory_order_relaxed);
     }

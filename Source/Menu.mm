@@ -146,7 +146,7 @@ static NSString *LOC(NSString *key) {
 @property (nonatomic, strong) UILabel *statusLabel;
 @property (nonatomic, strong) UITextView *deltaLogView;
 @property (nonatomic, strong) UITextView *extractLogView;
-@property (nonatomic, strong) UITextView *udpLogView;
+@property (nonatomic, strong) UITextView *redirectedFilesView;
 
 // Spy tab (dõi dylib B - gọi hàm nào, sửa bộ nhớ đâu, xem DylibSpy.h)
 @property (nonatomic, strong) UISwitch *spyStartSwitch;
@@ -160,6 +160,58 @@ static NSString *LOC(NSString *key) {
 // Toast
 @property (nonatomic, strong) UILabel *toastLabel;
 @end
+
+// ============================================================================
+//  APP-DELEGATE LAUNCH GUARD - genuinely holds the game's OWN startup back during a
+//  first-run extraction, instead of just covering the screen while it runs underneath
+//  anyway (a block window and the game's AppDelegate/Unity bootstrap are both just
+//  cooperatively scheduled on the same main run loop - one does not pause the other).
+//  Swizzle -[UIApplication setDelegate:] to catch the REAL app delegate the moment
+//  UIApplicationMain assigns it (this fires well before -application:didFinishLaunching...
+//  is called), then swizzle THAT delegate's own -application:didFinishLaunchingWithOptions:
+//  (where Unity's engine actually starts) so we can hold it. Plain C functions (not ObjC
+//  methods) since these patch Apple/game classes, same pattern as fishhook's hooked_open etc.
+// ============================================================================
+typedef void (*OrigSetDelegateIMP)(id, SEL, id<UIApplicationDelegate>);
+static OrigSetDelegateIMP orig_setDelegate = NULL;
+static BOOL g_realDelegateLaunchSwizzled = NO;
+
+typedef BOOL (*OrigDidFinishLaunchingIMP)(id, SEL, UIApplication *, NSDictionary *);
+static OrigDidFinishLaunchingIMP orig_didFinishLaunching = NULL;
+
+static BOOL hooked_didFinishLaunching(id self, SEL _cmd, UIApplication *application, NSDictionary *launchOptions) {
+    DeltaVFS_debugLog("hooked_didFinishLaunching: entered - holding game startup until extraction resolves");
+    [DeltaMenu showUpdatingPopupThenRelaunch];
+    // Never call the original / never return real control to the game from here this session:
+    // on success, DeltaVFS_runFirstRunExtraction's completion calls abort() from a block that
+    // only runs because we keep pumping the run loop below (dispatch_get_main_queue() work is
+    // drained by whatever pumps the main run loop, not tied to who called it); on failure we
+    // WANT to stay stuck showing the error rather than let the game start into a broken state.
+    while (true) {
+        [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
+    }
+    return YES; // unreachable
+}
+
+static void hooked_setDelegate(id self, SEL _cmd, id<UIApplicationDelegate> delegate) {
+    if (orig_setDelegate) orig_setDelegate(self, _cmd, delegate);
+    if (!delegate || g_realDelegateLaunchSwizzled) return;
+    g_realDelegateLaunchSwizzled = YES;
+
+    Class cls = [(id)delegate class];
+    SEL sel = @selector(application:didFinishLaunchingWithOptions:);
+    Method m = class_getInstanceMethod(cls, sel);
+    if (!m) {
+        // Delegate doesn't implement the classic launch method (e.g. scene-only lifecycle) -
+        // fall back to the old "cover the screen and hope" approach rather than never firing at all.
+        DeltaVFS_debugLogf("hooked_setDelegate: %s has no application:didFinishLaunchingWithOptions: - falling back to poll+block", class_getName(cls));
+        [DeltaMenu pollUntilAppReadyThenBlockAndUpdate];
+        return;
+    }
+    orig_didFinishLaunching = (OrigDidFinishLaunchingIMP)method_getImplementation(m);
+    method_setImplementation(m, (IMP)hooked_didFinishLaunching);
+    DeltaVFS_debugLogf("hooked_setDelegate: swizzled %s's didFinishLaunching to hold game startup", class_getName(cls));
+}
 
 @implementation DeltaMenu
 
@@ -176,13 +228,17 @@ game_sdk_t *game_sdk = new game_sdk_t();
     installDNSBlockHook();
 
     if (DeltaVFS_needsFirstRunExtraction()) {
-        // Delta/ hasn't been unzipped yet (fresh install or Delta.zip changed). Block the game
-        // from ever showing this run - poll for UIApplication (ready long before the game's own
-        // keyWindow/rootViewController, so nothing of the game gets a chance to render), throw up
-        // our own full-screen "updating" window, unzip, then crash on purpose so the player's
-        // manual relaunch starts clean with Delta/ already fully populated.
-        DeltaVFS_debugLog("Menu +load: needsFirstRunExtraction=true, entering poll");
-        [DeltaMenu pollUntilAppReadyThenBlockAndUpdate];
+        // Delta/ hasn't been unzipped yet (fresh install or Delta.zip changed). A block window on
+        // top of everything only HIDES the game - it does NOT stop the game's own code from
+        // running underneath, since our popup and the game's AppDelegate/Unity startup are both
+        // just cooperatively scheduled on the same main run loop. To actually PREVENT the game
+        // from running this session, swizzle -[UIApplication setDelegate:] so we catch the real
+        // app delegate the instant UIApplicationMain assigns it, then swizzle THAT delegate's own
+        // -application:didFinishLaunchingWithOptions: (where Unity's engine actually starts) and
+        // never call the original implementation until extraction has resolved - see
+        // installAppDelegateLaunchGuard below.
+        DeltaVFS_debugLog("Menu +load: needsFirstRunExtraction=true, installing app-delegate launch guard");
+        [DeltaMenu installAppDelegateLaunchGuard];
         return;
     }
     DeltaVFS_debugLog("Menu +load: needsFirstRunExtraction=false, normal menu flow");
@@ -202,6 +258,20 @@ game_sdk_t *game_sdk = new game_sdk_t();
         [extraInfo setupDisplayLink];
         [extraInfo initTapGes];
     });
+}
+
++ (void)installAppDelegateLaunchGuard {
+    Method m = class_getInstanceMethod([UIApplication class], @selector(setDelegate:));
+    if (!m) {
+        // Should never happen (setDelegate: is a stable public UIKit API) - fall back rather
+        // than silently do nothing.
+        DeltaVFS_debugLog("installAppDelegateLaunchGuard: -[UIApplication setDelegate:] not found, falling back to poll+block");
+        [DeltaMenu pollUntilAppReadyThenBlockAndUpdate];
+        return;
+    }
+    orig_setDelegate = (OrigSetDelegateIMP)method_getImplementation(m);
+    method_setImplementation(m, (IMP)hooked_setDelegate);
+    DeltaVFS_debugLog("installAppDelegateLaunchGuard: swizzled -[UIApplication setDelegate:]");
 }
 
 + (void)pollUntilAppReadyThenBlockAndUpdate {
@@ -967,14 +1037,15 @@ static NSTimer *deltaDebugLogTimer;
     [page addSubview:logHeader];
 
     // Chia phần còn lại của trang làm 3 khung riêng: DELTA VFS (thống kê hit/miss), EXTRACT LOG
-    // (log constructor + first-run popup, tách riêng để dễ chụp/đọc thay vì lẫn trong khung
-    // DELTA VFS như trước), và UDP LOG (bắn dày hơn hẳn các tầng khác nên luôn tách riêng).
+    // (log constructor + first-run popup, tách riêng để dễ chụp/đọc), và REDIRECTED FILES (danh
+    // sách path THẬT SỰ được phục vụ từ Delta/, thay cho NET LOG/UDP LOG cũ - user muốn thấy
+    // đúng file nào bị redirect thay vì traffic mạng chung chung).
     CGFloat logsTop = 96;
     CGFloat logsAvail = frame.size.height - logsTop - 4;
     CGFloat headerH = 14;
     CGFloat mainLogH = logsAvail * 0.38f;
     CGFloat extractLogH = logsAvail * 0.32f;
-    CGFloat udpLogH = logsAvail - mainLogH - extractLogH - headerH * 2 - 8;
+    CGFloat redirectedH = logsAvail - mainLogH - extractLogH - headerH * 2 - 8;
 
     _deltaLogView = [[UITextView alloc] initWithFrame:CGRectMake(4, logsTop, frame.size.width - 8, mainLogH)];
     _deltaLogView.backgroundColor = COLOR_CARD_BG;
@@ -1009,25 +1080,25 @@ static NSTimer *deltaDebugLogTimer;
     _extractLogView.textContainerInset = UIEdgeInsetsMake(8, 8, 8, 8);
     [page addSubview:_extractLogView];
 
-    CGFloat udpTop = extractLogTop + headerH + extractLogH + 4;
-    UILabel *udpLogHeader = [[UILabel alloc] initWithFrame:CGRectMake(6, udpTop, frame.size.width - 12, headerH)];
-    udpLogHeader.font = [UIFont systemFontOfSize:10 weight:UIFontWeightHeavy];
-    udpLogHeader.textColor = COLOR_PURPLE;
-    udpLogHeader.text = @"UDP LOG";
-    [page addSubview:udpLogHeader];
+    CGFloat redirectedTop = extractLogTop + headerH + extractLogH + 4;
+    UILabel *redirectedHeader = [[UILabel alloc] initWithFrame:CGRectMake(6, redirectedTop, frame.size.width - 12, headerH)];
+    redirectedHeader.font = [UIFont systemFontOfSize:10 weight:UIFontWeightHeavy];
+    redirectedHeader.textColor = COLOR_PURPLE;
+    redirectedHeader.text = @"REDIRECTED FILES (đã đọc từ Delta)";
+    [page addSubview:redirectedHeader];
 
-    _udpLogView = [[UITextView alloc] initWithFrame:CGRectMake(4, udpTop + headerH, frame.size.width - 8, udpLogH)];
-    _udpLogView.backgroundColor = COLOR_CARD_BG;
-    _udpLogView.layer.cornerRadius = 10.0f;
-    _udpLogView.layer.borderWidth = 1.0f;
-    _udpLogView.layer.borderColor = COLOR_CARD_BORDER.CGColor;
-    _udpLogView.editable = NO;
-    _udpLogView.selectable = YES;
-    _udpLogView.scrollEnabled = YES;
-    _udpLogView.textColor = COLOR_TEXT;
-    _udpLogView.font = [UIFont fontWithName:@"Menlo" size:9.5f] ?: [UIFont systemFontOfSize:9.5f];
-    _udpLogView.textContainerInset = UIEdgeInsetsMake(8, 8, 8, 8);
-    [page addSubview:_udpLogView];
+    _redirectedFilesView = [[UITextView alloc] initWithFrame:CGRectMake(4, redirectedTop + headerH, frame.size.width - 8, redirectedH)];
+    _redirectedFilesView.backgroundColor = COLOR_CARD_BG;
+    _redirectedFilesView.layer.cornerRadius = 10.0f;
+    _redirectedFilesView.layer.borderWidth = 1.0f;
+    _redirectedFilesView.layer.borderColor = COLOR_CARD_BORDER.CGColor;
+    _redirectedFilesView.editable = NO;
+    _redirectedFilesView.selectable = YES;
+    _redirectedFilesView.scrollEnabled = YES;
+    _redirectedFilesView.textColor = COLOR_TEXT;
+    _redirectedFilesView.font = [UIFont fontWithName:@"Menlo" size:9.5f] ?: [UIFont systemFontOfSize:9.5f];
+    _redirectedFilesView.textContainerInset = UIEdgeInsetsMake(8, 8, 8, 8);
+    [page addSubview:_redirectedFilesView];
 
     return page;
 }
@@ -1036,8 +1107,8 @@ static NSTimer *deltaDebugLogTimer;
 - (void)refreshDeltaLog {
     if (!_deltaLogView) return;
 
-    if (_udpLogView) {
-        _udpLogView.text = [NSString stringWithFormat:@"(%u dòng) port 10000-10020\n%@", NetLog_udpCount(), NetLog_udpSnapshot()];
+    if (_redirectedFilesView) {
+        _redirectedFilesView.text = DeltaVFS_hitPathsSnapshot(40);
     }
 
     if (_extractLogView) {
@@ -1093,9 +1164,6 @@ static NSTimer *deltaDebugLogTimer;
     const char *dnsHostC = DNSBlock_lastHost();
     NSString *dnsHost = (dnsHostC && dnsHostC[0]) ? [NSString stringWithUTF8String:dnsHostC] : @"—";
 
-    // Log mạng thụ động: game gửi request gì lên server (DNS/TCP/UDP/HTTP, mới nhất ở trên)
-    NSString *netLog = NetLog_snapshot();
-
     // Chữ ký: Delta.zip / folder Delta có được ký vào app không (đọc CodeResources)
     NSString *signInfo = DeltaVFS_signatureSummary();
 
@@ -1118,15 +1186,12 @@ static NSTimer *deltaDebugLogTimer;
          "%@\n\n"
          "── CHẶN DNS ──\n"
          "Đã chặn: %llu request\n"
-         "Host chặn gần nhất:\n%@\n\n"
-         "── NET LOG (%u dòng, không gồm UDP - xem khung UDP LOG) ──\n"
-         "%@",
+         "Host chặn gần nhất:\n%@",
         verdict, hookLine, extractLine, dir,
         totalCalls, bundleCalls, hits, misses, pct, anyPath, last,
         DeltaVFS_abHotUpdatesHits(), DeltaVFS_abHotUpdatesMisses(),
         signInfo,
-        dnsBlocked, dnsHost,
-        NetLog_count(), netLog];
+        dnsBlocked, dnsHost];
 
     _deltaLogView.text = text;
 }
