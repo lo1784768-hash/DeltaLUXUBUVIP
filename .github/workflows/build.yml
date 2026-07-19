@@ -24,6 +24,31 @@ jobs:
         run: |
           brew install ldid
 
+      - name: Generate MIG exception server stubs (mach_exc)
+        run: |
+          # /usr/include có thể không tồn tại trên macOS bản mới (chỉ có header qua SDK) - thử
+          # SDK macOS đang active trước (xcrun), rồi mới quét rộng trong Xcode.app làm phương án
+          # dự phòng (Xcode.app luôn có bản copy header của mọi SDK bên trong, dù /usr/include có
+          # được cài đặt hay không).
+          SDK_PATH=$(xcrun --sdk macosx --show-sdk-path 2>/dev/null)
+          MACH_EXC_DEFS="$SDK_PATH/usr/include/mach/mach_exc.defs"
+          if [ ! -f "$MACH_EXC_DEFS" ]; then
+            MACH_EXC_DEFS=$(find /usr/include/mach /Applications/Xcode*.app -name "mach_exc.defs" 2>/dev/null | head -1)
+          fi
+          if [ -z "$MACH_EXC_DEFS" ] || [ ! -f "$MACH_EXC_DEFS" ]; then
+            echo "mach_exc.defs not found on this runner!" >&2
+            exit 1
+          fi
+          echo "Using defs file: $MACH_EXC_DEFS"
+          mkdir -p Source/Generated
+          mig -header Source/Generated/mach_exc.h \
+              -user Source/Generated/mach_excUser.c \
+              -server Source/Generated/mach_excServer.c \
+              -sheader Source/Generated/mach_exc_server.h \
+              "$MACH_EXC_DEFS"
+          echo "Generated files:"
+          ls -la Source/Generated
+
       - name: Build with Theos
         run: |
           make clean

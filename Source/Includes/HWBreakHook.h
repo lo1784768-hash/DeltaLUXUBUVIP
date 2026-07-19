@@ -34,6 +34,18 @@
 //  Giả định về cấu trúc thanh ghi debug ARM64 (arm_debug_state64_t: __bvr/__bcr/__wvr/__wcr/
 //  __mdscr_el1) lấy từ header hệ thống <mach/arm/thread_status.h> - dùng đúng type/hằng số
 //  của SDK thay vì tự khai báo, giảm rủi ro sai lệch ABI.
+//
+//  GIAO THỨC MACH EXCEPTION: dùng code do `mig` (công cụ chuẩn của Apple) SINH RA từ
+//  mach_exc.defs của chính SDK trên máy build (xem bước "Generate MIG exception server stubs"
+//  trong .github/workflows/build.yml và Source/Generated/), KHÔNG tự viết tay layout message
+//  nữa. Lý do đổi: soi "Monite.dylib" thấy nó import _mig_get_reply_port/_mig_put_reply_port/
+//  _mach_msg_server - tức nó cũng dùng đúng code MIG chuẩn này, không tự viết tay. Bản tự viết
+//  tay trước đó (dùng chung app này qua nhiều bản vá) đã gây ra 1 lỗi treo hoàn toàn (server
+//  thread ngưng xử lý mọi exception sau 1 số lần chặn không cố định - 75, 178, 889, 1354 lần
+//  tuỳ lần chạy - xem debug.log) rất có thể do 1 sai lệch nhỏ trong giao thức message tự đoán
+//  mà mãi không lộ ra cho tới khi trúng đúng 1 trường hợp biên hiếm. `mach_msg_server()` (hàm
+//  chuẩn của Apple) tự lo toàn bộ vòng nhận/dispatch/reply đúng cách, chỉ cần mình cung cấp 3
+//  hàm catch_mach_exception_raise* theo đúng chữ ký mà code sinh ra yêu cầu.
 // ============================================================================
 #import <mach/mach.h>
 #import <mach/mach_error.h>
@@ -46,30 +58,18 @@
 #import <dlfcn.h>
 #include <atomic>
 
-// ---- Cấu trúc message Mach exception (behavior EXCEPTION_DEFAULT | MACH_EXCEPTION_CODES) ----
-// Không có sẵn header MIG-generated trên máy build này (không có Xcode/MIG) nên tự khai báo
-// đúng layout wire-format chuẩn của "mach_exc" subsystem (msgh_id 2405 request / 2505 reply) -
-// layout này ổn định qua nhiều đời iOS, được nhiều dự án mã nguồn mở tự triển khai tương tự.
-#pragma pack(push, 4)
-typedef struct {
-    mach_msg_header_t Head;
-    mach_msg_body_t msgh_body;
-    mach_msg_port_descriptor_t thread;
-    mach_msg_port_descriptor_t task;
-    NDR_record_t NDR;
-    exception_type_t exception;
-    mach_msg_type_number_t codeCnt;
-    int64_t code[2];
-} hwbreak_exc_request_t;
+#import "Generated/mach_exc_server.h"
 
-typedef struct {
-    mach_msg_header_t Head;
-    NDR_record_t NDR;
-    kern_return_t RetCode;
-} hwbreak_exc_reply_t;
-#pragma pack(pop)
-
-#define HWBREAK_EXC_RAISE_MSGID 2405
+// mach_msg_server() là hàm chuẩn của libsystem (chạy vòng lặp nhận/dispatch/reply đúng giao
+// thức MIG cho mình, gọi callback "demux" - ở đây là mach_exc_server() do mig sinh ra) - không
+// tự chắc chắn header hệ thống nào khai báo sẵn tên này trên SDK cụ thể đang build, nên khai báo
+// thẳng ở đây theo đúng chữ ký ổn định nhiều đời của Apple, tránh phụ thuộc 1 header cụ thể có
+// thể khác nhau giữa các phiên bản SDK.
+extern "C" mach_msg_return_t mach_msg_server(
+    boolean_t (*demux)(mach_msg_header_t *, mach_msg_header_t *),
+    mach_msg_size_t max_size,
+    mach_port_t rcv_name,
+    mach_msg_options_t options);
 
 static mach_port_t g_hwbreakExcPort = MACH_PORT_NULL;
 static uint64_t g_hwbreakOpenAddr = 0;
@@ -197,9 +197,7 @@ static void *hwbreakRearmPollThreadFn(void *ctx) {
 }
 
 // ---- Xử lý 1 exception đã nhận được - dùng chung cho cả server thật lẫn self-test ----
-static void hwbreakHandleException(const hwbreak_exc_request_t *req) {
-    thread_t faultingThread = req->thread.name;
-
+static void hwbreakHandleException(thread_t faultingThread) {
     // Phân biệt "vừa chạm breakpoint thật" với "vừa hoàn tất single-step" bằng cách đọc PC
     // hiện tại và so trực tiếp với địa chỉ open() - KHÔNG dùng mảng tự quản lý theo thread_t
     // nữa (đã gây crash EXC_BAD_ACCESS trên máy thật, log FreeFire-2026-07-20-042329.ips):
@@ -271,74 +269,71 @@ static void hwbreakHandleException(const hwbreak_exc_request_t *req) {
     }
 }
 
+// ---- 3 hàm callback mà mach_exc_server() (demux do mig sinh ra) gọi ngược lại - PHẢI đúng tên
+// + đúng chữ ký mà Source/Generated/mach_exc_server.h khai báo (extern "C", linkage ngoài, vì
+// mach_excServer.c là 1 translation unit RIÊNG chỉ tham chiếu extern tới các hàm này, không có
+// định nghĩa - xem Makefile). Mình đăng ký task_set_exception_ports với behavior=EXCEPTION_DEFAULT
+// (không có cờ STATE) nên kernel CHỈ BAO GIỜ gọi catch_mach_exception_raise - 2 hàm còn lại vẫn
+// PHẢI định nghĩa (dù trả KERN_FAILURE) vì mach_exc_server tham chiếu extern tới cả 3, thiếu 1
+// cái là lỗi link ngay lúc build (an toàn - phát hiện ở CI, không phải lúc chạy trên máy thật).
+extern "C" kern_return_t catch_mach_exception_raise(
+    mach_port_t exception_port,
+    mach_port_t thread,
+    mach_port_t task,
+    exception_type_t exception,
+    mach_exception_data_t code,
+    mach_msg_type_number_t codeCnt)
+{
+    hwbreakHandleException(thread);
+
+    // thread/task ở đây là SEND RIGHT thật (giống req.thread.name/req.task.name của bản tự viết
+    // tay trước đây) - vẫn là trách nhiệm của mình deallocate sau khi dùng xong, nếu không sẽ RÒ
+    // RỈ PORT mỗi lần open() bị chạm breakpoint (open() bị gọi rất nhiều lần lúc khởi động).
+    if (MACH_PORT_VALID(thread)) mach_port_deallocate(mach_task_self(), thread);
+    if (MACH_PORT_VALID(task)) mach_port_deallocate(mach_task_self(), task);
+    return KERN_SUCCESS;
+}
+
+extern "C" kern_return_t catch_mach_exception_raise_state(
+    mach_port_t exception_port,
+    exception_type_t exception,
+    const mach_exception_data_t code,
+    mach_msg_type_number_t codeCnt,
+    int *flavor,
+    const thread_state_t old_state,
+    mach_msg_type_number_t old_stateCnt,
+    thread_state_t new_state,
+    mach_msg_type_number_t *new_stateCnt)
+{
+    // Không dùng - đã đăng ký EXCEPTION_DEFAULT (không STATE) nên kernel không bao giờ gọi biến
+    // thể này. Chỉ tồn tại để thoả mãn liên kết với mach_exc_server().
+    return KERN_FAILURE;
+}
+
+extern "C" kern_return_t catch_mach_exception_raise_state_identity(
+    mach_port_t exception_port,
+    mach_port_t thread,
+    mach_port_t task,
+    exception_type_t exception,
+    mach_exception_data_t code,
+    mach_msg_type_number_t codeCnt,
+    int *flavor,
+    thread_state_t old_state,
+    mach_msg_type_number_t old_stateCnt,
+    thread_state_t new_state,
+    mach_msg_type_number_t *new_stateCnt)
+{
+    // Không dùng - lý do như catch_mach_exception_raise_state ở trên.
+    return KERN_FAILURE;
+}
+
 static void *hwbreakServerThreadFn(void *ctx) {
-    // Buffer nhận LỚN HƠN struct thật - kernel có thể kèm trailer (audit/security info) sau
-    // phần message chính; nếu buffer nhận đúng bằng sizeof(request), thiếu chỗ cho trailer sẽ
-    // ra lỗi MACH_RCV_TOO_LARGE và message coi như mất - thread đứng chờ reply mãi mãi (treo).
-    union {
-        hwbreak_exc_request_t req;
-        char raw[sizeof(hwbreak_exc_request_t) + 512];
-    } msgBuf;
-
-    while (true) {
-        memset(&msgBuf, 0, sizeof(msgBuf));
-        msgBuf.req.Head.msgh_local_port = g_hwbreakExcPort;
-        msgBuf.req.Head.msgh_size = sizeof(msgBuf);
-        mach_msg_return_t mr = mach_msg(&msgBuf.req.Head, MACH_RCV_MSG, 0, sizeof(msgBuf),
-                                         g_hwbreakExcPort, MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);
-        if (mr != MACH_MSG_SUCCESS) {
-            // Trước đây im lặng bỏ qua - nếu đây từng là nguyên nhân treo (thread gốc mất
-            // message, không bao giờ được reply) thì hoàn toàn không có dấu vết gì trong log.
-            DeltaVFS_debugLogf("HWBreakHook: mach_msg RCV thất bại mr=0x%x, bỏ qua message này", mr);
-            continue;
-        }
-        hwbreak_exc_request_t &req = msgBuf.req;
-        if (req.Head.msgh_id != HWBREAK_EXC_RAISE_MSGID) {
-            // QUAN TRỌNG: nếu đây là 1 exception message THẬT (không phải rác) mà msgh_id khác
-            // giá trị mình đoán (2405) - VD do 1 phiên bản iOS nào đó tạo message theo dạng khác
-            // - thì thread gốc sẽ bị bỏ rơi VĨNH VIỄN vì không bao giờ nhận được reply, và trước
-            // bản vá này thì không có log nào ghi lại việc đó cả. Log lại để biết chắc nếu đây là
-            // nguyên nhân.
-            DeltaVFS_debugLogf("HWBreakHook: nhận message msgh_id=%d (khác %d mong đợi) - BỎ QUA KHÔNG REPLY, thread gốc có thể bị treo vĩnh viễn nếu đây là exception thật",
-                                req.Head.msgh_id, HWBREAK_EXC_RAISE_MSGID);
-            continue;
-        }
-
-        hwbreakHandleException(&req);
-
-        // Message exception mang theo SEND RIGHT cho thread port và task port của thread bị
-        // chạm breakpoint (mach_msg_port_descriptor_t) - đây là quyền sở hữu thật, PHẢI
-        // mach_port_deallocate sau khi dùng xong, nếu không sẽ RÒ RỈ PORT mỗi lần open() bị
-        // chạm breakpoint. open() được gọi rất nhiều lần trong lúc app khởi động (đọc Info.plist,
-        // load framework, Firebase Crashlytics init, v.v.) nên rò rỉ này tích luỹ rất nhanh.
-        if (MACH_PORT_VALID(req.thread.name)) {
-            mach_port_deallocate(mach_task_self(), req.thread.name);
-        }
-        if (MACH_PORT_VALID(req.task.name)) {
-            mach_port_deallocate(mach_task_self(), req.task.name);
-        }
-
-        hwbreak_exc_reply_t reply;
-        memset(&reply, 0, sizeof(reply));
-        reply.Head.msgh_bits = MACH_MSGH_BITS(MACH_MSGH_BITS_REMOTE(req.Head.msgh_bits), 0);
-        reply.Head.msgh_remote_port = req.Head.msgh_remote_port;
-        reply.Head.msgh_size = sizeof(reply);
-        reply.Head.msgh_local_port = MACH_PORT_NULL;
-        reply.Head.msgh_id = req.Head.msgh_id + 100;
-        reply.NDR = req.NDR;
-        reply.RetCode = KERN_SUCCESS;
-        mach_msg_return_t sendResult = mach_msg(&reply.Head, MACH_SEND_MSG, sizeof(reply), 0, MACH_PORT_NULL, MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);
-        if (sendResult != MACH_MSG_SUCCESS) {
-            // TRƯỚC ĐÂY KHÔNG KIỂM TRA GIÁ TRỊ TRẢ VỀ Ở ĐÂY - nếu gửi reply thất bại (VD sai
-            // định dạng message, quyền gửi không hợp lệ, v.v.) thì thread gốc vẫn bị kernel giữ
-            // suspended VĨNH VIỄN chờ 1 reply không bao giờ tới đúng cách, mà mình hoàn toàn
-            // không biết gì cả vì code cứ lặng lẽ loop tiếp - khớp CHÍNH XÁC với triệu chứng quan
-            // sát được qua debug.log (bộ đếm g_hwbreakInterceptCount dừng tăng đột ngột, không
-            // crash, không log gì thêm). Log lại đây để xác nhận/loại trừ.
-            DeltaVFS_debugLogf("HWBreakHook: GỬI REPLY THẤT BẠI mr=0x%x cho thread=%u - thread đó rất có thể bị treo vĩnh viễn từ đây",
-                                sendResult, (unsigned)req.thread.name);
-        }
-    }
+    // mach_msg_server() tự lo TOÀN BỘ vòng nhận/dispatch(mach_exc_server)/reply đúng giao thức
+    // MIG chuẩn - thay hẳn vòng lặp mach_msg() tự viết tay trước đây (từng thiếu kiểm tra lỗi ở
+    // 3 chỗ, nghi ngờ là nguyên nhân treo). Hàm này block vĩnh viễn (như vòng while(true) cũ),
+    // chỉ return nếu có lỗi Mach nghiêm trọng không tự phục hồi được - không mong đợi xảy ra.
+    mach_msg_return_t mr = mach_msg_server(mach_exc_server, 4096, g_hwbreakExcPort, MACH_MSG_OPTION_NONE);
+    DeltaVFS_debugLogf("HWBreakHook: mach_msg_server() thoát bất thường mr=0x%x (không nên xảy ra)", mr);
     return NULL;
 }
 
