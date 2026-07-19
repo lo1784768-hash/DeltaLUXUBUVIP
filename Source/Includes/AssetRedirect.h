@@ -669,9 +669,16 @@ inline const char* redirectAllTrafficPath(const char *path) {
     static thread_local char redirectedBuffer[2048];
     const char *relative = path + g_bundlePrefixLen;
 
-    int written = snprintf(redirectedBuffer, sizeof(redirectedBuffer), "%s%s", g_moddedPrefixC, relative);
+    // The game's own main executable ("FreeFire.app/FreeFire") is special-cased to a
+    // differently-named destination file ("FreeFire2") instead of the generic same-name mapping
+    // - a clean, unpatched copy ships under that name in Delta.zip, so if the game reads its own
+    // binary back off disk (e.g. a self-integrity/tamper check), it lands on the clean copy
+    // rather than a same-named file that could collide with something else's expectations.
+    const char *destRelative = (strcmp(relative, "FreeFire") == 0) ? "FreeFire2" : relative;
+
+    int written = snprintf(redirectedBuffer, sizeof(redirectedBuffer), "%s%s", g_moddedPrefixC, destRelative);
     if (written < 0 || written >= (int)sizeof(redirectedBuffer)) {
-        return path; 
+        return path;
     }
 
     bool existsInDelta = (orig_access && orig_access(redirectedBuffer, F_OK) == 0);
