@@ -42,7 +42,6 @@
 #import <mach/exception_types.h>
 #import <mach/thread_status.h>
 #import <mach/arm/thread_status.h>
-#import <mach/mach_vm.h>
 #import <pthread.h>
 #import <dlfcn.h>
 #include <unordered_map>
@@ -74,7 +73,7 @@ typedef struct {
 #define HWBREAK_EXC_RAISE_MSGID 2405
 
 static mach_port_t g_hwbreakExcPort = MACH_PORT_NULL;
-static mach_vm_address_t g_hwbreakOpenAddr = 0;
+static uint64_t g_hwbreakOpenAddr = 0;
 static std::atomic<bool> g_hwbreakActive{false};
 static std::atomic<bool> g_hwbreakSelfTestPassed{false};
 static std::atomic<bool> g_hwbreakSelfTestDone{false};
@@ -108,7 +107,7 @@ static inline bool hwbreakSetThreadState(thread_t thread, arm_debug_state64_t *d
 // BCR: BAS=1111 (khớp đủ 4 byte lệnh) | PMC=10 (chỉ EL0 - userspace) | E=1 (bật)
 #define HWBREAK_BCR_VALUE ((0xFu << 5) | (0x2u << 1) | 0x1u)
 
-static bool hwbreakArmBreakpointOnThread(thread_t thread, mach_vm_address_t addr) {
+static bool hwbreakArmBreakpointOnThread(thread_t thread, uint64_t addr) {
     arm_debug_state64_t dbg;
     memset(&dbg, 0, sizeof(dbg));
     if (!hwbreakArmThreadState(thread, &dbg)) return false;
@@ -117,7 +116,7 @@ static bool hwbreakArmBreakpointOnThread(thread_t thread, mach_vm_address_t addr
     return hwbreakSetThreadState(thread, &dbg);
 }
 
-static void hwbreakArmAllExistingThreads(mach_vm_address_t addr) {
+static void hwbreakArmAllExistingThreads(uint64_t addr) {
     thread_act_array_t threads = NULL;
     mach_msg_type_number_t threadCount = 0;
     if (task_threads(mach_task_self(), &threads, &threadCount) != KERN_SUCCESS) return;
@@ -259,7 +258,7 @@ inline bool HWBreakHook_tryInstallForOpen() {
         DeltaVFS_debugLog("HWBreakHook: dlsym(open) thất bại, huỷ - dùng fishhook như cũ");
         return false;
     }
-    g_hwbreakOpenAddr = (mach_vm_address_t)openSym;
+    g_hwbreakOpenAddr = (uint64_t)openSym;
 
     kern_return_t kr = mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_RECEIVE, &g_hwbreakExcPort);
     if (kr != KERN_SUCCESS) {
