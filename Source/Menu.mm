@@ -145,6 +145,7 @@ static NSString *LOC(NSString *key) {
 // Info tab
 @property (nonatomic, strong) UILabel *statusLabel;
 @property (nonatomic, strong) UITextView *deltaLogView;
+@property (nonatomic, strong) UITextView *extractLogView;
 @property (nonatomic, strong) UITextView *udpLogView;
 
 // Spy tab (dõi dylib B - gọi hàm nào, sửa bộ nhớ đâu, xem DylibSpy.h)
@@ -284,8 +285,8 @@ static NSTimer *deltaDebugLogTimer;
     _modNames = @[@"AK LV7", @"XM8 LV7", @"UMP LV7", @"AN94 LV7", @"MP40 LV7", @"MP40 LV8", @"M1014 LV8", @"M1887 LV7"];
     _modHexes = @[@"909000063", @"909000085", @"909000098", @"909035012", @"909000075", @"909040010", @"909039011", @"909035007"];
 
-    CGFloat menuWidth = 400;
-    CGFloat menuHeight = 250;
+    CGFloat menuWidth = 460;
+    CGFloat menuHeight = 340;
     CGFloat sidebarWidth = 72;
     CGFloat x = (kWidth - menuWidth) * 0.5f;
     CGFloat y = (kHeight - menuHeight) * 0.5f;
@@ -943,14 +944,15 @@ static NSTimer *deltaDebugLogTimer;
     logHeader.text = @"DELTA VFS";
     [page addSubview:logHeader];
 
-    // Chia phần còn lại của trang làm 2: log chính (DELTA VFS/DNS/HTTP...) ở trên, log UDP
-    // riêng ở dưới - UDP (đặc biệt UDP-PEEK ở dải cổng 10000-10020) bắn dày hơn hẳn các tầng
-    // khác nên tách hẳn ring buffer + khung hiển thị, khỏi lấn chỗ các dòng *-BLK hiếm hơn.
+    // Chia phần còn lại của trang làm 3 khung riêng: DELTA VFS (thống kê hit/miss), EXTRACT LOG
+    // (log constructor + first-run popup, tách riêng để dễ chụp/đọc thay vì lẫn trong khung
+    // DELTA VFS như trước), và UDP LOG (bắn dày hơn hẳn các tầng khác nên luôn tách riêng).
     CGFloat logsTop = 96;
     CGFloat logsAvail = frame.size.height - logsTop - 4;
-    CGFloat mainLogH = logsAvail * 0.55f;
-    CGFloat udpHeaderH = 14;
-    CGFloat udpLogH = logsAvail - mainLogH - udpHeaderH - 4;
+    CGFloat headerH = 14;
+    CGFloat mainLogH = logsAvail * 0.38f;
+    CGFloat extractLogH = logsAvail * 0.32f;
+    CGFloat udpLogH = logsAvail - mainLogH - extractLogH - headerH * 2 - 8;
 
     _deltaLogView = [[UITextView alloc] initWithFrame:CGRectMake(4, logsTop, frame.size.width - 8, mainLogH)];
     _deltaLogView.backgroundColor = COLOR_CARD_BG;
@@ -958,26 +960,47 @@ static NSTimer *deltaDebugLogTimer;
     _deltaLogView.layer.borderWidth = 1.0f;
     _deltaLogView.layer.borderColor = COLOR_CARD_BORDER.CGColor;
     _deltaLogView.editable = NO;
-    _deltaLogView.selectable = NO;
+    _deltaLogView.selectable = YES; // cho phép nhấn giữ -> Select All -> Copy
     _deltaLogView.scrollEnabled = YES;
     _deltaLogView.textColor = COLOR_TEXT;
     _deltaLogView.font = [UIFont fontWithName:@"Menlo" size:9.5f] ?: [UIFont systemFontOfSize:9.5f];
     _deltaLogView.textContainerInset = UIEdgeInsetsMake(8, 8, 8, 8);
     [page addSubview:_deltaLogView];
 
-    UILabel *udpLogHeader = [[UILabel alloc] initWithFrame:CGRectMake(6, logsTop + mainLogH + 4, frame.size.width - 12, udpHeaderH)];
+    CGFloat extractLogTop = logsTop + mainLogH + 4;
+    UILabel *extractLogHeader = [[UILabel alloc] initWithFrame:CGRectMake(6, extractLogTop, frame.size.width - 12, headerH)];
+    extractLogHeader.font = [UIFont systemFontOfSize:10 weight:UIFontWeightHeavy];
+    extractLogHeader.textColor = COLOR_CYAN;
+    extractLogHeader.text = @"EXTRACT LOG";
+    [page addSubview:extractLogHeader];
+
+    _extractLogView = [[UITextView alloc] initWithFrame:CGRectMake(4, extractLogTop + headerH, frame.size.width - 8, extractLogH)];
+    _extractLogView.backgroundColor = COLOR_CARD_BG;
+    _extractLogView.layer.cornerRadius = 10.0f;
+    _extractLogView.layer.borderWidth = 1.0f;
+    _extractLogView.layer.borderColor = COLOR_CARD_BORDER.CGColor;
+    _extractLogView.editable = NO;
+    _extractLogView.selectable = YES; // cho phép nhấn giữ -> Select All -> Copy
+    _extractLogView.scrollEnabled = YES;
+    _extractLogView.textColor = COLOR_TEXT;
+    _extractLogView.font = [UIFont fontWithName:@"Menlo" size:9.5f] ?: [UIFont systemFontOfSize:9.5f];
+    _extractLogView.textContainerInset = UIEdgeInsetsMake(8, 8, 8, 8);
+    [page addSubview:_extractLogView];
+
+    CGFloat udpTop = extractLogTop + headerH + extractLogH + 4;
+    UILabel *udpLogHeader = [[UILabel alloc] initWithFrame:CGRectMake(6, udpTop, frame.size.width - 12, headerH)];
     udpLogHeader.font = [UIFont systemFontOfSize:10 weight:UIFontWeightHeavy];
     udpLogHeader.textColor = COLOR_PURPLE;
     udpLogHeader.text = @"UDP LOG";
     [page addSubview:udpLogHeader];
 
-    _udpLogView = [[UITextView alloc] initWithFrame:CGRectMake(4, logsTop + mainLogH + udpHeaderH + 4, frame.size.width - 8, udpLogH)];
+    _udpLogView = [[UITextView alloc] initWithFrame:CGRectMake(4, udpTop + headerH, frame.size.width - 8, udpLogH)];
     _udpLogView.backgroundColor = COLOR_CARD_BG;
     _udpLogView.layer.cornerRadius = 10.0f;
     _udpLogView.layer.borderWidth = 1.0f;
     _udpLogView.layer.borderColor = COLOR_CARD_BORDER.CGColor;
     _udpLogView.editable = NO;
-    _udpLogView.selectable = NO;
+    _udpLogView.selectable = YES;
     _udpLogView.scrollEnabled = YES;
     _udpLogView.textColor = COLOR_TEXT;
     _udpLogView.font = [UIFont fontWithName:@"Menlo" size:9.5f] ?: [UIFont systemFontOfSize:9.5f];
@@ -993,6 +1016,12 @@ static NSTimer *deltaDebugLogTimer;
 
     if (_udpLogView) {
         _udpLogView.text = [NSString stringWithFormat:@"(%u dòng) port 10000-10020\n%@", NetLog_udpCount(), NetLog_udpSnapshot()];
+    }
+
+    if (_extractLogView) {
+        _extractLogView.text = [NSString stringWithFormat:
+            @"File (cần Mac+Xcode \"Download Container\" hoặc Filza, KHÔNG bắt buộc):\n%@\n\n%@",
+            DeltaVFS_debugLogPath(), DeltaVFS_debugLogSnapshot(30)];
     }
 
     unsigned long long hits = DeltaVFS_hits();
@@ -1065,9 +1094,6 @@ static NSTimer *deltaDebugLogTimer;
          "Miss (đọc bản gốc - bình thường, Delta chỉ chứa vài icon custom): %llu\n\n"
          "── CHỮ KÝ DELTA ──\n"
          "%@\n\n"
-         "── EXTRACT LOG (constructor + first-run popup, 20 dòng gần nhất) ──\n"
-         "File (cần Mac+Xcode\"Download Container\" hoặc Filza, KHÔNG bắt buộc):\n%@\n"
-         "%@\n"
          "── CHẶN DNS ──\n"
          "Đã chặn: %llu request\n"
          "Host chặn gần nhất:\n%@\n\n"
@@ -1077,7 +1103,6 @@ static NSTimer *deltaDebugLogTimer;
         totalCalls, bundleCalls, hits, misses, pct, anyPath, last,
         DeltaVFS_abHotUpdatesHits(), DeltaVFS_abHotUpdatesMisses(),
         signInfo,
-        DeltaVFS_debugLogPath(), DeltaVFS_debugLogSnapshot(20),
         dnsBlocked, dnsHost,
         NetLog_count(), netLog];
 
