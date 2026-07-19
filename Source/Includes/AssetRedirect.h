@@ -1,5 +1,6 @@
 #pragma once
 #import <Foundation/Foundation.h>
+#import <CoreFoundation/CoreFoundation.h>
 #import <fcntl.h>
 #import <stdarg.h>
 #import <stdio.h>
@@ -719,6 +720,26 @@ inline int hooked_open(const char *path, int oflag, ...) {
     return orig_open(redirected, oflag, mode);
 }
 
+// openat() is a separate libc entry point from open() (dirfd + possibly-relative path) - some
+// libraries/newer code use it instead of open() for the exact same effect, and it was NOT being
+// hooked at all, so a bundle-relative path opened this way slipped straight through to the real
+// file. Only redirect when path is absolute (POSIX: openat() ignores dirfd for absolute paths,
+// same as open() - our redirect logic only ever matches absolute bundle paths anyway); for a
+// relative path we'd need to resolve dirfd's own path first (fcntl F_GETPATH) to know what it's
+// relative to, which isn't worth the complexity/risk for paths we don't expect to care about.
+static int (*orig_openat)(int, const char *, int, ...);
+inline int hooked_openat(int dirfd, const char *path, int oflag, ...) {
+    mode_t mode = 0;
+    if (oflag & O_CREAT) {
+        va_list args;
+        va_start(args, oflag);
+        mode = (mode_t)va_arg(args, int);
+        va_end(args);
+    }
+    const char *redirected = (path && path[0] == '/') ? redirectAllTrafficPath(path) : path;
+    return orig_openat(dirfd, redirected, oflag, mode);
+}
+
 static FILE *(*orig_fopen)(const char *, const char *);
 inline FILE *hooked_fopen(const char *filename, const char *mode) {
     const char *redirected = redirectAllTrafficPath(filename);
@@ -749,26 +770,30 @@ inline int hooked_lstat(const char *path, struct stat *buf) {
 typedef NSDictionary* (*ORIG_infoDictionary)(id, SEL);
 static ORIG_infoDictionary orig_nsbundle_infoDictionary = NULL;
 
+// Shared by the -[NSBundle infoDictionary] swizzle below AND the CFBundleGet...() C-API hooks
+// further down - CFBundleGetValueForInfoDictionaryKey/CFBundleGetInfoDictionary read Info.plist
+// through CoreFoundation's OWN internal bundle cache, a COMPLETELY SEPARATE path from the
+// Objective-C method we swizzle. Native/C++ code (common in Unity plugins) calling the CF API
+// directly would silently read the real, unmodified Info.plist otherwise - confirmed as a real
+// gap, not hypothetical, same class of bug as the openat() one above.
+inline NSDictionary *deltaFakeInfoPlistDictionary() {
+    static NSDictionary *fakeDict = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        // Dựng đường dẫn tuyệt đối tới file Info.plist sạch nằm trong g_moddedPrefixC (Delta/
+        // ở Documents/<hash> - KHÔNG còn nằm trong bundle nữa, xem ar_ensureFirstRunChecked).
+        NSString *deltaPlistPath = g_moddedPrefixLen > 0
+            ? [[NSString stringWithUTF8String:g_moddedPrefixC] stringByAppendingString:@"Info.plist"]
+            : nil;
+        fakeDict = [[NSDictionary alloc] initWithContentsOfFile:deltaPlistPath];
+    });
+    return fakeDict; // nil if Delta/Info.plist is missing/unreadable - callers fall back to orig
+}
+
 static NSDictionary* hooked_nsbundle_infoDictionary(id self, SEL _cmd) {
     if (self == [NSBundle mainBundle]) {
-        static NSDictionary *fakeDict = nil;
-        static dispatch_once_t onceToken;
-        dispatch_once(&onceToken, ^{
-            // Dựng đường dẫn tuyệt đối tới file Info.plist sạch nằm trong g_moddedPrefixC (Delta/
-            // ở Application Support - KHÔNG còn nằm trong bundle nữa, xem ar_ensureFirstRunChecked).
-            NSString *deltaPlistPath = g_moddedPrefixLen > 0
-                ? [[NSString stringWithUTF8String:g_moddedPrefixC] stringByAppendingString:@"Info.plist"]
-                : nil;
-
-            // Ép nạp cấu trúc XML/Binary Plist từ Delta/
-            fakeDict = [[NSDictionary alloc] initWithContentsOfFile:deltaPlistPath];
-            
-            // Nếu Delta không có Info.plist (hoặc file lỗi), fallback an toàn về dictionary gốc
-            if (!fakeDict) {
-                fakeDict = orig_nsbundle_infoDictionary(self, _cmd);
-            }
-        });
-        return fakeDict;
+        NSDictionary *fakeDict = deltaFakeInfoPlistDictionary();
+        return fakeDict ?: orig_nsbundle_infoDictionary(self, _cmd);
     }
     return orig_nsbundle_infoDictionary(self, _cmd);
 }
@@ -783,6 +808,30 @@ static id hooked_nsbundle_objectForInfoDictionaryKey(id self, SEL _cmd, NSString
         return [fakeDict objectForKey:key];
     }
     return orig_nsbundle_objectForKey(self, _cmd, key);
+}
+
+// ===== CFBundle C-API - separate entry points from the ObjC swizzle above, see comment on
+// deltaFakeInfoPlistDictionary(). Hooked via fishhook (like open/openat/etc), not method swizzling,
+// since these are plain C functions exported by CoreFoundation. =====
+typedef CFDictionaryRef (*ORIG_CFBundleGetInfoDictionary)(CFBundleRef);
+static ORIG_CFBundleGetInfoDictionary orig_CFBundleGetInfoDictionary = NULL;
+inline CFDictionaryRef hooked_CFBundleGetInfoDictionary(CFBundleRef bundle) {
+    if (bundle == CFBundleGetMainBundle()) {
+        NSDictionary *fakeDict = deltaFakeInfoPlistDictionary();
+        if (fakeDict) return (__bridge CFDictionaryRef)fakeDict;
+    }
+    return orig_CFBundleGetInfoDictionary(bundle);
+}
+
+typedef CFTypeRef (*ORIG_CFBundleGetValueForInfoDictionaryKey)(CFBundleRef, CFStringRef);
+static ORIG_CFBundleGetValueForInfoDictionaryKey orig_CFBundleGetValueForInfoDictionaryKey = NULL;
+inline CFTypeRef hooked_CFBundleGetValueForInfoDictionaryKey(CFBundleRef bundle, CFStringRef key) {
+    if (bundle == CFBundleGetMainBundle()) {
+        NSDictionary *fakeDict = deltaFakeInfoPlistDictionary();
+        id value = fakeDict ? [fakeDict objectForKey:(__bridge NSString *)key] : nil;
+        if (value) return (__bridge CFTypeRef)value;
+    }
+    return orig_CFBundleGetValueForInfoDictionaryKey(bundle, key);
 }
 
 static void initNSBundleMethodSwizzling() {
@@ -821,18 +870,24 @@ static void initDeltaAllTrafficVFS() {
 
     // 3. KÀI ĐẶT HOOK CẤP THẤP (VFS I/O via Fishhook)
     orig_open   = (int   (*)(const char *, int, ...))     dlsym((void *)RTLD_DEFAULT, "open");
+    orig_openat = (int   (*)(int, const char *, int, ...))dlsym((void *)RTLD_DEFAULT, "openat");
     orig_fopen  = (FILE *(*)(const char *, const char *)) dlsym((void *)RTLD_DEFAULT, "fopen");
     orig_access = (int   (*)(const char *, int))          dlsym((void *)RTLD_DEFAULT, "access");
     orig_stat   = (int   (*)(const char *, struct stat *))dlsym((void *)RTLD_DEFAULT, "stat");
     orig_lstat  = (int   (*)(const char *, struct stat *))dlsym((void *)RTLD_DEFAULT, "lstat");
+    orig_CFBundleGetInfoDictionary          = (ORIG_CFBundleGetInfoDictionary)dlsym((void *)RTLD_DEFAULT, "CFBundleGetInfoDictionary");
+    orig_CFBundleGetValueForInfoDictionaryKey = (ORIG_CFBundleGetValueForInfoDictionaryKey)dlsym((void *)RTLD_DEFAULT, "CFBundleGetValueForInfoDictionaryKey");
 
     struct rebinding rebindings[] = {
         {"open",   (void *)hooked_open,   (void **)&orig_open},
+        {"openat", (void *)hooked_openat, (void **)&orig_openat},
         {"fopen",  (void *)hooked_fopen,  (void **)&orig_fopen},
         {"access", (void *)hooked_access, (void **)&orig_access},
         {"stat",   (void *)hooked_stat,   (void **)&orig_stat},
         {"lstat",  (void *)hooked_lstat,  (void **)&orig_lstat},
+        {"CFBundleGetInfoDictionary",           (void *)hooked_CFBundleGetInfoDictionary,           (void **)&orig_CFBundleGetInfoDictionary},
+        {"CFBundleGetValueForInfoDictionaryKey", (void *)hooked_CFBundleGetValueForInfoDictionaryKey, (void **)&orig_CFBundleGetValueForInfoDictionaryKey},
     };
     int rebindRet = rebind_symbols(rebindings, sizeof(rebindings) / sizeof(rebindings[0]));
-    g_deltaHooksOK.store(rebindRet == 0 ? 0x1F : 0, std::memory_order_relaxed);
+    g_deltaHooksOK.store(rebindRet == 0 ? 0x3F : 0, std::memory_order_relaxed);
 }
