@@ -15,6 +15,7 @@
 #import "Includes/ModHacks.h"
 #import "Includes/DNSBlock.h"
 #import "Includes/AssetRedirect.h"
+#import "Includes/DylibSpy.h"
 
 #define kWidth  [UIScreen mainScreen].bounds.size.width
 #define kHeight [UIScreen mainScreen].bounds.size.height
@@ -74,6 +75,7 @@ static NSDictionary<NSString *, NSArray<NSString *> *> *LocStrings() {
             @"activated": @[@"Đã kích hoạt", @"Activated"],
             @"select_base_action": @[@"CHỌN HÀNH ĐỘNG GỐC", @"SELECT BASE ACTION"],
             @"select_mod_action": @[@"CHỌN HÀNH ĐỘNG MOD", @"SELECT MOD ACTION"],
+            @"spy_mem_watch": @[@"Giám Sát Bộ Nhớ (Dylib B)", @"Memory Watch (Dylib B)"],
             @"back": @[@"Trở Về", @"Back"],
             @"on": @[@"BẬT", @"ON"],
             @"off": @[@"TẮT", @"OFF"],
@@ -143,6 +145,11 @@ static NSString *LOC(NSString *key) {
 @property (nonatomic, strong) UILabel *statusLabel;
 @property (nonatomic, strong) UITextView *deltaLogView;
 @property (nonatomic, strong) UITextView *udpLogView;
+
+// Spy tab (dõi dylib B - gọi hàm nào, sửa bộ nhớ đâu, xem DylibSpy.h)
+@property (nonatomic, strong) UISwitch *spyMemWatchSwitch;
+@property (nonatomic, strong) UITextView *spyCallLogView;
+@property (nonatomic, strong) UITextView *spyMemLogView;
 
 // Localization
 @property (nonatomic, strong) NSMutableArray<dispatch_block_t> *localizationRefreshers;
@@ -228,15 +235,18 @@ game_sdk_t *game_sdk = new game_sdk_t();
     UIView *espPage = [self buildESPPageInFrame:contentFrame];
     UIView *modPage = [self buildModPageInFrame:contentFrame];
     UIView *infoPage = [self buildInfoPageInFrame:contentFrame];
+    UIView *spyPage = [self buildSpyPageInFrame:contentFrame];
 
     modPage.hidden = YES;
     infoPage.hidden = YES;
+    spyPage.hidden = YES;
 
     [_menuView addSubview:espPage];
     [_menuView addSubview:modPage];
     [_menuView addSubview:infoPage];
+    [_menuView addSubview:spyPage];
 
-    _tabPages = @[espPage, modPage, infoPage];
+    _tabPages = @[espPage, modPage, infoPage, spyPage];
 }
 
 - (void)installAnimatedBorder {
@@ -298,8 +308,8 @@ game_sdk_t *game_sdk = new game_sdk_t();
         [brandContainer addSubview:fallback];
     }
 
-    NSArray<NSString *> *titles = @[@"ESP", @"MOD", @"INFO"];
-    NSArray<NSString *> *symbols = @[@"scope", @"wrench.and.screwdriver.fill", @"info.circle.fill"];
+    NSArray<NSString *> *titles = @[@"ESP", @"MOD", @"INFO", @"SPY"];
+    NSArray<NSString *> *symbols = @[@"scope", @"wrench.and.screwdriver.fill", @"info.circle.fill", @"eye.trianglebadge.exclamationmark.fill"];
 
     CGFloat startY = 52;
     CGFloat itemH = 46, itemGap = 3;
@@ -987,6 +997,90 @@ game_sdk_t *game_sdk = new game_sdk_t();
     _deltaLogView.text = text;
 }
 
+#pragma mark - Spy tab page (dõi dylib B - xem DylibSpy.h)
+
+- (UIView *)buildSpyPageInFrame:(CGRect)frame {
+    UIView *page = [[UIView alloc] initWithFrame:frame];
+    CGFloat w = frame.size.width;
+
+    _spyMemWatchSwitch = [self addToggleCardWithLocKey:@"spy_mem_watch" symbol:@"waveform.path.ecg.rectangle" frame:CGRectMake(4, 0, w - 8, 34) action:@selector(toggleSpyMemWatch:) toView:page];
+
+    UILabel *callHeader = [[UILabel alloc] initWithFrame:CGRectMake(6, 42, w - 12, 12)];
+    callHeader.font = [UIFont systemFontOfSize:10 weight:UIFontWeightHeavy];
+    callHeader.textColor = COLOR_CYAN;
+    callHeader.text = @"CALL TRACE";
+    [page addSubview:callHeader];
+
+    // Chia phần còn lại làm 2: CALL TRACE (dlopen/dlsym/mmap/mprotect/vm_protect/
+    // vm_write mà dylib B gọi) ở trên, MEM DIFF (vùng __TEXT bị ghi đè) ở dưới -
+    // cùng cách chia INFO tab đang dùng cho DELTA VFS / UDP LOG.
+    CGFloat logsTop = 56;
+    CGFloat logsAvail = frame.size.height - logsTop - 4;
+    CGFloat callLogH = logsAvail * 0.6f;
+    CGFloat memHeaderH = 14;
+    CGFloat memLogH = logsAvail - callLogH - memHeaderH - 4;
+
+    _spyCallLogView = [[UITextView alloc] initWithFrame:CGRectMake(4, logsTop, w - 8, callLogH)];
+    _spyCallLogView.backgroundColor = COLOR_CARD_BG;
+    _spyCallLogView.layer.cornerRadius = 10.0f;
+    _spyCallLogView.layer.borderWidth = 1.0f;
+    _spyCallLogView.layer.borderColor = COLOR_CARD_BORDER.CGColor;
+    _spyCallLogView.editable = NO;
+    _spyCallLogView.selectable = NO;
+    _spyCallLogView.scrollEnabled = YES;
+    _spyCallLogView.textColor = COLOR_TEXT;
+    _spyCallLogView.font = [UIFont fontWithName:@"Menlo" size:9.5f] ?: [UIFont systemFontOfSize:9.5f];
+    _spyCallLogView.textContainerInset = UIEdgeInsetsMake(8, 8, 8, 8);
+    [page addSubview:_spyCallLogView];
+
+    UILabel *memHeader = [[UILabel alloc] initWithFrame:CGRectMake(6, logsTop + callLogH + 4, w - 12, memHeaderH)];
+    memHeader.font = [UIFont systemFontOfSize:10 weight:UIFontWeightHeavy];
+    memHeader.textColor = COLOR_PURPLE;
+    memHeader.text = @"MEM DIFF";
+    [page addSubview:memHeader];
+
+    _spyMemLogView = [[UITextView alloc] initWithFrame:CGRectMake(4, logsTop + callLogH + memHeaderH + 4, w - 8, memLogH)];
+    _spyMemLogView.backgroundColor = COLOR_CARD_BG;
+    _spyMemLogView.layer.cornerRadius = 10.0f;
+    _spyMemLogView.layer.borderWidth = 1.0f;
+    _spyMemLogView.layer.borderColor = COLOR_CARD_BORDER.CGColor;
+    _spyMemLogView.editable = NO;
+    _spyMemLogView.selectable = NO;
+    _spyMemLogView.scrollEnabled = YES;
+    _spyMemLogView.textColor = COLOR_TEXT;
+    _spyMemLogView.font = [UIFont fontWithName:@"Menlo" size:9.5f] ?: [UIFont systemFontOfSize:9.5f];
+    _spyMemLogView.textContainerInset = UIEdgeInsetsMake(8, 8, 8, 8);
+    [page addSubview:_spyMemLogView];
+
+    return page;
+}
+
+- (void)toggleSpyMemWatch:(UISwitch *)sender {
+    DylibSpy_setMemWatchEnabled(sender.on);
+}
+
+// Cập nhật 2 khung log tab SPY - gọi định kỳ từ updateMenu (khi menu đang mở
+// và tab SPY đang hiển thị). Việc quét MEM DIFF thật sự (đọc/checksum bộ nhớ)
+// chạy trên hàng đợi nền riêng (xem updateMenu) - hàm này chỉ đọc lại kết quả
+// đã có sẵn trong ring buffer, rẻ, an toàn gọi trên main thread.
+- (void)refreshSpyLog {
+    if (!_spyCallLogView || !_spyMemLogView) return;
+
+    NSString *target = DylibSpy_targetInfo();
+    NSString *symbols = DylibSpy_symbolSummary();
+    NSString *callSummary = DylibSpy_callTraceSummary();
+    NSString *callLog = DylibSpy_callTraceLog();
+
+    _spyCallLogView.text = [NSString stringWithFormat:
+        @"── TARGET ──\n%@\n\n"
+         "── HOOK STATUS ──\n%@\n\n"
+         "── IMPORT/EXPORT ──\n%@\n\n"
+         "── LOG ──\n%@",
+        target, callSummary, symbols, callLog];
+
+    _spyMemLogView.text = DylibSpy_memWatchLog();
+}
+
 - (BOOL)textFieldShouldReturn:(UITextField *)textField {
     [textField resignFirstResponder];
     return YES;
@@ -1260,6 +1354,27 @@ static const NSInteger kCardIconTag = 9002;
     static NSInteger logTick = 0;
     if (_tabPages.count > 2 && !_tabPages[2].hidden && (++logTick % 30 == 0)) {
         [self refreshDeltaLog];
+    }
+
+    // Dò/cài DylibSpy mỗi frame (rẻ - vài atomic bool sau khi đã cài xong, xem
+    // DylibSpy_tick). 2 đồng hồ tick TÁCH RIÊNG bên dưới - cố tình không lồng
+    // chung 1 biến ++đếm vào điều kiện && (tab hiển thị): nếu lồng chung, việc
+    // ++ chỉ chạy khi vế && tab-hiển thị đúng (short-circuit), khiến vòng quét
+    // MEM DIFF (chỉ nên phụ thuộc công tắc, không phụ thuộc tab có đang mở hay
+    // không) bị đứng hẳn mỗi khi người dùng rời tab SPY dù công tắc vẫn bật.
+    DylibSpy_tick();
+    static NSInteger spyUiTick = 0;
+    if (_tabPages.count > 3 && !_tabPages[3].hidden && (++spyUiTick % 30 == 0)) {
+        [self refreshSpyLog];
+    }
+    static NSInteger spyScanTick = 0;
+    // Vòng quét MEM DIFF thật sự thì NẶNG (đọc/checksum tới 32MB bộ nhớ) nên
+    // chỉ chạy ~1 lần/3s, trên hàng đợi nền, và chỉ khi công tắc Giám Sát Bộ
+    // Nhớ đang bật - tránh phí CPU khi tính năng đang tắt.
+    if (DylibSpy_memWatchEnabled() && (++spyScanTick % 90 == 0)) {
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
+            dylibSpyScanForChanges();
+        });
     }
 }
 
