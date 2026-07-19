@@ -174,8 +174,19 @@ game_sdk_t *game_sdk = new game_sdk_t();
     // being ready.
     installDNSBlockHook();
 
+    if (DeltaVFS_needsFirstRunExtraction()) {
+        // Delta/ hasn't been unzipped yet (fresh install or Delta.zip changed). Block the game
+        // from ever showing this run - poll for UIApplication (ready long before the game's own
+        // keyWindow/rootViewController, so nothing of the game gets a chance to render), throw up
+        // our own full-screen "updating" window, unzip, then crash on purpose so the player's
+        // manual relaunch starts clean with Delta/ already fully populated.
+        [DeltaMenu pollUntilAppReadyThenBlockAndUpdate];
+        return;
+    }
+
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         mainWindow = [UIApplication sharedApplication].keyWindow;
+
         extraInfo = [DeltaMenu new];
 
         static bool sdkInitialized = false;
@@ -188,6 +199,53 @@ game_sdk_t *game_sdk = new game_sdk_t();
         [extraInfo setupDisplayLink];
         [extraInfo initTapGes];
     });
+}
+
++ (void)pollUntilAppReadyThenBlockAndUpdate {
+    // UIApplication doesn't exist yet this early (we're running before main()/UIApplicationMain).
+    // Poll at a short interval instead of a fixed multi-second wait - the game's own UI must never
+    // get a chance to draw a frame before our blocking window covers it.
+    if (![UIApplication sharedApplication]) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [DeltaMenu pollUntilAppReadyThenBlockAndUpdate];
+        });
+        return;
+    }
+    [DeltaMenu showUpdatingPopupThenRelaunch];
+}
+
++ (void)showUpdatingPopupThenRelaunch {
+    // Our own full-screen, top-level window - deliberately NOT the game's keyWindow/rootViewController,
+    // which may not exist yet (that's the whole point: block before the game gets there).
+    UIWindow *blockWindow = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
+    blockWindow.windowLevel = UIWindowLevelAlert + 1;
+    blockWindow.backgroundColor = [UIColor blackColor];
+    UIViewController *blockVC = [UIViewController new];
+    blockVC.view.backgroundColor = [UIColor blackColor];
+    blockWindow.rootViewController = blockVC;
+    [blockWindow makeKeyAndVisible];
+    mainWindow = blockWindow; // keep a strong ref so ARC doesn't tear it down
+
+    // Explicitly tells the player we're freezing the game on purpose and to NOT force-quit -
+    // without this, a few seconds of a frozen screen reads as a crash/bug and people bail out
+    // mid-extraction, leaving Delta/ half-written for the next launch to retry.
+    NSString *title = isEnglishMode ? @"Please Wait" : @"Vui lòng chờ";
+    NSString *message = isEnglishMode
+        ? @"We need to freeze the game while we prepare required files.\n\nPlease wait and do not close the game until this process finishes."
+        : @"Game cần tạm dừng để chuẩn bị các file cần thiết.\n\nVui lòng chờ và không tắt game cho đến khi quá trình này hoàn tất.";
+
+    UIAlertController *popup = [UIAlertController alertControllerWithTitle:title
+                                                                     message:message
+                                                              preferredStyle:UIAlertControllerStyleAlert];
+
+    [blockVC presentViewController:popup animated:YES completion:^{
+        DeltaVFS_runFirstRunExtraction(^{
+            // Keep the popup on screen a moment so it doesn't just flash, then relaunch.
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                abort();
+            });
+        });
+    }];
 }
 
 - (void)setupDisplayLink {

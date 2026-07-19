@@ -38,11 +38,20 @@ static std::atomic<unsigned long long> g_deltaTotalCalls{0};
 static std::atomic<unsigned long long> g_deltaBundleCalls{0};
 static std::atomic<unsigned int> g_deltaExtractedFiles{0};   
 static std::atomic<unsigned int> g_deltaHooksOK{0};          
-static std::atomic<bool> g_deltaExtractRan{false};           
-static std::atomic<bool> g_deltaZipFound{false};             
-static std::atomic<bool> g_deltaActive{false};              
-static char g_deltaLastHitPath[1024] = {0};                  
-static char g_deltaLastAnyPath[1024] = {0};                  
+static std::atomic<bool> g_deltaExtractRan{false};
+static std::atomic<bool> g_deltaZipFound{false};
+static std::atomic<bool> g_deltaActive{false};
+static char g_deltaLastHitPath[1024] = {0};
+static char g_deltaLastAnyPath[1024] = {0};
+
+// First-run extraction (Delta.zip present but not yet unzipped, or updated since last unzip):
+// UIKit isn't up yet inside the constructor, so we can't show an "updating..." popup this early.
+// The constructor just raises this flag; Menu.mm's +load (once keyWindow exists) shows the popup,
+// runs DeltaVFS_runFirstRunExtraction(), then deliberately crashes so the NEXT launch starts clean
+// with Delta/ already fully populated instead of racing the game against a mid-flight unzip.
+static std::atomic<bool> g_deltaNeedsFirstRun{false};
+static char g_deltaMarkerPathC[1152] = {0};
+static struct stat g_deltaZipStat;
 
 // API cho Menu.mm đọc trạng thái
 inline unsigned long long DeltaVFS_hits()          { return g_deltaHitCount.load(std::memory_order_relaxed); }
@@ -58,6 +67,7 @@ inline const char*        DeltaVFS_lastHitPath()    { return g_deltaLastHitPath;
 inline const char*        DeltaVFS_lastAnyPath()    { return g_deltaLastAnyPath; }
 inline const char*        DeltaVFS_deltaDir()       { return g_moddedPrefixC; }
 inline const char*        DeltaVFS_zipPath()         { return g_deltaZipPathC; }
+inline bool                DeltaVFS_needsFirstRunExtraction() { return g_deltaNeedsFirstRun.load(std::memory_order_relaxed); }
 
 inline NSString *DeltaVFS_signatureSummary() {
     if (g_bundlePrefixLen == 0) return @"(chưa xác định bundle)";
@@ -271,6 +281,20 @@ static void ar_writeMarker(const char *markerPath, const struct stat *zipSt) {
     close(fd);
 }
 
+// Runs the (potentially slow) unzip on a background queue, then hops back to the main queue
+// for `completion` — Menu.mm uses that to hold the popup on screen and then trigger the crash.
+// While this is in flight, redirectAllTrafficPath() passes bundle paths through untouched
+// (g_deltaActive is still false), so the game keeps reading the original, unmodded bundle.
+inline void DeltaVFS_runFirstRunExtraction(dispatch_block_t completion) {
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        ar_extractZip(g_deltaZipPathC, g_moddedPrefixC);
+        ar_writeMarker(g_deltaMarkerPathC, &g_deltaZipStat);
+        g_deltaActive.store(true, std::memory_order_relaxed);
+        g_deltaNeedsFirstRun.store(false, std::memory_order_relaxed);
+        if (completion) dispatch_async(dispatch_get_main_queue(), completion);
+    });
+}
+
 // ============================================================================
 //  PHẦN 2: ĐỊNH TUYẾN TRAFFIC (VFS HOOK CẤP THẤP)
 // ============================================================================
@@ -311,6 +335,12 @@ inline const char* redirectAllTrafficPath(const char *path) {
     }
 
     if (g_bundlePrefixLen == 0 || g_moddedPrefixLen == 0) return path;
+
+    // First-run extraction hasn't finished yet (see g_deltaNeedsFirstRun) — Delta/ may be empty
+    // or stale, so don't hard-redirect bundle paths into it. Let the game boot off the original
+    // bundle for this one launch; Menu.mm crashes the app right after extraction finishes so the
+    // NEXT launch starts with Delta/ fully populated and the normal no-fallback policy resumes.
+    if (!g_deltaActive.load(std::memory_order_relaxed)) return path;
 
     if (strncmp(path, g_bundlePrefixC, g_bundlePrefixLen) != 0) {
         return path;
@@ -456,25 +486,24 @@ static void initDeltaAllTrafficVFS() {
             strncpy(g_deltaZipPathC, [zipPath UTF8String], sizeof(g_deltaZipPathC) - 1);
         }
 
-        // 1. GIẢI NÉN PHẢI CHẠY TRƯỚC HẾT
+        // 1. KIỂM TRA XEM CÓ CẦN GIẢI NÉN KHÔNG (chưa từng giải nén, hoặc Delta.zip đã đổi)
         if (g_moddedPrefixLen > 0 && g_deltaZipPathC[0]) {
-            struct stat zipSt;
-            if (stat(g_deltaZipPathC, &zipSt) == 0) {
+            if (stat(g_deltaZipPathC, &g_deltaZipStat) == 0) {
                 g_deltaZipFound.store(true, std::memory_order_relaxed);
                 ar_mkpath(g_moddedPrefixC);
 
-                char markerPath[1152];
-                snprintf(markerPath, sizeof(markerPath), "%s.delta_extracted", g_moddedPrefixC);
+                snprintf(g_deltaMarkerPathC, sizeof(g_deltaMarkerPathC), "%s.delta_extracted", g_moddedPrefixC);
 
-                if (ar_needExtract(markerPath, &zipSt)) {
+                if (ar_needExtract(g_deltaMarkerPathC, &g_deltaZipStat)) {
+                    // Too early for UIKit here — defer the actual unzip to Menu.mm, which shows
+                    // the "updating..." popup first, then calls DeltaVFS_runFirstRunExtraction().
                     g_deltaExtractRan.store(true, std::memory_order_relaxed);
-                    ar_extractZip(g_deltaZipPathC, g_moddedPrefixC);
-                    ar_writeMarker(markerPath, &zipSt);
-                }
-
-                struct stat deltaDirSt;
-                if (stat(g_moddedPrefixC, &deltaDirSt) == 0 && S_ISDIR(deltaDirSt.st_mode)) {
-                    g_deltaActive.store(true, std::memory_order_relaxed);
+                    g_deltaNeedsFirstRun.store(true, std::memory_order_relaxed);
+                } else {
+                    struct stat deltaDirSt;
+                    if (stat(g_moddedPrefixC, &deltaDirSt) == 0 && S_ISDIR(deltaDirSt.st_mode)) {
+                        g_deltaActive.store(true, std::memory_order_relaxed);
+                    }
                 }
             }
         }
