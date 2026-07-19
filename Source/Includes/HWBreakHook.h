@@ -44,7 +44,6 @@
 #import <mach/arm/thread_status.h>
 #import <pthread.h>
 #import <dlfcn.h>
-#include <unordered_map>
 #include <atomic>
 
 // ---- Cấu trúc message Mach exception (behavior EXCEPTION_DEFAULT | MACH_EXCEPTION_CODES) ----
@@ -80,8 +79,35 @@ static std::atomic<bool> g_hwbreakSelfTestDone{false};
 static std::atomic<bool> g_hwbreakSelfTestMode{false}; // true trong lúc tự kiểm tra - không redirect thật
 
 // Chỉ động vào từ hwbreakServerThreadFn (1 thread duy nhất, xử lý message tuần tự) - không
-// cần khoá.
-static std::unordered_map<thread_t, bool> g_hwbreakSingleStepping;
+// cần khoá. CỐ TÌNH dùng mảng cố định thay vì std::unordered_map: hàm này có thể bị gọi cực
+// sớm (ngay trong self-test lúc constructor đang chạy, trước cả main()) - trên máy thật đã
+// tận mắt thấy std::unordered_map (giống DNSBlock.h cũ) rehash lần đầu ở giai đoạn này ném
+// std::overflow_error qua std::__next_prime rồi abort() ngay. Mảng tuyến tính không cấp phát
+// động, không đụng gì tới libc++ hash table nên né được đúng lỗi đó.
+#define HWBREAK_MAX_TRACKED_THREADS 64
+struct HWBreakThreadFlag { thread_t thread; bool singleStepping; };
+static HWBreakThreadFlag g_hwbreakThreadFlags[HWBREAK_MAX_TRACKED_THREADS];
+static int g_hwbreakThreadFlagsCount = 0;
+
+static inline bool hwbreakGetSingleStepping(thread_t t) {
+    for (int i = 0; i < g_hwbreakThreadFlagsCount; i++) {
+        if (g_hwbreakThreadFlags[i].thread == t) return g_hwbreakThreadFlags[i].singleStepping;
+    }
+    return false;
+}
+
+static inline void hwbreakSetSingleStepping(thread_t t, bool v) {
+    for (int i = 0; i < g_hwbreakThreadFlagsCount; i++) {
+        if (g_hwbreakThreadFlags[i].thread == t) { g_hwbreakThreadFlags[i].singleStepping = v; return; }
+    }
+    if (g_hwbreakThreadFlagsCount < HWBREAK_MAX_TRACKED_THREADS) {
+        g_hwbreakThreadFlags[g_hwbreakThreadFlagsCount].thread = t;
+        g_hwbreakThreadFlags[g_hwbreakThreadFlagsCount].singleStepping = v;
+        g_hwbreakThreadFlagsCount++;
+    }
+    // Vượt quá 64 thread đang theo dõi cùng lúc thì bỏ qua (không track được) thay vì phát
+    // triển động - chấp nhận suy giảm ở biên thay vì rủi ro cấp phát lại lỗi tương tự.
+}
 
 // Bộ đệm xoay vòng cho path đã redirect - tránh cấp phát động trong exception handler (không
 // an toàn để gọi malloc từ ngữ cảnh này) và tránh đụng độ giữa các lần gọi liên tiếp.
@@ -143,10 +169,7 @@ static void *hwbreakRearmPollThreadFn(void *ctx) {
 // ---- Xử lý 1 exception đã nhận được - dùng chung cho cả server thật lẫn self-test ----
 static void hwbreakHandleException(const hwbreak_exc_request_t *req) {
     thread_t faultingThread = req->thread.name;
-
-    bool wasSingleStepping = false;
-    auto it = g_hwbreakSingleStepping.find(faultingThread);
-    if (it != g_hwbreakSingleStepping.end()) wasSingleStepping = it->second;
+    bool wasSingleStepping = hwbreakGetSingleStepping(faultingThread);
 
     if (!wasSingleStepping) {
         // Chạm breakpoint thật lần đầu - đây là lúc sửa đối số.
@@ -184,7 +207,7 @@ static void hwbreakHandleException(const hwbreak_exc_request_t *req) {
             dbg.__mdscr_el1 |= 0x1u; // bật Single Step
             hwbreakSetThreadState(faultingThread, &dbg);
         }
-        g_hwbreakSingleStepping[faultingThread] = true;
+        hwbreakSetSingleStepping(faultingThread, true);
     } else {
         // Đây là exception single-step (đã chạy xong đúng 1 lệnh gốc) - bật lại breakpoint,
         // tắt single-step, để thread chạy tiếp bình thường từ lệnh thứ 2 trở đi.
@@ -195,7 +218,7 @@ static void hwbreakHandleException(const hwbreak_exc_request_t *req) {
             dbg.__mdscr_el1 &= ~0x1u; // tắt Single Step
             hwbreakSetThreadState(faultingThread, &dbg);
         }
-        g_hwbreakSingleStepping[faultingThread] = false;
+        hwbreakSetSingleStepping(faultingThread, false);
     }
 }
 
