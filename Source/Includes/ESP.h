@@ -63,12 +63,16 @@ struct Vars_t
     // already hurt) that are in FOV/range - falls back to the normal closest-to-
     // crosshair target if nobody in range is currently wounded.
     bool AimPreferLowHP = false;
-    // "Legit" feel: instead of snapping straight to the target rotation every frame,
-    // turn toward it at a capped angular speed (AimTurnSpeed, deg/sec) via
-    // Quaternion::RotateTowards - looks like a fast human flick instead of an instant
-    // teleport. Applies to whichever of AimHead/AimNheTam is active.
-    bool AimSmoothing = false;
-    float AimTurnSpeed = 720.0f;
+    // "Aim Từ Tính" (Aim Magnet) - unlike AimHead/AimNheTam (which write set_aim
+    // directly ourselves), this boosts the GAME'S OWN built-in aim-assist system
+    // instead: forces Player.SetEAimAssitMode(EAimAssist.AllOn) every frame (so assist
+    // is always active, not just while scoped) and amplifies
+    // Player.GetAimAssistDampCoefficient's return value (via a hook, not a direct call -
+    // see installAimMagnetHook in ESP.h) by AimMagnetStrength, so the game's own
+    // smoothing/damping curve pulls the camera toward locked targets much harder than
+    // its designed values. Independent of AimHead/AimNheTam - can run alongside them.
+    bool AimMagnet = false;
+    float AimMagnetStrength = 3.0f;
     // Shared: ESP tab's FOV circle radius IS Aim Head's snap radius, but the two stay
     // separate switches - Show FOV Circle just draws the circle, Aim Head does the actual
     // person-detection + snap. Note: at 240 (current default, per user request) the
@@ -104,10 +108,10 @@ public:
     // had any visible effect, which now makes sense if the game reads aim direction from
     // the player's own aim state (this function) rather than deriving it from the camera.
     void (*set_aim)(void *player, Quaternion rotation, bool sendToServer);
-    // Player.GetAimRotation() - the player's current aim rotation, read back so
-    // AimSmoothing can turn toward the target gradually (Quaternion::RotateTowards)
-    // instead of snapping set_aim straight to it every frame.
-    Quaternion (*get_aim_rotation)(void *player);
+    // Player.SetEAimAssitMode(EAimAssist) - forces the game's own built-in aim-assist
+    // mode (EAimAssist.AllOn = 0) regardless of the player's actual settings or sighting
+    // state, for Aim Magnet (see Vars.AimMagnet and installAimMagnetHook below).
+    void (*set_aim_assist_mode)(void *player, int mode);
     bool (*get_isLocalTeam)(void *player);
     bool (*get_IsDieing)(void *player);
     // Non-virtual instance methods on Player (dump.cs OB54, no vtable Slot: annotation -
@@ -319,6 +323,34 @@ inline void ProcessSpinBot(void *local_player)
     game_sdk->set_forward(transform, Vector3(sinf(rad), 0, cosf(rad)));
 }
 
+// ===== AIM MAGNET (boosts the game's own built-in aim-assist system) =====
+// Player.GetAimAssistDampCoefficient(weapon) (dump.cs OB54, offset 0x545567C,
+// non-virtual) is what the game itself calls every frame to decide how hard its
+// built-in aim-assist pulls the camera toward a locked target, per equipped weapon.
+// Rather than writing our own aim rotation like AimHead/AimNheTam do, this hooks that
+// getter and multiplies whatever the game's own logic computes by AimMagnetStrength -
+// the actual pull is still applied by the game's own smoothing/damping curve, just
+// scaled up, so it should feel native rather than externally imposed.
+static float (*orig_GetAimAssistDampCoefficient)(void *, void *);
+
+inline float hooked_GetAimAssistDampCoefficient(void *player, void *weapon) {
+    float original = orig_GetAimAssistDampCoefficient(player, weapon);
+    if (!Vars.AimMagnet) return original;
+    return original * Vars.AimMagnetStrength;
+}
+
+inline void installAimMagnetHook() {
+    HOOK(0x545567C, hooked_GetAimAssistDampCoefficient, orig_GetAimAssistDampCoefficient);
+}
+
+// Forces EAimAssist.AllOn (0) every frame so the built-in assist stays active
+// regardless of the player's own settings or whether they're currently scoped/sighting -
+// SetEAimAssitMode is non-virtual, safe to call directly like set_aim.
+inline void ProcessAimMagnet(void *local_player) {
+    if (!Vars.AimMagnet || !local_player) return;
+    game_sdk->set_aim_assist_mode(local_player, 0);
+}
+
 // ===== OPTIMIZED ESP RENDERER =====
 @interface ESPRenderer : NSObject
 @property (nonatomic, strong) CAShapeLayer *espLayer;
@@ -500,6 +532,7 @@ inline void get_players()
         if (!local_player) return;
 
         ProcessSpinBot(local_player);
+        ProcessAimMagnet(local_player);
 
         // EMKJHAJNPDH(match).GEPFGOHGOJI() -> List<Player>. Two equally-plausible
         // List<Player>-returning zero-arg candidates existed in the dump; this is the
@@ -568,22 +601,6 @@ inline void get_players()
                 Vector3 eyePos = game_sdk->get_position(camTransform);
                 Vector3 dir = Vector3::Normalized(aimHeadWorld - eyePos);
                 Quaternion look = Quaternion::LookRotation(dir, Vector3(0, 1, 0));
-
-                // "Legit" feel: turn toward the target at a capped angular speed instead
-                // of snapping straight to it every frame - a fast human flick rather
-                // than an instant teleport. Frame-rate independent (scales the per-frame
-                // angle cap by real elapsed time), same approach as SpinBot's timing.
-                if (Vars.AimSmoothing) {
-                    static CFTimeInterval lastAimSmoothTime = 0;
-                    CFTimeInterval now = CACurrentMediaTime();
-                    CFTimeInterval dt = (lastAimSmoothTime > 0) ? (now - lastAimSmoothTime) : 0.0;
-                    lastAimSmoothTime = now;
-                    if (dt > 0.1) dt = 0.1; // clamp huge gaps (menu just opened, app backgrounded, etc.)
-
-                    Quaternion current = game_sdk->get_aim_rotation(local_player);
-                    float maxRadiansPerFrame = (Vars.AimTurnSpeed * (float)M_PI / 180.0f) * (float)dt;
-                    look = Quaternion::RotateTowards(current, look, maxRadiansPerFrame);
-                }
 
                 // sendToServer=false: this runs every frame while a target is in range.
                 // true flooded a network RPC / tripped server-side anti-cheat rate

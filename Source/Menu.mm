@@ -63,7 +63,7 @@ static NSDictionary<NSString *, NSArray<NSString *> *> *LocStrings() {
             @"aim_mode_always": @[@"Luôn Bật", @"Always"],
             @"aim_mode_fire": @[@"Khi Bắn/Ngắm", @"Fire/Scope"],
             @"aim_prefer_low_hp": @[@"Ưu Tiên Máu Vàng/Đỏ (Ngẫu Nhiên)", @"Prefer Yellow/Red HP (Random)"],
-            @"aim_smoothing": @[@"Aim Mượt (Legit)", @"Smooth Aim (Legit)"],
+            @"aim_magnet": @[@"Aim Từ Tính", @"Aim Magnet"],
             @"antena": @[@"Antena", @"Antena"],
             @"speed_x2": @[@"Tốc Độ x2", @"Speed x2"],
             @"speed_x8": @[@"Tốc Độ x8", @"Speed x8"],
@@ -122,9 +122,9 @@ static NSString *LOC(NSString *key) {
 @property (nonatomic, strong) UISwitch *aimNheTamSwitch;
 @property (nonatomic, strong) UISegmentedControl *aimModeControl;
 @property (nonatomic, strong) UISwitch *aimPreferLowHPSwitch;
-@property (nonatomic, strong) UISwitch *aimSmoothingSwitch;
-@property (nonatomic, strong) UISlider *aimTurnSpeedSlider;
-@property (nonatomic, strong) UILabel *aimTurnSpeedLabel;
+@property (nonatomic, strong) UISwitch *aimMagnetSwitch;
+@property (nonatomic, strong) UISlider *aimMagnetStrengthSlider;
+@property (nonatomic, strong) UILabel *aimMagnetStrengthLabel;
 @property (nonatomic, strong) UISwitch *antenaSwitch;
 @property (nonatomic, strong) UISwitch *speedX2Switch;
 @property (nonatomic, strong) UISwitch *speedX8Switch;
@@ -172,6 +172,7 @@ game_sdk_t *game_sdk = new game_sdk_t();
         static bool sdkInitialized = false;
         if (!sdkInitialized) {
             game_sdk->init();
+            installAimMagnetHook();
             sdkInitialized = true;
         }
 
@@ -494,30 +495,30 @@ game_sdk_t *game_sdk = new game_sdk_t();
     _aimPreferLowHPSwitch = [self addToggleCardWithLocKey:@"aim_prefer_low_hp" symbol:@"shuffle" frame:CGRectMake(btnX, btnY, btnW, cardH) action:@selector(toggleAimPreferLowHP:) toView:scroll];
     btnY += cardH + btnGap;
 
-    // "Legit" feel: turns toward the target at a capped speed instead of snapping
-    // straight to it every frame (see AimSmoothing in ESP.h's get_players()).
-    _aimSmoothingSwitch = [self addToggleCardWithLocKey:@"aim_smoothing" symbol:@"waveform.path.ecg" frame:CGRectMake(btnX, btnY, btnW, cardH) action:@selector(toggleAimSmoothing:) toView:scroll];
+    // Boosts the game's OWN built-in aim-assist system instead of writing our own aim
+    // rotation - independent of Aim Head/Aim Nhe Tam, can run alongside either.
+    _aimMagnetSwitch = [self addToggleCardWithLocKey:@"aim_magnet" symbol:@"bolt.circle.fill" frame:CGRectMake(btnX, btnY, btnW, cardH) action:@selector(toggleAimMagnet:) toView:scroll];
     btnY += cardH + btnGap;
 
-    _aimTurnSpeedLabel = [[UILabel alloc] initWithFrame:CGRectMake(btnX + 8, btnY, btnW - 8, 14)];
-    _aimTurnSpeedLabel.font = [UIFont systemFontOfSize:10.5f weight:UIFontWeightMedium];
-    _aimTurnSpeedLabel.textColor = COLOR_TEXT_DIM;
-    [scroll addSubview:_aimTurnSpeedLabel];
-    __weak UILabel *weakAimTurnSpeedLabel = _aimTurnSpeedLabel;
+    _aimMagnetStrengthLabel = [[UILabel alloc] initWithFrame:CGRectMake(btnX + 8, btnY, btnW - 8, 14)];
+    _aimMagnetStrengthLabel.font = [UIFont systemFontOfSize:10.5f weight:UIFontWeightMedium];
+    _aimMagnetStrengthLabel.textColor = COLOR_TEXT_DIM;
+    [scroll addSubview:_aimMagnetStrengthLabel];
+    __weak UILabel *weakAimMagnetStrengthLabel = _aimMagnetStrengthLabel;
     [self addLocalizedRefresher:^{
-        weakAimTurnSpeedLabel.text = [NSString stringWithFormat:isEnglishMode ? @"Turn speed: %.0f°/s" : @"Tốc độ xoay: %.0f°/s", Vars.AimTurnSpeed];
+        weakAimMagnetStrengthLabel.text = [NSString stringWithFormat:isEnglishMode ? @"Strength: %.1fx" : @"Độ mạnh: %.1fx", Vars.AimMagnetStrength];
     }];
     btnY += 14 + 2;
 
-    _aimTurnSpeedSlider = [[UISlider alloc] initWithFrame:CGRectMake(btnX, btnY, btnW, 20)];
-    _aimTurnSpeedSlider.minimumValue = 90.0f;
-    _aimTurnSpeedSlider.maximumValue = 1800.0f;
-    _aimTurnSpeedSlider.value = Vars.AimTurnSpeed;
-    _aimTurnSpeedSlider.minimumTrackTintColor = COLOR_CYAN;
-    _aimTurnSpeedSlider.maximumTrackTintColor = [UIColor colorWithWhite:1.0 alpha:0.12];
-    _aimTurnSpeedSlider.thumbTintColor = COLOR_TEXT;
-    [_aimTurnSpeedSlider addTarget:self action:@selector(aimTurnSpeedChanged:) forControlEvents:UIControlEventValueChanged];
-    [scroll addSubview:_aimTurnSpeedSlider];
+    _aimMagnetStrengthSlider = [[UISlider alloc] initWithFrame:CGRectMake(btnX, btnY, btnW, 20)];
+    _aimMagnetStrengthSlider.minimumValue = 1.0f;
+    _aimMagnetStrengthSlider.maximumValue = 10.0f;
+    _aimMagnetStrengthSlider.value = Vars.AimMagnetStrength;
+    _aimMagnetStrengthSlider.minimumTrackTintColor = COLOR_CYAN;
+    _aimMagnetStrengthSlider.maximumTrackTintColor = [UIColor colorWithWhite:1.0 alpha:0.12];
+    _aimMagnetStrengthSlider.thumbTintColor = COLOR_TEXT;
+    [_aimMagnetStrengthSlider addTarget:self action:@selector(aimMagnetStrengthChanged:) forControlEvents:UIControlEventValueChanged];
+    [scroll addSubview:_aimMagnetStrengthSlider];
     btnY += 20 + btnGap;
 
     // Radius is configured on the ESP tab's Show FOV Circle slider (same Vars.AimFOV) -
@@ -728,13 +729,13 @@ game_sdk_t *game_sdk = new game_sdk_t();
     Vars.AimPreferLowHP = sender.on;
 }
 
-- (void)toggleAimSmoothing:(UISwitch *)sender {
-    Vars.AimSmoothing = sender.on;
+- (void)toggleAimMagnet:(UISwitch *)sender {
+    Vars.AimMagnet = sender.on;
 }
 
-- (void)aimTurnSpeedChanged:(UISlider *)sender {
-    Vars.AimTurnSpeed = sender.value;
-    _aimTurnSpeedLabel.text = [NSString stringWithFormat:isEnglishMode ? @"Turn speed: %.0f°/s" : @"Tốc độ xoay: %.0f°/s", Vars.AimTurnSpeed];
+- (void)aimMagnetStrengthChanged:(UISlider *)sender {
+    Vars.AimMagnetStrength = sender.value;
+    _aimMagnetStrengthLabel.text = [NSString stringWithFormat:isEnglishMode ? @"Strength: %.1fx" : @"Độ mạnh: %.1fx", Vars.AimMagnetStrength];
 }
 
 - (void)toggleShowFovCircle:(UISwitch *)sender {
@@ -1336,10 +1337,9 @@ void game_sdk_t::init()
     // writing the camera's Transform directly (set_forward above) never worked for Aim
     // Head, which lines up with the game reading aim from the player's own state instead.
     this->set_aim = (void (*)(void *, Quaternion, bool))getRealOffset(0x53C4534);
-    // Player.GetAimRotation() - non-virtual (no Slot: in dump.cs), returns the current
-    // aim state set_aim itself writes to. Used to smoothly turn toward a target instead
-    // of snapping straight to it (see AimSmoothing in ESP.h's get_players()).
-    this->get_aim_rotation = (Quaternion (*)(void *))getRealOffset(0x53B1FEC);
+    // Player.SetEAimAssitMode(EAimAssist) - non-virtual, used by Aim Magnet to force
+    // the game's own built-in aim-assist always on (EAimAssist.AllOn = 0).
+    this->set_aim_assist_mode = (void (*)(void *, int))getRealOffset(0x53C1750);
     this->get_isLocalTeam = (bool (*)(void *))getRealOffset(0x55C5AC0);
     this->get_IsDieing = (bool (*)(void *))getRealOffset(0x53AA18C);
     // Player.IsFiring()/get_IsSighting() - both non-virtual (no Slot: in dump.cs), safe
