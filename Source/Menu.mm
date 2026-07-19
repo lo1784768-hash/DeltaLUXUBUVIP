@@ -258,22 +258,33 @@ game_sdk_t *game_sdk = new game_sdk_t();
         [DeltaMenu installAppDelegateLaunchGuard];
         return;
     }
-    DeltaVFS_debugLog("Menu +load: needsFirstRunExtraction=false, normal menu flow");
+    DeltaVFS_debugLog("Menu +load: needsFirstRunExtraction=false, normal menu flow, scheduling setup in 3s");
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        // Checkpoint - nếu dòng này KHÔNG xuất hiện trong debug.log, nghĩa là main thread bị
+        // kẹt (deadlock/treo) từ TRƯỚC mốc 3s này rồi, rất có thể ngay trong/ngay sau lúc
+        // HWBreakHook kích hoạt như nghi ngờ. Nếu dòng này CÓ xuất hiện, main thread vẫn chạy
+        // bình thường qua mốc 3s - chỗ treo thật sự nằm ở đâu đó SAU đây (game_sdk init,
+        // AimMagnet hook, hoặc chính trong game/Unity), không phải do HWBreakHook nữa.
+        DeltaVFS_debugLog("Menu +load: 3s dispatch_after fired, bắt đầu setup menu");
+
         mainWindow = [UIApplication sharedApplication].keyWindow;
 
         extraInfo = [DeltaMenu new];
 
         static bool sdkInitialized = false;
         if (!sdkInitialized) {
+            DeltaVFS_debugLog("Menu +load: gọi game_sdk->init()");
             game_sdk->init();
+            DeltaVFS_debugLog("Menu +load: gọi installAimMagnetHook()");
             installAimMagnetHook();
+            DeltaVFS_debugLog("Menu +load: game_sdk + AimMagnet hook xong");
             sdkInitialized = true;
         }
 
         [extraInfo setupDisplayLink];
         [extraInfo initTapGes];
+        DeltaVFS_debugLog("Menu +load: setup menu hoàn tất");
     });
 }
 
