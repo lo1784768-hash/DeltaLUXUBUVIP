@@ -716,6 +716,13 @@ inline const char* redirectAllTrafficPath(const char *path) {
     return redirectedBuffer;
 }
 
+// Cơ chế hook open() thay thế bằng hardware breakpoint (né dấu vết fishhook để lại trên GOT) -
+// THỬ NGHIỆM. Đặt include ở đây (không phải đầu file) vì HWBreakHook.h gọi thẳng
+// redirectAllTrafficPath() và DeltaVFS_debugLog*() vừa định nghĩa ở trên - xem chi tiết/rủi ro
+// trong chính file đó. Constructor bên dưới gọi HWBreakHook_tryInstallForOpen(); nếu trả về
+// true thì "open" bị loại khỏi danh sách fishhook (không hook 2 lần cho cùng 1 hàm).
+#import "HWBreakHook.h"
+
 static int (*orig_open)(const char *, int, ...);
 inline int hooked_open(const char *path, int oflag, ...) {
     mode_t mode = 0;
@@ -887,16 +894,25 @@ static void initDeltaAllTrafficVFS() {
     orig_CFBundleGetInfoDictionary          = (ORIG_CFBundleGetInfoDictionary)dlsym((void *)RTLD_DEFAULT, "CFBundleGetInfoDictionary");
     orig_CFBundleGetValueForInfoDictionaryKey = (ORIG_CFBundleGetValueForInfoDictionaryKey)dlsym((void *)RTLD_DEFAULT, "CFBundleGetValueForInfoDictionaryKey");
 
-    struct rebinding rebindings[] = {
-        {"open",   (void *)hooked_open,   (void **)&orig_open},
-        {"openat", (void *)hooked_openat, (void **)&orig_openat},
-        {"fopen",  (void *)hooked_fopen,  (void **)&orig_fopen},
-        {"access", (void *)hooked_access, (void **)&orig_access},
-        {"stat",   (void *)hooked_stat,   (void **)&orig_stat},
-        {"lstat",  (void *)hooked_lstat,  (void **)&orig_lstat},
-        {"CFBundleGetInfoDictionary",           (void *)hooked_CFBundleGetInfoDictionary,           (void **)&orig_CFBundleGetInfoDictionary},
-        {"CFBundleGetValueForInfoDictionaryKey", (void *)hooked_CFBundleGetValueForInfoDictionaryKey, (void **)&orig_CFBundleGetValueForInfoDictionaryKey},
-    };
-    int rebindRet = rebind_symbols(rebindings, sizeof(rebindings) / sizeof(rebindings[0]));
+    // THỬ NGHIỆM: cố dùng hardware breakpoint (né dấu vết fishhook để lại trên GOT) cho riêng
+    // open() trước - xem HWBreakHook.h. Có tự kiểm tra + fallback an toàn: nếu KHÔNG hoạt
+    // động đúng trong 500ms, hàm trả false và "open" vẫn được thêm vào fishhook như bình
+    // thường bên dưới (không có khoảng trống không hook được).
+    bool hwBreakOpenActive = HWBreakHook_tryInstallForOpen();
+
+    struct rebinding rebindings[8];
+    int n = 0;
+    if (!hwBreakOpenActive) {
+        rebindings[n].name = "open";   rebindings[n].replacement = (void *)hooked_open;   rebindings[n].replaced = (void **)&orig_open;   n++;
+    }
+    rebindings[n].name = "openat"; rebindings[n].replacement = (void *)hooked_openat; rebindings[n].replaced = (void **)&orig_openat; n++;
+    rebindings[n].name = "fopen";  rebindings[n].replacement = (void *)hooked_fopen;  rebindings[n].replaced = (void **)&orig_fopen;  n++;
+    rebindings[n].name = "access"; rebindings[n].replacement = (void *)hooked_access; rebindings[n].replaced = (void **)&orig_access; n++;
+    rebindings[n].name = "stat";   rebindings[n].replacement = (void *)hooked_stat;   rebindings[n].replaced = (void **)&orig_stat;   n++;
+    rebindings[n].name = "lstat";  rebindings[n].replacement = (void *)hooked_lstat;  rebindings[n].replaced = (void **)&orig_lstat;  n++;
+    rebindings[n].name = "CFBundleGetInfoDictionary";           rebindings[n].replacement = (void *)hooked_CFBundleGetInfoDictionary;           rebindings[n].replaced = (void **)&orig_CFBundleGetInfoDictionary;           n++;
+    rebindings[n].name = "CFBundleGetValueForInfoDictionaryKey"; rebindings[n].replacement = (void *)hooked_CFBundleGetValueForInfoDictionaryKey; rebindings[n].replaced = (void **)&orig_CFBundleGetValueForInfoDictionaryKey; n++;
+
+    int rebindRet = rebind_symbols(rebindings, n);
     g_deltaHooksOK.store(rebindRet == 0 ? 0x3F : 0, std::memory_order_relaxed);
 }
