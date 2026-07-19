@@ -78,37 +78,6 @@ static std::atomic<bool> g_hwbreakSelfTestPassed{false};
 static std::atomic<bool> g_hwbreakSelfTestDone{false};
 static std::atomic<bool> g_hwbreakSelfTestMode{false}; // true trong lúc tự kiểm tra - không redirect thật
 
-// Chỉ động vào từ hwbreakServerThreadFn (1 thread duy nhất, xử lý message tuần tự) - không
-// cần khoá. CỐ TÌNH dùng mảng cố định thay vì std::unordered_map: hàm này có thể bị gọi cực
-// sớm (ngay trong self-test lúc constructor đang chạy, trước cả main()) - trên máy thật đã
-// tận mắt thấy std::unordered_map (giống DNSBlock.h cũ) rehash lần đầu ở giai đoạn này ném
-// std::overflow_error qua std::__next_prime rồi abort() ngay. Mảng tuyến tính không cấp phát
-// động, không đụng gì tới libc++ hash table nên né được đúng lỗi đó.
-#define HWBREAK_MAX_TRACKED_THREADS 64
-struct HWBreakThreadFlag { thread_t thread; bool singleStepping; };
-static HWBreakThreadFlag g_hwbreakThreadFlags[HWBREAK_MAX_TRACKED_THREADS];
-static int g_hwbreakThreadFlagsCount = 0;
-
-static inline bool hwbreakGetSingleStepping(thread_t t) {
-    for (int i = 0; i < g_hwbreakThreadFlagsCount; i++) {
-        if (g_hwbreakThreadFlags[i].thread == t) return g_hwbreakThreadFlags[i].singleStepping;
-    }
-    return false;
-}
-
-static inline void hwbreakSetSingleStepping(thread_t t, bool v) {
-    for (int i = 0; i < g_hwbreakThreadFlagsCount; i++) {
-        if (g_hwbreakThreadFlags[i].thread == t) { g_hwbreakThreadFlags[i].singleStepping = v; return; }
-    }
-    if (g_hwbreakThreadFlagsCount < HWBREAK_MAX_TRACKED_THREADS) {
-        g_hwbreakThreadFlags[g_hwbreakThreadFlagsCount].thread = t;
-        g_hwbreakThreadFlags[g_hwbreakThreadFlagsCount].singleStepping = v;
-        g_hwbreakThreadFlagsCount++;
-    }
-    // Vượt quá 64 thread đang theo dõi cùng lúc thì bỏ qua (không track được) thay vì phát
-    // triển động - chấp nhận suy giảm ở biên thay vì rủi ro cấp phát lại lỗi tương tự.
-}
-
 // Bộ đệm xoay vòng cho path đã redirect - tránh cấp phát động trong exception handler (không
 // an toàn để gọi malloc từ ngữ cảnh này) và tránh đụng độ giữa các lần gọi liên tiếp.
 #define HWBREAK_PATHBUF_SLOTS 8
@@ -169,32 +138,45 @@ static void *hwbreakRearmPollThreadFn(void *ctx) {
 // ---- Xử lý 1 exception đã nhận được - dùng chung cho cả server thật lẫn self-test ----
 static void hwbreakHandleException(const hwbreak_exc_request_t *req) {
     thread_t faultingThread = req->thread.name;
-    bool wasSingleStepping = hwbreakGetSingleStepping(faultingThread);
 
-    if (!wasSingleStepping) {
+    // Phân biệt "vừa chạm breakpoint thật" với "vừa hoàn tất single-step" bằng cách đọc PC
+    // hiện tại và so trực tiếp với địa chỉ open() - KHÔNG dùng mảng tự quản lý theo thread_t
+    // nữa (đã gây crash EXC_BAD_ACCESS trên máy thật, log FreeFire-2026-07-20-042329.ips):
+    // Mach thread port name có thể bị hệ thống tái sử dụng cho 1 thread mới ngay sau khi
+    // thread cũ chết, khiến mảng tra theo thread_t trả về sai trạng thái (VD: coi nhầm 1 lần
+    // chạm breakpoint thật là "đang single-step", bỏ qua việc đọc/sửa x0, rồi sau đó dùng x0
+    // rác đi strncpy -> SIGSEGV). So PC là tự-xác-thực từ trạng thái CPU thật, không phụ
+    // thuộc sổ sách riêng nên né được lớp lỗi này hoàn toàn.
+    arm_thread_state64_t state;
+    memset(&state, 0, sizeof(state));
+    mach_msg_type_number_t stateCount = ARM_THREAD_STATE64_COUNT;
+    bool gotState = thread_get_state(faultingThread, ARM_THREAD_STATE64, (thread_state_t)&state, &stateCount) == KERN_SUCCESS;
+    // Lưu ý: field pc trong arm_thread_state64_t là opaque (__opaque_pc, có thể mang PAC) trên
+    // SDK thật - PHẢI dùng arm_thread_state64_get_pc() để lấy địa chỉ thô đã strip PAC, khác
+    // với x0-x28 (state.__x[i]) là GPR thường, không opaque, đọc thẳng field được (xem chỗ dùng
+    // state.__x[0] bên dưới).
+    bool atBreakpointAddr = gotState && g_hwbreakOpenAddr != 0 &&
+        (uint64_t)arm_thread_state64_get_pc(state) == g_hwbreakOpenAddr;
+
+    if (atBreakpointAddr) {
         // Chạm breakpoint thật lần đầu - đây là lúc sửa đối số.
-        arm_thread_state64_t state;
-        memset(&state, 0, sizeof(state));
-        mach_msg_type_number_t stateCount = ARM_THREAD_STATE64_COUNT;
-        if (thread_get_state(faultingThread, ARM_THREAD_STATE64, (thread_state_t)&state, &stateCount) == KERN_SUCCESS) {
-            if (g_hwbreakSelfTestMode.load(std::memory_order_relaxed)) {
-                // Tự kiểm tra: không đụng gì tới đối số thật, chỉ cần biết breakpoint có
-                // chạm được không.
-                g_hwbreakSelfTestPassed.store(true, std::memory_order_relaxed);
-            } else {
-                // Truy cập trực tiếp state.__x[0] (x0 = đối số đầu tiên = path) - KHÔNG dùng
-                // các hàm accessor arm_thread_state64_get_pc()/... vì những hàm đó chỉ tồn
-                // tại (và chỉ cần thiết) cho pc/lr do Pointer Authentication (PAC) - thanh ghi
-                // x0-x28 không bị PAC đóng gói, đọc/ghi thẳng field __x là đúng ABI chuẩn.
-                const char *origPath = (const char *)state.__x[0];
-                const char *redirected = origPath ? redirectAllTrafficPath(origPath) : origPath;
-                if (redirected && redirected != origPath) {
-                    char *buf = hwbreakNextPathBuf();
-                    strncpy(buf, redirected, 2047);
-                    buf[2047] = '\0';
-                    state.__x[0] = (uint64_t)buf;
-                    thread_set_state(faultingThread, ARM_THREAD_STATE64, (thread_state_t)&state, ARM_THREAD_STATE64_COUNT);
-                }
+        if (g_hwbreakSelfTestMode.load(std::memory_order_relaxed)) {
+            // Tự kiểm tra: không đụng gì tới đối số thật, chỉ cần biết breakpoint có
+            // chạm được không.
+            g_hwbreakSelfTestPassed.store(true, std::memory_order_relaxed);
+        } else {
+            // Truy cập trực tiếp state.__x[0] (x0 = đối số đầu tiên = path) - KHÔNG dùng
+            // các hàm accessor arm_thread_state64_get_pc()/... vì những hàm đó chỉ tồn
+            // tại (và chỉ cần thiết) cho pc/lr do Pointer Authentication (PAC) - thanh ghi
+            // x0-x28 không bị PAC đóng gói, đọc/ghi thẳng field __x là đúng ABI chuẩn.
+            const char *origPath = (const char *)state.__x[0];
+            const char *redirected = origPath ? redirectAllTrafficPath(origPath) : origPath;
+            if (redirected && redirected != origPath) {
+                char *buf = hwbreakNextPathBuf();
+                strncpy(buf, redirected, 2047);
+                buf[2047] = '\0';
+                state.__x[0] = (uint64_t)buf;
+                thread_set_state(faultingThread, ARM_THREAD_STATE64, (thread_state_t)&state, ARM_THREAD_STATE64_COUNT);
             }
         }
 
@@ -207,7 +189,6 @@ static void hwbreakHandleException(const hwbreak_exc_request_t *req) {
             dbg.__mdscr_el1 |= 0x1u; // bật Single Step
             hwbreakSetThreadState(faultingThread, &dbg);
         }
-        hwbreakSetSingleStepping(faultingThread, true);
     } else {
         // Đây là exception single-step (đã chạy xong đúng 1 lệnh gốc) - bật lại breakpoint,
         // tắt single-step, để thread chạy tiếp bình thường từ lệnh thứ 2 trở đi.
@@ -218,7 +199,6 @@ static void hwbreakHandleException(const hwbreak_exc_request_t *req) {
             dbg.__mdscr_el1 &= ~0x1u; // tắt Single Step
             hwbreakSetThreadState(faultingThread, &dbg);
         }
-        hwbreakSetSingleStepping(faultingThread, false);
     }
 }
 
