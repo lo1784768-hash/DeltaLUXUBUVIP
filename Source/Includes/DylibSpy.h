@@ -23,6 +23,15 @@
 //      hàm, làm sai 1 ly là crash thẳng tiến trình game, nên KHÔNG làm ở bản
 //      này) và có tín hiệu cao cho đúng câu hỏi "gọi hàm nào / sửa bộ nhớ đâu":
 //      dlopen, dlsym, mmap, mprotect, vm_protect, vm_write.
+//      CHỦ ĐỘNG, KHÔNG TỰ CHẠY: patch GOT là can thiệp trực tiếp vào runtime
+//      của Monite.dylib, nếu đúng lúc nó đang tự gọi 1 trong 6 hàm trên cho
+//      việc khởi tạo riêng (rất dễ xảy ra trong vài giây đầu sau khi app mở)
+//      thì vá giữa chừng là rủi ro crash thật (từng làm app văng ngay lúc mở,
+//      không sinh crash report vì đây là can thiệp runtime dylib khác chứ
+//      không phải lỗi trong code của tweak này). Vì vậy chỉ chạy khi người
+//      dùng chủ động bấm "Bắt đầu giám sát" ở tab SPY (DylibSpy_startMonitoring)
+//      - xem thêm ghi chú ở g_spyMonitoringRequested. TARGET INFO (mục 1) vẫn
+//      tự động vì chỉ đọc dyld image list, không đụng bộ nhớ Monite.dylib.
 //      GIỚI HẠN: fishhook (bản Facebook gốc, xem Source/fishhook.c) chỉ hiểu
 //      classic bind qua indirect symbol table - dylib build bằng Xcode mới
 //      (min target iOS 15+, mặc định hiện nay) dùng chained fixups
@@ -194,6 +203,7 @@ static std::mutex g_spySymbolsMutex;
 
 inline void dylibSpyParseSymbols() {
     if (g_spySymbols.parsed || !DylibSpy_targetFound()) return;
+    if (!g_spyMonitoringRequested.load(std::memory_order_relaxed)) return;
     std::lock_guard<std::mutex> lock(g_spySymbolsMutex);
     if (g_spySymbols.parsed) return;
 
@@ -245,6 +255,7 @@ inline void dylibSpyParseSymbols() {
 
 inline NSString *DylibSpy_symbolSummary() {
     if (!DylibSpy_targetFound()) return @"(chưa có target)";
+    if (!g_spyMonitoringRequested.load(std::memory_order_relaxed)) return @"(chưa bật - bấm \"Bắt đầu giám sát\")";
     std::lock_guard<std::mutex> lock(g_spySymbolsMutex);
     if (!g_spySymbols.parsed) return @"(đang phân tích...)";
 
@@ -319,9 +330,28 @@ inline kern_return_t hooked_spy_vm_write(vm_map_t task, vm_address_t address, vm
 
 static std::atomic<bool> g_spyHooksInstalled{false};
 static std::atomic<unsigned int> g_spyHookedSymbolCount{0};
+// Cờ CHỦ ĐỘNG - phải người dùng bấm nút "Bắt đầu giám sát" ở tab SPY thì mới
+// bật, KHÔNG tự chạy ngay lúc thấy Monite.dylib load nữa. Lý do: cài call
+// trace nghĩa là VÁ TRỰC TIẾP GOT của 1 dylib người khác (dlopen/dlsym/mmap/
+// mprotect/vm_protect/vm_write) - nếu đúng lúc đó chính Monite.dylib đang tự
+// gọi 1 trong 6 hàm này cho việc khởi tạo riêng của nó (rất có thể xảy ra
+// trong vài giây đầu sau khi app mở), vá GOT giữa chừng là rủi ro crash thật
+// sự, từng khiến app văng ngay lúc mở (không sinh crash report vì đây không
+// phải lỗi trong code CỦA MÌNH mà là can thiệp vào runtime của dylib khác).
+// Việc ĐỊNH VỊ (DylibSpy_tick -> dylibSpyFindTarget) vẫn tự động vì chỉ ĐỌC
+// dyld image list, không đụng bộ nhớ Monite.dylib nên vô hại.
+static std::atomic<bool> g_spyMonitoringRequested{false};
+
+inline bool DylibSpy_monitoringStarted() { return g_spyHooksInstalled.load(std::memory_order_relaxed); }
+// Đã XIN bật hay chưa (có thể true trước khi hooksInstalled true, nếu bấm bật
+// lúc Monite.dylib chưa kịp load - DylibSpy_tick sẽ tự cài nốt khi thấy nó).
+// UI dùng cờ này (không phải monitoringStarted) để đồng bộ vị trí switch,
+// tránh switch tự nhảy về OFF trong lúc đang chờ target load.
+inline bool DylibSpy_monitoringRequested() { return g_spyMonitoringRequested.load(std::memory_order_relaxed); }
 
 inline void dylibSpyInstallCallTrace() {
     if (g_spyHooksInstalled.load(std::memory_order_relaxed)) return;
+    if (!g_spyMonitoringRequested.load(std::memory_order_relaxed)) return;
     if (!DylibSpy_targetFound()) return;
 
     struct rebinding rebindings[] = {
@@ -348,6 +378,9 @@ inline void dylibSpyInstallCallTrace() {
 
 inline NSString *DylibSpy_callTraceSummary() {
     if (!DylibSpy_targetFound()) return [NSString stringWithFormat:@"(chưa thấy %s)", DYLIBSPY_TARGET_NAME];
+    if (!g_spyMonitoringRequested.load(std::memory_order_relaxed)) {
+        return @"(chưa bật - bấm \"Bắt đầu giám sát\" để vá GOT của Monite.dylib, xem ghi chú an toàn ở nút đó trước khi bật)";
+    }
     unsigned int hooked = g_spyHookedSymbolCount.load(std::memory_order_relaxed);
     NSMutableString *s = [NSMutableString string];
     [s appendFormat:@"Đã hook %u/6 hàm theo dõi (dlopen/dlsym/mmap/mprotect/vm_protect/vm_write)\n", hooked];
@@ -479,16 +512,30 @@ inline void dylibSpyScanForChanges() {
 
 inline NSString *DylibSpy_memWatchLog() { return dylibSpyRingSnapshot(g_spyMemRing); }
 
+// Gọi từ nút/switch "Bắt đầu giám sát" trên tab SPY (hành động CHỦ ĐỘNG của
+// người dùng, không tự chạy) - bật cờ rồi cài hook + parse symbol NGAY nếu
+// target đã thấy sẵn; nếu Monite.dylib chưa load thì DylibSpy_tick sẽ tự làm
+// nốt phần này ngay khi thấy nó xuất hiện ở lần tick kế tiếp.
+inline void DylibSpy_startMonitoring() {
+    g_spyMonitoringRequested.store(true, std::memory_order_relaxed);
+    if (DylibSpy_targetFound()) {
+        dylibSpyInstallCallTrace();
+        dylibSpyParseSymbols();
+    }
+}
+
 // ============================================================================
-//  ENTRY POINT - gọi mỗi frame từ Menu.mm's updateMenu (rẻ sau khi đã cài đủ:
-//  chỉ 1-2 lần đọc atomic bool). Tự dò lại Monite.dylib + cài hook + parse
-//  symbol table ngay khi thấy image xuất hiện, không cần biết trước thứ tự nạp.
+//  ENTRY POINT - gọi mỗi frame từ Menu.mm's updateMenu (rẻ). CHỈ tự động dò
+//  lại Monite.dylib (đọc dyld image list, vô hại) - KHÔNG tự cài call trace/
+//  parse symbol nữa, phải đợi DylibSpy_startMonitoring() từ tab SPY (xem ghi
+//  chú ở g_spyMonitoringRequested).
 // ============================================================================
 inline void DylibSpy_tick() {
     if (!DylibSpy_targetFound()) {
         dylibSpyFindTarget();
         return;
     }
+    if (!g_spyMonitoringRequested.load(std::memory_order_relaxed)) return;
     if (!g_spyHooksInstalled.load(std::memory_order_relaxed)) dylibSpyInstallCallTrace();
     if (!g_spySymbols.parsed) dylibSpyParseSymbols();
 }

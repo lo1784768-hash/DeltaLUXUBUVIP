@@ -75,6 +75,7 @@ static NSDictionary<NSString *, NSArray<NSString *> *> *LocStrings() {
             @"activated": @[@"Đã kích hoạt", @"Activated"],
             @"select_base_action": @[@"CHỌN HÀNH ĐỘNG GỐC", @"SELECT BASE ACTION"],
             @"select_mod_action": @[@"CHỌN HÀNH ĐỘNG MOD", @"SELECT MOD ACTION"],
+            @"spy_start": @[@"Bắt Đầu Giám Sát (Vá GOT Dylib B)", @"Start Monitoring (Patches Dylib B's GOT)"],
             @"spy_mem_watch": @[@"Giám Sát Bộ Nhớ (Dylib B)", @"Memory Watch (Dylib B)"],
             @"back": @[@"Trở Về", @"Back"],
             @"on": @[@"BẬT", @"ON"],
@@ -147,6 +148,7 @@ static NSString *LOC(NSString *key) {
 @property (nonatomic, strong) UITextView *udpLogView;
 
 // Spy tab (dõi dylib B - gọi hàm nào, sửa bộ nhớ đâu, xem DylibSpy.h)
+@property (nonatomic, strong) UISwitch *spyStartSwitch;
 @property (nonatomic, strong) UISwitch *spyMemWatchSwitch;
 @property (nonatomic, strong) UITextView *spyCallLogView;
 @property (nonatomic, strong) UITextView *spyMemLogView;
@@ -1003,9 +1005,14 @@ game_sdk_t *game_sdk = new game_sdk_t();
     UIView *page = [[UIView alloc] initWithFrame:frame];
     CGFloat w = frame.size.width;
 
-    _spyMemWatchSwitch = [self addToggleCardWithLocKey:@"spy_mem_watch" symbol:@"waveform.path.ecg.rectangle" frame:CGRectMake(4, 0, w - 8, 34) action:@selector(toggleSpyMemWatch:) toView:page];
+    // Bắt Đầu Giám Sát TÁCH RIÊNG khỏi Giám Sát Bộ Nhớ, mặc định TẮT cả hai -
+    // bật cái này mới thật sự vá GOT của Monite.dylib (dlopen/dlsym/mmap/
+    // mprotect/vm_protect/vm_write), xem ghi chú an toàn ở g_spyMonitoringRequested
+    // trong DylibSpy.h. Trước khi bật, tab chỉ ĐỌC dyld image list (vô hại).
+    _spyStartSwitch = [self addToggleCardWithLocKey:@"spy_start" symbol:@"play.circle.fill" frame:CGRectMake(4, 0, w - 8, 34) action:@selector(toggleSpyStart:) toView:page];
+    _spyMemWatchSwitch = [self addToggleCardWithLocKey:@"spy_mem_watch" symbol:@"waveform.path.ecg.rectangle" frame:CGRectMake(4, 38, w - 8, 34) action:@selector(toggleSpyMemWatch:) toView:page];
 
-    UILabel *callHeader = [[UILabel alloc] initWithFrame:CGRectMake(6, 42, w - 12, 12)];
+    UILabel *callHeader = [[UILabel alloc] initWithFrame:CGRectMake(6, 80, w - 12, 12)];
     callHeader.font = [UIFont systemFontOfSize:10 weight:UIFontWeightHeavy];
     callHeader.textColor = COLOR_CYAN;
     callHeader.text = @"CALL TRACE";
@@ -1014,7 +1021,7 @@ game_sdk_t *game_sdk = new game_sdk_t();
     // Chia phần còn lại làm 2: CALL TRACE (dlopen/dlsym/mmap/mprotect/vm_protect/
     // vm_write mà dylib B gọi) ở trên, MEM DIFF (vùng __TEXT bị ghi đè) ở dưới -
     // cùng cách chia INFO tab đang dùng cho DELTA VFS / UDP LOG.
-    CGFloat logsTop = 56;
+    CGFloat logsTop = 94;
     CGFloat logsAvail = frame.size.height - logsTop - 4;
     CGFloat callLogH = logsAvail * 0.6f;
     CGFloat memHeaderH = 14;
@@ -1053,6 +1060,17 @@ game_sdk_t *game_sdk = new game_sdk_t();
     [page addSubview:_spyMemLogView];
 
     return page;
+}
+
+// Chỉ XIN BẬT (không tắt lại được - đã vá GOT rồi thì không gỡ ra nữa, gỡ nửa
+// chừng còn rủi ro hơn để nguyên). Nhỡ tay bật rồi tắt lại thì switch tự nhảy
+// ngay về ON, phản ánh đúng trạng thái thật (đã xin bật thì không rút lại được).
+- (void)toggleSpyStart:(UISwitch *)sender {
+    if (sender.on) {
+        DylibSpy_startMonitoring();
+    } else {
+        sender.on = DylibSpy_monitoringRequested();
+    }
 }
 
 - (void)toggleSpyMemWatch:(UISwitch *)sender {
