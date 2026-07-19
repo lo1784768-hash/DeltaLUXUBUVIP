@@ -40,14 +40,14 @@ jobs:
             exit 1
           fi
           echo "Using defs file: $MACH_EXC_DEFS"
-          mkdir -p Source/Generated
-          mig -header Source/Generated/mach_exc.h \
-              -user Source/Generated/mach_excUser.c \
-              -server Source/Generated/mach_excServer.c \
-              -sheader Source/Generated/mach_exc_server.h \
+          mkdir -p Source/Includes/Generated
+          mig -header Source/Includes/Generated/mach_exc.h \
+              -user Source/Includes/Generated/mach_excUser.c \
+              -server Source/Includes/Generated/mach_excServer.c \
+              -sheader Source/Includes/Generated/mach_exc_server.h \
               "$MACH_EXC_DEFS"
           echo "Generated files:"
-          ls -la Source/Generated
+          ls -la Source/Includes/Generated
 
       - name: Build with Theos
         run: |
