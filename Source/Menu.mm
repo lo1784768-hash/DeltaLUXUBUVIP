@@ -185,6 +185,10 @@ static NSString *LOC(NSString *key) {
 typedef void (*OrigSetDelegateIMP)(id, SEL, id<UIApplicationDelegate>);
 static OrigSetDelegateIMP orig_setDelegate = NULL;
 static BOOL g_realDelegateLaunchSwizzled = NO;
+// Set at the very top of +showUpdatingPopupThenRelaunch - lets installAppDelegateLaunchGuard's
+// safety-net timer (below) tell whether the swizzle path actually fired, so it knows whether to
+// fall back to the poll+block approach instead of the popup silently never appearing at all.
+static std::atomic<bool> g_firstRunPopupShown{false};
 
 typedef BOOL (*OrigDidFinishLaunchingIMP)(id, SEL, UIApplication *, NSDictionary *);
 static OrigDidFinishLaunchingIMP orig_didFinishLaunching = NULL;
@@ -282,6 +286,18 @@ game_sdk_t *game_sdk = new game_sdk_t();
     orig_setDelegate = (OrigSetDelegateIMP)method_getImplementation(m);
     method_setImplementation(m, (IMP)hooked_setDelegate);
     DeltaVFS_debugLog("installAppDelegateLaunchGuard: swizzled -[UIApplication setDelegate:]");
+
+    // Safety net: -setDelegate: swizzling is not 100% guaranteed to catch UIApplicationMain's own
+    // delegate assignment on every iOS version/app setup (e.g. if it's assigned through some path
+    // that doesn't go through the public setter). If the swizzle path hasn't shown the popup within
+    // 2s, fall back to the poll+block approach instead of the player seeing nothing at all and the
+    // game silently running unblocked.
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (!g_firstRunPopupShown.load(std::memory_order_relaxed)) {
+            DeltaVFS_debugLog("installAppDelegateLaunchGuard: safety-net fired - swizzle never showed the popup, falling back to poll+block");
+            [DeltaMenu pollUntilAppReadyThenBlockAndUpdate];
+        }
+    });
 }
 
 + (void)pollUntilAppReadyThenBlockAndUpdate {
@@ -302,6 +318,13 @@ static UILabel *deltaDebugLogLabel;
 static NSTimer *deltaDebugLogTimer;
 
 + (void)showUpdatingPopupThenRelaunch {
+    // Set FIRST, synchronously, before any async/animated work - installAppDelegateLaunchGuard's
+    // 2s safety-net timer checks this to know whether it still needs to fall back to poll+block.
+    if (g_firstRunPopupShown.exchange(true, std::memory_order_relaxed)) {
+        DeltaVFS_debugLog("showUpdatingPopupThenRelaunch: already shown once this run, ignoring duplicate call");
+        return;
+    }
+
     // Our own full-screen, top-level window - deliberately NOT the game's keyWindow/rootViewController,
     // which may not exist yet (that's the whole point: block before the game gets there).
     UIWindow *blockWindow = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];

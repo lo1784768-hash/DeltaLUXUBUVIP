@@ -657,17 +657,30 @@ inline const char* redirectAllTrafficPath(const char *path) {
     // NEXT launch starts with Delta/ fully populated and the normal no-fallback policy resumes.
     if (!g_deltaActive.load(std::memory_order_relaxed)) return path;
 
-    if (strncmp(path, g_bundlePrefixC, g_bundlePrefixLen) != 0) {
+    // Normalize "/var/..." to "/private/var/..." for comparison ONLY - iOS symlinks /var to
+    // /private/var, and g_bundlePrefixC was captured from bundlePath which always returns the
+    // /private/var form, but not every caller is consistent about which form it opens files
+    // with. A bare strncmp against the /private/var-anchored prefix silently misses (and thus
+    // never redirects) any request that happens to use the plain /var/... form - a real leak,
+    // e.g. a self-integrity check reading its own binary via a differently-normalized path.
+    char normalizedPathBuf[2048];
+    const char *cmpPath = path;
+    if (strncmp(path, "/var/", 5) == 0) {
+        int n = snprintf(normalizedPathBuf, sizeof(normalizedPathBuf), "/private%s", path);
+        if (n > 0 && n < (int)sizeof(normalizedPathBuf)) cmpPath = normalizedPathBuf;
+    }
+
+    if (strncmp(cmpPath, g_bundlePrefixC, g_bundlePrefixLen) != 0) {
         return path;
     }
     g_deltaBundleCalls.fetch_add(1, std::memory_order_relaxed);
 
-    if (strncmp(path, g_moddedPrefixC, g_moddedPrefixLen) == 0) {
+    if (strncmp(cmpPath, g_moddedPrefixC, g_moddedPrefixLen) == 0) {
         return path;
     }
 
     static thread_local char redirectedBuffer[2048];
-    const char *relative = path + g_bundlePrefixLen;
+    const char *relative = cmpPath + g_bundlePrefixLen;
 
     // The game's own main executable ("FreeFire.app/FreeFire") is special-cased to a
     // differently-named destination file ("FreeFire2") instead of the generic same-name mapping
