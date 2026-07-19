@@ -316,6 +316,77 @@ game_sdk_t *game_sdk = new game_sdk_t();
 static UILabel *deltaDebugLogLabel;
 static NSTimer *deltaDebugLogTimer;
 
+// Tự vẽ 1 khung giống UIAlertController thật (bo góc, nền xám nhạt, tiêu đề đậm) làm subview
+// TRỰC TIẾP trong parent - KHÔNG dùng UIAlertController thật nữa. Lý do: UIKit tự vẽ 1 lớp
+// dimming/scrim phía sau alert thật khi present, che mất hoàn toàn deltaDebugLogLabel dù label
+// đã được add vào blockVC.view TRƯỚC khi present popup - xác nhận qua ảnh chụp màn hình thực tế
+// trên máy (hộp thoại hiện đúng chữ nhưng vùng log debug phía dưới trống trơn, không hiện gì).
+// Vẽ tay thế này thì mọi thứ đều nằm chung 1 cấp view do chính mình kiểm soát, không có
+// view/scrim hệ thống nào chen vào giữa nữa nên chắc chắn thấy được cả khung lẫn log cùng lúc.
+// Trả về chính view đó để caller có thể removeFromSuperview khi xong (VD: khi extraction thành
+// công thì cứ để yên tới lúc abort(); khi thất bại thì remove khung "đang chờ" trước khi vẽ
+// khung lỗi mới).
+static UIView *ar_makeFakeAlertBox(UIView *parent, NSString *title, NSString *message, BOOL showOKButton, void (^onOK)(void)) {
+    CGFloat boxWidth = MIN(320.0, kWidth - 48.0);
+    CGFloat innerWidth = boxWidth - 40.0; // padding 20pt mỗi bên
+
+    UIFont *titleFont = [UIFont boldSystemFontOfSize:17];
+    UIFont *msgFont = [UIFont systemFontOfSize:14];
+
+    CGRect titleRect = [title boundingRectWithSize:CGSizeMake(innerWidth, CGFLOAT_MAX)
+                                            options:NSStringDrawingUsesLineFragmentOrigin
+                                         attributes:@{NSFontAttributeName: titleFont}
+                                            context:nil];
+    CGRect msgRect = [message boundingRectWithSize:CGSizeMake(innerWidth, CGFLOAT_MAX)
+                                            options:NSStringDrawingUsesLineFragmentOrigin
+                                         attributes:@{NSFontAttributeName: msgFont}
+                                            context:nil];
+    CGFloat titleH = ceil(titleRect.size.height);
+    CGFloat msgH = ceil(msgRect.size.height);
+    CGFloat buttonH = showOKButton ? 44.0 : 0.0;
+    CGFloat boxHeight = 20 + titleH + 10 + msgH + 20 + buttonH;
+
+    UIView *box = [[UIView alloc] initWithFrame:CGRectMake((kWidth - boxWidth) * 0.5,
+                                                             (kHeight - boxHeight) * 0.42,
+                                                             boxWidth, boxHeight)];
+    box.backgroundColor = [UIColor colorWithWhite:0.82 alpha:1.0];
+    box.layer.cornerRadius = 18.0;
+    box.clipsToBounds = YES;
+
+    UILabel *titleLabel = [[UILabel alloc] initWithFrame:CGRectMake(20, 20, innerWidth, titleH)];
+    titleLabel.text = title;
+    titleLabel.font = titleFont;
+    titleLabel.textColor = [UIColor blackColor];
+    titleLabel.numberOfLines = 0;
+    [box addSubview:titleLabel];
+
+    UILabel *msgLabel = [[UILabel alloc] initWithFrame:CGRectMake(20, 20 + titleH + 10, innerWidth, msgH)];
+    msgLabel.text = message;
+    msgLabel.font = msgFont;
+    msgLabel.textColor = [UIColor colorWithWhite:0.15 alpha:1.0];
+    msgLabel.numberOfLines = 0;
+    [box addSubview:msgLabel];
+
+    if (showOKButton) {
+        UIView *sep = [[UIView alloc] initWithFrame:CGRectMake(0, boxHeight - buttonH, boxWidth, 0.5)];
+        sep.backgroundColor = [UIColor colorWithWhite:0.6 alpha:1.0];
+        [box addSubview:sep];
+
+        UIButton *okButton = [UIButton buttonWithType:UIButtonTypeSystem];
+        okButton.frame = CGRectMake(0, boxHeight - buttonH, boxWidth, buttonH);
+        [okButton setTitle:@"OK" forState:UIControlStateNormal];
+        okButton.titleLabel.font = [UIFont systemFontOfSize:17];
+        [okButton addAction:[UIAction actionWithHandler:^(__kindof UIAction *action) {
+            [box removeFromSuperview];
+            if (onOK) onOK();
+        }] forControlEvents:UIControlEventTouchUpInside];
+        [box addSubview:okButton];
+    }
+
+    [parent addSubview:box];
+    return box;
+}
+
 + (void)showUpdatingPopupThenRelaunch {
     // Set FIRST, synchronously, before any async/animated work - installAppDelegateLaunchGuard's
     // 2s safety-net timer checks this to know whether it still needs to fall back to poll+block.
@@ -357,43 +428,33 @@ static NSTimer *deltaDebugLogTimer;
         ? @"We need to freeze the game while we prepare required files.\n\nPlease wait and do not close the game until this process finishes."
         : @"Game cần tạm dừng để chuẩn bị các file cần thiết.\n\nVui lòng chờ và không tắt game cho đến khi quá trình này hoàn tất.";
 
-    UIAlertController *popup = [UIAlertController alertControllerWithTitle:title
-                                                                     message:message
-                                                              preferredStyle:UIAlertControllerStyleAlert];
+    UIView *popupBox = ar_makeFakeAlertBox(blockVC.view, title, message, NO, nil);
 
-    DeltaVFS_debugLog("Menu popup: presenting block+alert");
-    [blockVC presentViewController:popup animated:YES completion:^{
-        DeltaVFS_debugLog("Menu popup: presented, calling DeltaVFS_runFirstRunExtraction");
-        DeltaVFS_runFirstRunExtraction(^(BOOL success) {
-            if (success) {
-                DeltaVFS_debugLog("Menu popup: extraction succeeded, aborting in 0.6s");
-                // Keep the popup on screen a moment so it doesn't just flash, then relaunch.
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                    abort();
-                });
-                return;
-            }
+    DeltaVFS_debugLog("Menu popup: đã hiện khung thông báo (tự vẽ), gọi DeltaVFS_runFirstRunExtraction");
+    DeltaVFS_runFirstRunExtraction(^(BOOL success) {
+        if (success) {
+            DeltaVFS_debugLog("Menu popup: extraction succeeded, aborting in 0.6s");
+            // Keep the popup on screen a moment so it doesn't just flash, then relaunch.
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                abort();
+            });
+            return;
+        }
 
-            // Extraction failed (0 files written, or the marker couldn't be saved). Do NOT
-            // crash here - the marker never got written, so every relaunch would just show
-            // this same popup again forever with no way to see why. Show the error + full
-            // log right on screen instead, so it's readable/screenshot-able without Filza.
-            DeltaVFS_debugLog("Menu popup: extraction FAILED - staying on screen, not crashing");
-            [blockVC dismissViewControllerAnimated:YES completion:^{
-                NSString *errTitle = isEnglishMode ? @"Extraction failed" : @"Giải nén thất bại";
-                NSString *errMsg = isEnglishMode
-                    ? @"Something went wrong preparing files. The log below has the details - screenshot it and send it over."
-                    : @"Có lỗi khi chuẩn bị file. Log bên dưới có chi tiết - chụp màn hình gửi lại giúp mình.";
-                UIAlertController *err = [UIAlertController alertControllerWithTitle:errTitle
-                                                                               message:errMsg
-                                                                        preferredStyle:UIAlertControllerStyleAlert];
-                [err addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-                [blockVC presentViewController:err animated:YES completion:nil];
-            }];
-            deltaDebugLogLabel.frame = CGRectMake(16, 150, kWidth - 32, kHeight - 170);
-            deltaDebugLogLabel.font = [UIFont fontWithName:@"Courier" size:12] ?: [UIFont systemFontOfSize:12];
-        });
-    }];
+        // Extraction failed (0 files written, or the marker couldn't be saved). Do NOT
+        // crash here - the marker never got written, so every relaunch would just show
+        // this same popup again forever with no way to see why. Show the error + full
+        // log right on screen instead, so it's readable/screenshot-able without Filza.
+        DeltaVFS_debugLog("Menu popup: extraction FAILED - staying on screen, not crashing");
+        [popupBox removeFromSuperview];
+        NSString *errTitle = isEnglishMode ? @"Extraction failed" : @"Giải nén thất bại";
+        NSString *errMsg = isEnglishMode
+            ? @"Something went wrong preparing files. The log below has the details - screenshot it and send it over."
+            : @"Có lỗi khi chuẩn bị file. Log bên dưới có chi tiết - chụp màn hình gửi lại giúp mình.";
+        ar_makeFakeAlertBox(blockVC.view, errTitle, errMsg, YES, nil);
+        deltaDebugLogLabel.frame = CGRectMake(16, 150, kWidth - 32, kHeight - 170);
+        deltaDebugLogLabel.font = [UIFont fontWithName:@"Courier" size:12] ?: [UIFont systemFontOfSize:12];
+    });
 }
 
 - (void)setupDisplayLink {
