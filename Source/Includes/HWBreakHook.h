@@ -102,13 +102,37 @@ static inline bool hwbreakSetThreadState(thread_t thread, arm_debug_state64_t *d
 // BCR: BAS=1111 (khớp đủ 4 byte lệnh) | PMC=10 (chỉ EL0 - userspace) | E=1 (bật)
 #define HWBREAK_BCR_VALUE ((0xFu << 5) | (0x2u << 1) | 0x1u)
 
+// Khoá chung giữa thread poll (hwbreakRearmPollThreadFn, quét TẤT CẢ thread mỗi 200ms) và
+// thread xử lý exception (hwbreakHandleException) - cả 2 đều đọc/ghi arm_debug_state64_t của
+// cùng 1 thread. KHÔNG khoá theo từng thread_t (mảng/bảng khoá theo cầu port name) vì port
+// name có thể bị tái sử dụng - xem lý do đã né hoàn toàn kiểu bug đó ở hwbreakHandleException.
+// Dùng 1 mutex TOÀN CỤC duy nhất, không định danh theo thread, nên không có rủi ro đó: chấp
+// nhận đánh đổi là quét rearm bị chặn trong lúc 1 exception đang được xử lý (rất ngắn, vài
+// lệnh Mach RPC) - rẻ hơn nhiều so với việc để 2 bên ghi đè debug register của nhau.
+//
+// Đây chính là nguyên nhân treo phát hiện qua crash log FreeFire-2026-07-20-044938.ips (watchdog
+// 0x8BADF00D "scene-update", CPU app ~0% lúc bị kill - tức có thread bị KẸT CHỜ chứ không chạy
+// vòng lặp): rearm-poll thread có thể chen vào ĐÚNG lúc handler vừa tắt breakpoint + bật
+// single-step để cho 1 lệnh gốc chạy nhưng CHƯA kịp reply - poll thread đọc lại state (thấy
+// __bcr đang tắt, tưởng là "thread chưa được arm") rồi ghi đè __bcr về ENABLED trong khi PC vẫn
+// còn đứng ở đúng địa chỉ open() và single-step vẫn đang bật -> thread không bao giờ thoát khỏi
+// vòng lặp chạm-breakpoint dù chưa từng spin CPU thật sự (mỗi lần đều đi vào lại kernel chờ
+// exception tiếp theo). Thread đó (rất có thể là thread khởi tạo Firebase Crashlytics, đang gọi
+// open() để đọc file) không bao giờ hoàn tất dispatch_once, kéo theo main thread kẹt chờ vô hạn.
+static pthread_mutex_t g_hwbreakDbgMutex = PTHREAD_MUTEX_INITIALIZER;
+
 static bool hwbreakArmBreakpointOnThread(thread_t thread, uint64_t addr) {
+    pthread_mutex_lock(&g_hwbreakDbgMutex);
     arm_debug_state64_t dbg;
     memset(&dbg, 0, sizeof(dbg));
-    if (!hwbreakArmThreadState(thread, &dbg)) return false;
-    dbg.__bvr[0] = addr;
-    dbg.__bcr[0] = HWBREAK_BCR_VALUE;
-    return hwbreakSetThreadState(thread, &dbg);
+    bool ok = hwbreakArmThreadState(thread, &dbg);
+    if (ok) {
+        dbg.__bvr[0] = addr;
+        dbg.__bcr[0] = HWBREAK_BCR_VALUE;
+        ok = hwbreakSetThreadState(thread, &dbg);
+    }
+    pthread_mutex_unlock(&g_hwbreakDbgMutex);
+    return ok;
 }
 
 static void hwbreakArmAllExistingThreads(uint64_t addr) {
@@ -181,7 +205,11 @@ static void hwbreakHandleException(const hwbreak_exc_request_t *req) {
         }
 
         // Tắt breakpoint này, bật single-step để cho đúng 1 lệnh (lệnh gốc, với x0 đã đổi)
-        // chạy trước khi bắt lại.
+        // chạy trước khi bắt lại. Khoá g_hwbreakDbgMutex trong lúc đọc-sửa-ghi để rearm-poll
+        // thread không chen vào ghi đè __bcr về ENABLED giữa chừng (xem giải thích ở khai báo
+        // g_hwbreakDbgMutex phía trên - đây là nguyên nhân treo đã xác định từ crash log
+        // FreeFire-2026-07-20-044938.ips).
+        pthread_mutex_lock(&g_hwbreakDbgMutex);
         arm_debug_state64_t dbg;
         memset(&dbg, 0, sizeof(dbg));
         if (hwbreakArmThreadState(faultingThread, &dbg)) {
@@ -189,9 +217,11 @@ static void hwbreakHandleException(const hwbreak_exc_request_t *req) {
             dbg.__mdscr_el1 |= 0x1u; // bật Single Step
             hwbreakSetThreadState(faultingThread, &dbg);
         }
+        pthread_mutex_unlock(&g_hwbreakDbgMutex);
     } else {
         // Đây là exception single-step (đã chạy xong đúng 1 lệnh gốc) - bật lại breakpoint,
-        // tắt single-step, để thread chạy tiếp bình thường từ lệnh thứ 2 trở đi.
+        // tắt single-step, để thread chạy tiếp bình thường từ lệnh thứ 2 trở đi. Khoá tương tự.
+        pthread_mutex_lock(&g_hwbreakDbgMutex);
         arm_debug_state64_t dbg;
         memset(&dbg, 0, sizeof(dbg));
         if (hwbreakArmThreadState(faultingThread, &dbg)) {
@@ -199,6 +229,7 @@ static void hwbreakHandleException(const hwbreak_exc_request_t *req) {
             dbg.__mdscr_el1 &= ~0x1u; // tắt Single Step
             hwbreakSetThreadState(faultingThread, &dbg);
         }
+        pthread_mutex_unlock(&g_hwbreakDbgMutex);
     }
 }
 
@@ -222,6 +253,18 @@ static void *hwbreakServerThreadFn(void *ctx) {
         if (req.Head.msgh_id != HWBREAK_EXC_RAISE_MSGID) continue; // bỏ qua message lạ, không reply
 
         hwbreakHandleException(&req);
+
+        // Message exception mang theo SEND RIGHT cho thread port và task port của thread bị
+        // chạm breakpoint (mach_msg_port_descriptor_t) - đây là quyền sở hữu thật, PHẢI
+        // mach_port_deallocate sau khi dùng xong, nếu không sẽ RÒ RỈ PORT mỗi lần open() bị
+        // chạm breakpoint. open() được gọi rất nhiều lần trong lúc app khởi động (đọc Info.plist,
+        // load framework, Firebase Crashlytics init, v.v.) nên rò rỉ này tích luỹ rất nhanh.
+        if (MACH_PORT_VALID(req.thread.name)) {
+            mach_port_deallocate(mach_task_self(), req.thread.name);
+        }
+        if (MACH_PORT_VALID(req.task.name)) {
+            mach_port_deallocate(mach_task_self(), req.task.name);
+        }
 
         hwbreak_exc_reply_t reply;
         memset(&reply, 0, sizeof(reply));
