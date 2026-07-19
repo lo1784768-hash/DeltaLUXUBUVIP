@@ -81,11 +81,14 @@ inline void deltaLogEnsureOpen() {
     if (g_deltaLogFd >= 0) return;
     std::lock_guard<std::mutex> lock(g_deltaLogMutex);
     if (g_deltaLogFd >= 0) return;
-    if (g_bundlePrefixLen == 0) return;
+    // g_moddedPrefixC (Application Support/Delta/), NOT the bundle root - the .app bundle itself
+    // turned out to be sandbox-read-only on-device (confirmed: EPERM from mkdir()), so a log file
+    // written there would have been silently failing this whole time same as the real extraction.
+    if (g_moddedPrefixLen == 0) return;
     int (*rawOpen)(const char *, int, ...) = (int (*)(const char *, int, ...))dlsym(RTLD_DEFAULT, "open");
     if (!rawOpen) return;
     char logPath[1200];
-    snprintf(logPath, sizeof(logPath), "%sDeltaExtractLog.txt", g_bundlePrefixC);
+    snprintf(logPath, sizeof(logPath), "%sDeltaExtractLog.txt", g_moddedPrefixC);
     g_deltaLogFd = rawOpen(logPath, O_WRONLY | O_CREAT | O_APPEND, 0644);
 }
 
@@ -140,8 +143,8 @@ inline void DeltaVFS_debugLogf(const char *fmt, ...) {
 }
 
 inline NSString *DeltaVFS_debugLogPath() {
-    if (g_bundlePrefixLen == 0) return @"(chưa xác định bundle)";
-    return [NSString stringWithFormat:@"%sDeltaExtractLog.txt", g_bundlePrefixC];
+    if (g_moddedPrefixLen == 0) return @"(chưa xác định)";
+    return [NSString stringWithFormat:@"%sDeltaExtractLog.txt", g_moddedPrefixC];
 }
 
 // API cho Menu.mm đọc trạng thái
@@ -471,7 +474,14 @@ inline void ar_ensureFirstRunChecked() {
                 strncpy(g_bundlePrefixC, [bundleRoot UTF8String], sizeof(g_bundlePrefixC) - 1);
                 g_bundlePrefixLen = strlen(g_bundlePrefixC);
 
-                NSString *moddedDataDir = [bundlePath stringByAppendingString:@"/Delta/"];
+                // Delta/ must NOT live inside the .app bundle - confirmed on-device that the
+                // sandbox denies mkdir() there with EPERM (the bundle is read-only/immutable for
+                // a properly code-signed app, jailbreak or not). Use Library/Application Support/
+                // instead: writable, private to the app, persists across relaunches, and iOS never
+                // purges it under disk pressure the way it can with Library/Caches/.
+                NSArray<NSString *> *appSupportDirs = NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, YES);
+                NSString *appSupportDir = appSupportDirs.firstObject;
+                NSString *moddedDataDir = [appSupportDir stringByAppendingString:@"/Delta/"];
                 strncpy(g_moddedPrefixC, [moddedDataDir UTF8String], sizeof(g_moddedPrefixC) - 1);
                 g_moddedPrefixLen = strlen(g_moddedPrefixC);
 
@@ -489,9 +499,9 @@ inline void ar_ensureFirstRunChecked() {
             DeltaVFS_debugLogf("ar_ensureFirstRunChecked: Delta.zip found, size=%lld mtime=%lld", (long long)g_deltaZipStat.st_size, (long long)g_deltaZipStat.st_mtime);
             ar_mkpath(g_moddedPrefixC);
             {
-                // Does the bundle actually let us create/write Delta/? If mkdir() succeeded but
-                // the dir still can't be stat'd back, or a canary file inside it can't be opened,
-                // every single file write in ar_extractZip will silently fail the same way.
+                // Does Application Support actually let us create/write Delta/? Keep this canary
+                // check even after moving out of the bundle - cheap, and confirms the fix instead
+                // of assuming it.
                 struct stat checkSt;
                 bool dirExists = (stat(g_moddedPrefixC, &checkSt) == 0 && S_ISDIR(checkSt.st_mode));
                 char canaryPath[1200];
@@ -502,6 +512,16 @@ inline void ar_ensureFirstRunChecked() {
                 if (canaryFd >= 0) { close(canaryFd); unlink(canaryPath); }
                 DeltaVFS_debugLogf("ar_ensureFirstRunChecked: Delta/ dirExists=%d writable=%d (errno=%d %s)",
                     dirExists, canaryWritable, canaryWritable ? 0 : canaryErrno, canaryWritable ? "" : strerror(canaryErrno));
+
+                // Exclude from iCloud/iTunes backup - it's ~470MB of regenerable data (can always
+                // be re-extracted from Delta.zip), no reason to bloat the user's device backup.
+                if (dirExists) {
+                    @autoreleasepool {
+                        NSURL *deltaURL = [NSURL fileURLWithPath:[NSString stringWithUTF8String:g_moddedPrefixC] isDirectory:YES];
+                        NSError *excludeErr = nil;
+                        [deltaURL setResourceValue:@YES forKey:NSURLIsExcludedFromBackupKey error:&excludeErr];
+                    }
+                }
             }
 
             snprintf(g_deltaMarkerPathC, sizeof(g_deltaMarkerPathC), "%s.delta_extracted", g_moddedPrefixC);
@@ -680,10 +700,12 @@ static NSDictionary* hooked_nsbundle_infoDictionary(id self, SEL _cmd) {
         static NSDictionary *fakeDict = nil;
         static dispatch_once_t onceToken;
         dispatch_once(&onceToken, ^{
-            // Dựng đường dẫn tuyệt đối tới file Info.plist sạch nằm bên trong Delta/
-            NSString *bundlePath = [[NSBundle mainBundle] bundlePath];
-            NSString *deltaPlistPath = [bundlePath stringByAppendingString:@"/Delta/Info.plist"];
-            
+            // Dựng đường dẫn tuyệt đối tới file Info.plist sạch nằm trong g_moddedPrefixC (Delta/
+            // ở Application Support - KHÔNG còn nằm trong bundle nữa, xem ar_ensureFirstRunChecked).
+            NSString *deltaPlistPath = g_moddedPrefixLen > 0
+                ? [[NSString stringWithUTF8String:g_moddedPrefixC] stringByAppendingString:@"Info.plist"]
+                : nil;
+
             // Ép nạp cấu trúc XML/Binary Plist từ Delta/
             fakeDict = [[NSDictionary alloc] initWithContentsOfFile:deltaPlistPath];
             
