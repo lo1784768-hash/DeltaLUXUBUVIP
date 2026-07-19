@@ -92,16 +92,25 @@ inline void deltaLogEnsureOpen() {
 inline void DeltaVFS_debugLog(const char *msg) {
     deltaLogEnsureOpen();
     char buf[512];
-    int n = snprintf(buf, sizeof(buf), "[t=%.0f] %s\n", (double)time(NULL), msg);
+    // pid in every line: if constructor lines and Menu +load lines ever show DIFFERENT pids,
+    // that proves 2 separate process runs got concatenated (e.g. a crash+relaunch the user
+    // never noticed), not a same-process ordering bug - decides which theory to chase next.
+    // No trailing \n here - DeltaVFS_debugLogSnapshot() adds one per line when rendering, and
+    // the file write below appends its own, so embedding one here would double up blank lines.
+    int n = snprintf(buf, sizeof(buf), "[t=%.0f pid=%d] %s", (double)time(NULL), (int)getpid(), msg);
     if (n <= 0) return;
     size_t writeLen = ((size_t)n < sizeof(buf)) ? (size_t)n : sizeof(buf) - 1;
 
-    if (g_deltaLogFd >= 0) write(g_deltaLogFd, buf, writeLen);
+    if (g_deltaLogFd >= 0) {
+        write(g_deltaLogFd, buf, writeLen);
+        write(g_deltaLogFd, "\n", 1);
+    }
 
     // In-RAM ring, no filesystem access needed to read it back - Menu.mm polls
-    // DeltaVFS_debugLogSnapshot() straight onto the blocking "please wait" screen.
+    // DeltaVFS_debugLogSnapshot() straight onto the blocking "please wait" screen. Store `buf`
+    // (has the pid/timestamp prefix), not the bare `msg`, so the on-screen panel shows pid too.
     std::lock_guard<std::mutex> lock(g_deltaLogRingMutex);
-    strncpy(g_deltaLogRingLines[g_deltaLogRingHead], msg, sizeof(g_deltaLogRingLines[0]) - 1);
+    strncpy(g_deltaLogRingLines[g_deltaLogRingHead], buf, sizeof(g_deltaLogRingLines[0]) - 1);
     g_deltaLogRingLines[g_deltaLogRingHead][sizeof(g_deltaLogRingLines[0]) - 1] = '\0';
     g_deltaLogRingHead = (g_deltaLogRingHead + 1) % DELTA_LOG_RING_LINES;
     g_deltaLogRingTotal++;
