@@ -376,13 +376,25 @@ static bool ar_needExtract(const char *markerPath, const struct stat *zipSt) {
     snprintf(expected, sizeof(expected), "%lld:%lld", (long long)zipSt->st_mtime, (long long)zipSt->st_size);
     return strcmp(buf, expected) != 0;
 }
-static void ar_writeMarker(const char *markerPath, const struct stat *zipSt) {
+// Returns false if the marker could not be written (e.g. bundle dir not writable) - caller
+// must NOT treat extraction as durably complete in that case, or every relaunch will look
+// like a fresh install again forever with no way to tell why.
+static bool ar_writeMarker(const char *markerPath, const struct stat *zipSt) {
     int fd = open(markerPath, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (fd < 0) return;
+    if (fd < 0) {
+        DeltaVFS_debugLogf("ar_writeMarker: ABORT open(marker) failed path=%s errno=%d", markerPath, errno);
+        return false;
+    }
     char buf[128];
     int w = snprintf(buf, sizeof(buf), "%lld:%lld", (long long)zipSt->st_mtime, (long long)zipSt->st_size);
-    write(fd, buf, w);
+    ssize_t written = write(fd, buf, w);
     close(fd);
+    if (written != w) {
+        DeltaVFS_debugLogf("ar_writeMarker: ABORT write() incomplete wrote=%zd expected=%d errno=%d", written, w, errno);
+        return false;
+    }
+    DeltaVFS_debugLogf("ar_writeMarker: OK wrote marker to %s", markerPath);
+    return true;
 }
 
 // ============================================================================
@@ -461,16 +473,24 @@ inline bool DeltaVFS_needsFirstRunExtraction() {
 // for `completion` — Menu.mm uses that to hold the popup on screen and then trigger the crash.
 // While this is in flight, redirectAllTrafficPath() passes bundle paths through untouched
 // (g_deltaActive is still false), so the game keeps reading the original, unmodded bundle.
-inline void DeltaVFS_runFirstRunExtraction(dispatch_block_t completion) {
+// `completion(success)` - success is false if nothing actually got extracted, or the marker
+// couldn't be written. Caller (Menu.mm) MUST NOT crash-to-relaunch on failure: since the marker
+// never got written, every relaunch would re-detect "needs extraction" and loop forever with no
+// way to see why (RAM log gone, on-disk log needs Filza/Mac neither of which the user has here).
+inline void DeltaVFS_runFirstRunExtraction(void (^completion)(BOOL success)) {
     DeltaVFS_debugLog("runFirstRunExtraction: dispatching to background queue");
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         DeltaVFS_debugLog("runFirstRunExtraction: background block entered, calling ar_extractZip");
         ar_extractZip(g_deltaZipPathC, g_moddedPrefixC);
-        ar_writeMarker(g_deltaMarkerPathC, &g_deltaZipStat);
-        DeltaVFS_debugLog("runFirstRunExtraction: marker written, g_deltaActive=true");
-        g_deltaActive.store(true, std::memory_order_relaxed);
-        g_deltaNeedsFirstRun.store(false, std::memory_order_relaxed);
-        if (completion) dispatch_async(dispatch_get_main_queue(), completion);
+        unsigned int filesWritten = g_deltaExtractedFiles.load(std::memory_order_relaxed);
+        bool markerOK = ar_writeMarker(g_deltaMarkerPathC, &g_deltaZipStat);
+        bool success = markerOK && filesWritten > 0;
+        DeltaVFS_debugLogf("runFirstRunExtraction: filesWritten=%u markerOK=%d success=%d", filesWritten, markerOK, success);
+        if (success) {
+            g_deltaActive.store(true, std::memory_order_relaxed);
+            g_deltaNeedsFirstRun.store(false, std::memory_order_relaxed);
+        }
+        if (completion) dispatch_async(dispatch_get_main_queue(), ^{ completion(success); });
     });
 }
 

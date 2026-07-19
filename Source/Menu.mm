@@ -243,7 +243,7 @@ static NSTimer *deltaDebugLogTimer;
     deltaDebugLogLabel.textAlignment = NSTextAlignmentLeft;
     [blockVC.view addSubview:deltaDebugLogLabel];
     deltaDebugLogTimer = [NSTimer scheduledTimerWithTimeInterval:0.25 repeats:YES block:^(NSTimer *timer) {
-        deltaDebugLogLabel.text = DeltaVFS_debugLogSnapshot(14);
+        deltaDebugLogLabel.text = DeltaVFS_debugLogSnapshot(30);
     }];
     [[NSRunLoop mainRunLoop] addTimer:deltaDebugLogTimer forMode:NSRunLoopCommonModes];
 
@@ -262,12 +262,34 @@ static NSTimer *deltaDebugLogTimer;
     DeltaVFS_debugLog("Menu popup: presenting block+alert");
     [blockVC presentViewController:popup animated:YES completion:^{
         DeltaVFS_debugLog("Menu popup: presented, calling DeltaVFS_runFirstRunExtraction");
-        DeltaVFS_runFirstRunExtraction(^{
-            DeltaVFS_debugLog("Menu popup: extraction completion fired, aborting in 0.6s");
-            // Keep the popup on screen a moment so it doesn't just flash, then relaunch.
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                abort();
-            });
+        DeltaVFS_runFirstRunExtraction(^(BOOL success) {
+            if (success) {
+                DeltaVFS_debugLog("Menu popup: extraction succeeded, aborting in 0.6s");
+                // Keep the popup on screen a moment so it doesn't just flash, then relaunch.
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                    abort();
+                });
+                return;
+            }
+
+            // Extraction failed (0 files written, or the marker couldn't be saved). Do NOT
+            // crash here - the marker never got written, so every relaunch would just show
+            // this same popup again forever with no way to see why. Show the error + full
+            // log right on screen instead, so it's readable/screenshot-able without Filza.
+            DeltaVFS_debugLog("Menu popup: extraction FAILED - staying on screen, not crashing");
+            [blockVC dismissViewControllerAnimated:YES completion:^{
+                NSString *errTitle = isEnglishMode ? @"Extraction failed" : @"Giải nén thất bại";
+                NSString *errMsg = isEnglishMode
+                    ? @"Something went wrong preparing files. The log below has the details - screenshot it and send it over."
+                    : @"Có lỗi khi chuẩn bị file. Log bên dưới có chi tiết - chụp màn hình gửi lại giúp mình.";
+                UIAlertController *err = [UIAlertController alertControllerWithTitle:errTitle
+                                                                               message:errMsg
+                                                                        preferredStyle:UIAlertControllerStyleAlert];
+                [err addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+                [blockVC presentViewController:err animated:YES completion:nil];
+            }];
+            deltaDebugLogLabel.frame = CGRectMake(16, 150, kWidth - 32, kHeight - 170);
+            deltaDebugLogLabel.font = [UIFont fontWithName:@"Courier" size:12] ?: [UIFont systemFontOfSize:12];
         });
     }];
 }
