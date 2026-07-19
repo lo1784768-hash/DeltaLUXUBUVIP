@@ -87,7 +87,15 @@ static std::atomic<unsigned long long> g_hwbreakInterceptCount{0};
 
 // Bộ đệm xoay vòng cho path đã redirect - tránh cấp phát động trong exception handler (không
 // an toàn để gọi malloc từ ngữ cảnh này) và tránh đụng độ giữa các lần gọi liên tiếp.
-#define HWBREAK_PATHBUF_SLOTS 8
+//
+// 8 CHỖ LÀ QUÁ ÍT: debug.log thực tế cho thấy tốc độ chặn open() có lúc lên tới ~500-2000
+// lần/giây (lúc giải nén/load asset dồn dập). Thread bị chặn breakpoint chỉ THẬT SỰ đọc x0 (đọc
+// nội dung buffer) sau khi mình reply xong VÀ kernel lập lịch cho nó chạy tiếp - có độ trễ thật
+// (dù nhỏ). Với tốc độ trên, chỉ cần trễ vài trăm micro-giây là đủ để 8 slot bị ghi đè vòng qua
+// trước khi thread gốc kịp đọc - nó sẽ mở NHẦM file hoặc đọc phải chuỗi đang bị ghi dở dang (dữ
+// liệu rác). Tăng lên 512 slot (512 x 2KB = 1MB tĩnh, chấp nhận được) để có biên độ an toàn rộng
+// hơn nhiều so với độ trễ round-trip thực tế của 1 lần exception.
+#define HWBREAK_PATHBUF_SLOTS 512
 static char g_hwbreakPathBufs[HWBREAK_PATHBUF_SLOTS][2048];
 static std::atomic<unsigned int> g_hwbreakPathBufNext{0};
 
@@ -278,9 +286,23 @@ static void *hwbreakServerThreadFn(void *ctx) {
         msgBuf.req.Head.msgh_size = sizeof(msgBuf);
         mach_msg_return_t mr = mach_msg(&msgBuf.req.Head, MACH_RCV_MSG, 0, sizeof(msgBuf),
                                          g_hwbreakExcPort, MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);
-        if (mr != MACH_MSG_SUCCESS) continue;
+        if (mr != MACH_MSG_SUCCESS) {
+            // Trước đây im lặng bỏ qua - nếu đây từng là nguyên nhân treo (thread gốc mất
+            // message, không bao giờ được reply) thì hoàn toàn không có dấu vết gì trong log.
+            DeltaVFS_debugLogf("HWBreakHook: mach_msg RCV thất bại mr=0x%x, bỏ qua message này", mr);
+            continue;
+        }
         hwbreak_exc_request_t &req = msgBuf.req;
-        if (req.Head.msgh_id != HWBREAK_EXC_RAISE_MSGID) continue; // bỏ qua message lạ, không reply
+        if (req.Head.msgh_id != HWBREAK_EXC_RAISE_MSGID) {
+            // QUAN TRỌNG: nếu đây là 1 exception message THẬT (không phải rác) mà msgh_id khác
+            // giá trị mình đoán (2405) - VD do 1 phiên bản iOS nào đó tạo message theo dạng khác
+            // - thì thread gốc sẽ bị bỏ rơi VĨNH VIỄN vì không bao giờ nhận được reply, và trước
+            // bản vá này thì không có log nào ghi lại việc đó cả. Log lại để biết chắc nếu đây là
+            // nguyên nhân.
+            DeltaVFS_debugLogf("HWBreakHook: nhận message msgh_id=%d (khác %d mong đợi) - BỎ QUA KHÔNG REPLY, thread gốc có thể bị treo vĩnh viễn nếu đây là exception thật",
+                                req.Head.msgh_id, HWBREAK_EXC_RAISE_MSGID);
+            continue;
+        }
 
         hwbreakHandleException(&req);
 
@@ -305,7 +327,17 @@ static void *hwbreakServerThreadFn(void *ctx) {
         reply.Head.msgh_id = req.Head.msgh_id + 100;
         reply.NDR = req.NDR;
         reply.RetCode = KERN_SUCCESS;
-        mach_msg(&reply.Head, MACH_SEND_MSG, sizeof(reply), 0, MACH_PORT_NULL, MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);
+        mach_msg_return_t sendResult = mach_msg(&reply.Head, MACH_SEND_MSG, sizeof(reply), 0, MACH_PORT_NULL, MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);
+        if (sendResult != MACH_MSG_SUCCESS) {
+            // TRƯỚC ĐÂY KHÔNG KIỂM TRA GIÁ TRỊ TRẢ VỀ Ở ĐÂY - nếu gửi reply thất bại (VD sai
+            // định dạng message, quyền gửi không hợp lệ, v.v.) thì thread gốc vẫn bị kernel giữ
+            // suspended VĨNH VIỄN chờ 1 reply không bao giờ tới đúng cách, mà mình hoàn toàn
+            // không biết gì cả vì code cứ lặng lẽ loop tiếp - khớp CHÍNH XÁC với triệu chứng quan
+            // sát được qua debug.log (bộ đếm g_hwbreakInterceptCount dừng tăng đột ngột, không
+            // crash, không log gì thêm). Log lại đây để xác nhận/loại trừ.
+            DeltaVFS_debugLogf("HWBreakHook: GỬI REPLY THẤT BẠI mr=0x%x cho thread=%u - thread đó rất có thể bị treo vĩnh viễn từ đây",
+                                sendResult, (unsigned)req.thread.name);
+        }
     }
     return NULL;
 }
