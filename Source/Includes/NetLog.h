@@ -570,7 +570,7 @@ inline ssize_t hooked_send(int fd, const void *buf, size_t count, int flags) {
     return orig_send(fd, buf, count, flags);
 }
 
-// Cài hook tầng socket. Gọi 1 lần lúc khởi động (từ installDNSBlockHook).
+// Cài hook tầng socket. Gọi 1 lần lúc khởi động (từ +[DeltaMenu load]).
 inline void installNetLogHook() {
     orig_connect  = (int (*)(int, const struct sockaddr *, socklen_t))dlsym((void *)RTLD_DEFAULT, "connect");
     orig_connectx = (int (*)(int, const sa_endpoints_t *, sae_associd_t, unsigned int,

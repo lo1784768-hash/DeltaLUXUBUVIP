@@ -13,6 +13,7 @@
 #import "Includes/ESP.h"
 #import "Includes/Encryption.h"
 #import "Includes/ModHacks.h"
+#import "Includes/NetLog.h"
 #import "Includes/AssetRedirect.h"
 #import "Includes/DylibSpy.h"
 
@@ -230,6 +231,12 @@ UIWindow *mainWindow;
 game_sdk_t *game_sdk = new game_sdk_t();
 
 + (void)load {
+    // Socket-layer hook (connect/connectx/sendto/write/send) - was previously installed inside
+    // the now-removed DNSBlock.h's installDNSBlockHook(). Still needed here on its own: it's what
+    // powers the MOD tab's "Chặn UDP Port" toggle (netLogSetUdpPortBlockEnabled) and NetLog's
+    // passive traffic logging, neither of which is DNS/ad-domain blocking.
+    installNetLogHook();
+
     if (DeltaVFS_needsFirstRunExtraction()) {
         // Delta/ hasn't been unzipped yet (fresh install or Delta.zip changed). A block window on
         // top of everything only HIDES the game - it does NOT stop the game's own code from
