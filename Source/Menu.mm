@@ -195,15 +195,19 @@ static OrigDidFinishLaunchingIMP orig_didFinishLaunching = NULL;
 static BOOL hooked_didFinishLaunching(id self, SEL _cmd, UIApplication *application, NSDictionary *launchOptions) {
     DeltaVFS_debugLog("hooked_didFinishLaunching: entered - holding game startup until extraction resolves");
     [DeltaMenu showUpdatingPopupThenRelaunch];
-    // Never call the original / never return real control to the game from here this session:
-    // on success, DeltaVFS_runFirstRunExtraction's completion calls abort() from a block that
-    // only runs because we keep pumping the run loop below (dispatch_get_main_queue() work is
-    // drained by whatever pumps the main run loop, not tied to who called it); on failure we
-    // WANT to stay stuck showing the error rather than let the game start into a broken state.
-    while (true) {
-        [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
-    }
-    return YES; // unreachable
+    // KHÔNG gọi orig_didFinishLaunching thật (đây mới là chỗ Unity thật sự khởi động) - game
+    // vẫn không bao giờ chạy trong lần launch này, vẫn đúng ý đồ ban đầu. NHƯNG PHẢI return
+    // NGAY thay vì tự bơm run loop vô hạn như trước: launch screen tĩnh của hệ thống (ảnh tĩnh
+    // SpringBoard tự hiện lúc app mới mở) chỉ được gỡ xuống sau khi didFinishLaunching THẬT SỰ
+    // return và UIApplicationMain hoàn tất chuỗi khởi động bình thường - giữ hàm này chạy mãi
+    // (như bản cũ) khiến UIKit không bao giờ coi launch là "xong", nên launch screen của hệ
+    // thống cứ nằm đè lên trên window/popup của mình suốt - đúng như user báo cáo: thấy logo
+    // treo lại chứ không hề thấy popup "Vui lòng chờ" nào, dù log xác nhận popup đã được add
+    // vào view hierarchy đúng lúc đó. Return sớm để UIKit gỡ launch screen bình thường; các
+    // NSTimer/dispatch_after đã lên lịch (deltaDebugLogTimer, extraction completion...) vẫn
+    // chạy đúng như thường lệ ngay khi main run loop chuẩn của UIApplicationMain bắt đầu quay,
+    // không cần tự bơm run loop thủ công nữa.
+    return YES;
 }
 
 static void hooked_setDelegate(id self, SEL _cmd, id<UIApplicationDelegate> delegate) {
