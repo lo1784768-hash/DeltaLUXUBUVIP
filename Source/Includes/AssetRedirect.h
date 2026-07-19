@@ -158,7 +158,10 @@ inline const char*        DeltaVFS_lastHitPath()    { return g_deltaLastHitPath;
 inline const char*        DeltaVFS_lastAnyPath()    { return g_deltaLastAnyPath; }
 inline const char*        DeltaVFS_deltaDir()       { return g_moddedPrefixC; }
 inline const char*        DeltaVFS_zipPath()         { return g_deltaZipPathC; }
-inline bool                DeltaVFS_needsFirstRunExtraction() { return g_deltaNeedsFirstRun.load(std::memory_order_relaxed); }
+// DeltaVFS_needsFirstRunExtraction() is defined further down, after ar_needExtract()/ar_mkpath()
+// - it actively re-checks rather than trusting a flag the constructor may not have set yet
+// (confirmed on-device: with a dylib patched into the IPA post-build rather than linked in at
+// build time, the constructor is not guaranteed to run before Menu.mm's +load).
 
 inline NSString *DeltaVFS_signatureSummary() {
     if (g_bundlePrefixLen == 0) return @"(chưa xác định bundle)";
@@ -382,6 +385,78 @@ static void ar_writeMarker(const char *markerPath, const struct stat *zipSt) {
     close(fd);
 }
 
+// ============================================================================
+//  KIỂM TRA "CẦN GIẢI NÉN LẦN ĐẦU?" - IDEMPOTENT, gọi từ bất kỳ đâu, bất kỳ lúc nào.
+//  Bằng chứng trên máy thật (cùng pid, cùng giây, 3 lần cài mới độc lập): Menu.mm's +load
+//  ĐÔI KHI đọc g_deltaNeedsFirstRun TRƯỚC KHI constructor kịp set nó - dylib này được một
+//  tool patch thẳng vào IPA sau khi build (không phải linker chèn từ lúc build gốc), nên
+//  thứ tự "constructor luôn chạy trước +load" không được đảm bảo như với dylib link bình
+//  thường. Thay vì dựa vào ai chạy trước, hàm này tự làm luôn việc kiểm tra (tính path nếu
+//  constructor chưa kịp tính, stat() zip, so marker) và chỉ làm ĐÚNG 1 LẦN dù bị gọi từ
+//  nhiều nơi (constructor + Menu +load) theo bất kỳ thứ tự nào.
+// ============================================================================
+static std::atomic<bool> g_deltaFirstRunCheckDone{false};
+static std::mutex g_deltaFirstRunCheckMutex;
+
+inline void ar_ensureFirstRunChecked() {
+    if (g_deltaFirstRunCheckDone.load(std::memory_order_acquire)) return;
+    std::lock_guard<std::mutex> lock(g_deltaFirstRunCheckMutex);
+    if (g_deltaFirstRunCheckDone.load(std::memory_order_relaxed)) return;
+
+    if (g_bundlePrefixLen == 0) {
+        @autoreleasepool {
+            NSString *bundlePath = [[NSBundle mainBundle] bundlePath];
+            if (bundlePath) {
+                NSString *bundleRoot = [bundlePath stringByAppendingString:@"/"];
+                strncpy(g_bundlePrefixC, [bundleRoot UTF8String], sizeof(g_bundlePrefixC) - 1);
+                g_bundlePrefixLen = strlen(g_bundlePrefixC);
+
+                NSString *moddedDataDir = [bundlePath stringByAppendingString:@"/Delta/"];
+                strncpy(g_moddedPrefixC, [moddedDataDir UTF8String], sizeof(g_moddedPrefixC) - 1);
+                g_moddedPrefixLen = strlen(g_moddedPrefixC);
+
+                NSString *zipPath = [bundlePath stringByAppendingString:@"/" DELTA_ZIP_BUNDLE_NAME];
+                strncpy(g_deltaZipPathC, [zipPath UTF8String], sizeof(g_deltaZipPathC) - 1);
+            }
+        }
+    }
+
+    DeltaVFS_debugLogf("ar_ensureFirstRunChecked: bundle=%s zip=%s", g_bundlePrefixC, g_deltaZipPathC);
+
+    if (g_moddedPrefixLen > 0 && g_deltaZipPathC[0]) {
+        if (stat(g_deltaZipPathC, &g_deltaZipStat) == 0) {
+            g_deltaZipFound.store(true, std::memory_order_relaxed);
+            DeltaVFS_debugLogf("ar_ensureFirstRunChecked: Delta.zip found, size=%lld mtime=%lld", (long long)g_deltaZipStat.st_size, (long long)g_deltaZipStat.st_mtime);
+            ar_mkpath(g_moddedPrefixC);
+
+            snprintf(g_deltaMarkerPathC, sizeof(g_deltaMarkerPathC), "%s.delta_extracted", g_moddedPrefixC);
+
+            if (ar_needExtract(g_deltaMarkerPathC, &g_deltaZipStat)) {
+                DeltaVFS_debugLog("ar_ensureFirstRunChecked: marker missing/stale -> needs first-run extraction");
+                g_deltaExtractRan.store(true, std::memory_order_relaxed);
+                g_deltaNeedsFirstRun.store(true, std::memory_order_relaxed);
+            } else {
+                struct stat deltaDirSt;
+                if (stat(g_moddedPrefixC, &deltaDirSt) == 0 && S_ISDIR(deltaDirSt.st_mode)) {
+                    g_deltaActive.store(true, std::memory_order_relaxed);
+                    DeltaVFS_debugLog("ar_ensureFirstRunChecked: marker matches -> already extracted, Delta VFS active immediately");
+                } else {
+                    DeltaVFS_debugLog("ar_ensureFirstRunChecked: marker matches but Delta/ dir missing/not a dir - VFS stays inactive");
+                }
+            }
+        } else {
+            DeltaVFS_debugLogf("ar_ensureFirstRunChecked: Delta.zip NOT FOUND at %s (stat errno=%d) - VFS stays inactive, nothing redirected", g_deltaZipPathC, errno);
+        }
+    }
+
+    g_deltaFirstRunCheckDone.store(true, std::memory_order_release);
+}
+
+inline bool DeltaVFS_needsFirstRunExtraction() {
+    ar_ensureFirstRunChecked();
+    return g_deltaNeedsFirstRun.load(std::memory_order_relaxed);
+}
+
 // Runs the (potentially slow) unzip on a background queue, then hops back to the main queue
 // for `completion` — Menu.mm uses that to hold the popup on screen and then trigger the crash.
 // While this is in flight, redirectAllTrafficPath() passes bundle paths through untouched
@@ -576,50 +651,11 @@ static void initNSBundleMethodSwizzling() {
 __attribute__((constructor))
 static void initDeltaAllTrafficVFS() {
     @autoreleasepool {
-        NSString *bundlePath = [[NSBundle mainBundle] bundlePath];
-        if (bundlePath) {
-            NSString *bundleRoot = [bundlePath stringByAppendingString:@"/"];
-            strncpy(g_bundlePrefixC, [bundleRoot UTF8String], sizeof(g_bundlePrefixC) - 1);
-            g_bundlePrefixLen = strlen(g_bundlePrefixC);
+        // 1. KIỂM TRA XEM CÓ CẦN GIẢI NÉN KHÔNG (chưa từng giải nén, hoặc Delta.zip đã đổi).
+        // Dùng chung hàm idempotent với DeltaVFS_needsFirstRunExtraction() - xem ghi chú ở đó
+        // về việc thứ tự constructor-trước-+load KHÔNG được đảm bảo với dylib patch hậu-build.
+        ar_ensureFirstRunChecked();
 
-            NSString *moddedDataDir = [bundlePath stringByAppendingString:@"/Delta/"];
-            strncpy(g_moddedPrefixC, [moddedDataDir UTF8String], sizeof(g_moddedPrefixC) - 1);
-            g_moddedPrefixLen = strlen(g_moddedPrefixC);
-
-            NSString *zipPath = [bundlePath stringByAppendingString:@"/" DELTA_ZIP_BUNDLE_NAME];
-            strncpy(g_deltaZipPathC, [zipPath UTF8String], sizeof(g_deltaZipPathC) - 1);
-        }
-
-        // 1. KIỂM TRA XEM CÓ CẦN GIẢI NÉN KHÔNG (chưa từng giải nén, hoặc Delta.zip đã đổi)
-        DeltaVFS_debugLogf("constructor: bundle=%s zip=%s", g_bundlePrefixC, g_deltaZipPathC);
-        if (g_moddedPrefixLen > 0 && g_deltaZipPathC[0]) {
-            if (stat(g_deltaZipPathC, &g_deltaZipStat) == 0) {
-                g_deltaZipFound.store(true, std::memory_order_relaxed);
-                DeltaVFS_debugLogf("constructor: Delta.zip found, size=%lld mtime=%lld", (long long)g_deltaZipStat.st_size, (long long)g_deltaZipStat.st_mtime);
-                ar_mkpath(g_moddedPrefixC);
-
-                snprintf(g_deltaMarkerPathC, sizeof(g_deltaMarkerPathC), "%s.delta_extracted", g_moddedPrefixC);
-
-                if (ar_needExtract(g_deltaMarkerPathC, &g_deltaZipStat)) {
-                    // Too early for UIKit here — defer the actual unzip to Menu.mm, which shows
-                    // the "updating..." popup first, then calls DeltaVFS_runFirstRunExtraction().
-                    DeltaVFS_debugLog("constructor: marker missing/stale -> needs first-run extraction, deferring to Menu.mm");
-                    g_deltaExtractRan.store(true, std::memory_order_relaxed);
-                    g_deltaNeedsFirstRun.store(true, std::memory_order_relaxed);
-                } else {
-                    struct stat deltaDirSt;
-                    if (stat(g_moddedPrefixC, &deltaDirSt) == 0 && S_ISDIR(deltaDirSt.st_mode)) {
-                        g_deltaActive.store(true, std::memory_order_relaxed);
-                        DeltaVFS_debugLog("constructor: marker matches -> already extracted, Delta VFS active immediately");
-                    } else {
-                        DeltaVFS_debugLog("constructor: marker matches but Delta/ dir missing/not a dir - VFS stays inactive");
-                    }
-                }
-            } else {
-                DeltaVFS_debugLogf("constructor: Delta.zip NOT FOUND at %s (stat errno=%d) - VFS stays inactive, nothing redirected", g_deltaZipPathC, errno);
-            }
-        }
-        
         // 2. KÍCH HOẠT HOOK CẤP CAO TRÊN RAM (NSBundle Swizzling) VỪA BUNG XONG FILE
         initNSBundleMethodSwizzling();
     }
