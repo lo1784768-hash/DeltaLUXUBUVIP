@@ -194,6 +194,8 @@ static inline uint16_t ar_rd16(const uint8_t *p) { return (uint16_t)(p[0] | (p[1
 static inline uint32_t ar_rd32(const uint8_t *p) { return (uint32_t)(p[0] | (p[1] << 8) | (p[2] << 16) | ((uint32_t)p[3] << 24)); }
 static inline uint64_t ar_rd64(const uint8_t *p) { return (uint64_t)ar_rd32(p) | ((uint64_t)ar_rd32(p + 4) << 32); }
 
+static std::atomic<unsigned int> g_arMkpathFailLogged{0};
+
 static void ar_mkpath(const char *dir) {
     char tmp[2048];
     snprintf(tmp, sizeof(tmp), "%s", dir);
@@ -207,7 +209,18 @@ static void ar_mkpath(const char *dir) {
             *p = '/';
         }
     }
-    mkdir(tmp, 0755);
+    int ret = mkdir(tmp, 0755);
+    int mkErrno = errno;
+    if (ret != 0 && mkErrno != EEXIST) {
+        // Rate-limited: every file's parent dir goes through here, and if the bundle is
+        // read-only every single one fails the same way - only need to see it a few times.
+        if (g_arMkpathFailLogged.fetch_add(1, std::memory_order_relaxed) < 5) {
+            struct stat st;
+            bool existsAfter = (stat(tmp, &st) == 0 && S_ISDIR(st.st_mode));
+            DeltaVFS_debugLogf("ar_mkpath: mkdir FAILED errno=%d (%s) existsAfter=%d path=%s",
+                mkErrno, strerror(mkErrno), existsAfter, tmp);
+        }
+    }
 }
 
 static bool ar_inflateToFd(const uint8_t *src, size_t srcLen, int outFd) {
