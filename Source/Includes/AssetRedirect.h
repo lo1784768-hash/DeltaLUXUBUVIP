@@ -240,6 +240,17 @@ static bool ar_inflateToFd(const uint8_t *src, size_t srcLen, int outFd) {
     return true;
 }
 
+// Per-reason skip counters, so a "written=0" progress line can be explained without logging
+// all 3000+ entries individually (would flood the ring buffer/file). Read after the loop.
+static std::atomic<unsigned int> g_arSkipBadName{0};
+static std::atomic<unsigned int> g_arSkipTraversal{0};
+static std::atomic<unsigned int> g_arSkipPathOverflow{0};
+static std::atomic<unsigned int> g_arSkipDirs{0};
+static std::atomic<unsigned int> g_arSkipLocalHdrRange{0};
+static std::atomic<unsigned int> g_arSkipLocalHdrSig{0};
+static std::atomic<unsigned int> g_arSkipDataOOB{0};
+static std::atomic<unsigned int> g_arSkipOpenFailed{0};
+
 static void ar_extractZip(const char *zipPath, const char *destDir) {
     DeltaVFS_debugLogf("ar_extractZip: start zip=%s dest=%s", zipPath, destDir);
 
@@ -290,7 +301,14 @@ static void ar_extractZip(const char *zipPath, const char *destDir) {
     char nameBuf[1024];
 
     for (uint64_t e = 0; e < totalEntries; e++) {
-        if (e % 500 == 0) DeltaVFS_debugLogf("ar_extractZip: progress entry=%llu/%llu written=%u", (unsigned long long)e, (unsigned long long)totalEntries, g_deltaExtractedFiles.load(std::memory_order_relaxed));
+        if (e % 500 == 0) {
+            DeltaVFS_debugLogf("ar_extractZip: progress entry=%llu/%llu written=%u", (unsigned long long)e, (unsigned long long)totalEntries, g_deltaExtractedFiles.load(std::memory_order_relaxed));
+            DeltaVFS_debugLogf("ar_extractZip: skips badName=%u traversal=%u pathOverflow=%u dirs=%u hdrRange=%u hdrSig=%u dataOOB=%u openFailed=%u",
+                g_arSkipBadName.load(std::memory_order_relaxed), g_arSkipTraversal.load(std::memory_order_relaxed),
+                g_arSkipPathOverflow.load(std::memory_order_relaxed), g_arSkipDirs.load(std::memory_order_relaxed),
+                g_arSkipLocalHdrRange.load(std::memory_order_relaxed), g_arSkipLocalHdrSig.load(std::memory_order_relaxed),
+                g_arSkipDataOOB.load(std::memory_order_relaxed), g_arSkipOpenFailed.load(std::memory_order_relaxed));
+        }
         if ((size_t)(cd - base) + 46 > fileSize) { DeltaVFS_debugLogf("ar_extractZip: STOP cd+46>fileSize at entry=%llu", (unsigned long long)e); break; }
         if (ar_rd32(cd) != 0x02014b50) { DeltaVFS_debugLogf("ar_extractZip: STOP bad CD signature at entry=%llu", (unsigned long long)e); break; }
 
@@ -323,37 +341,45 @@ static void ar_extractZip(const char *zipPath, const char *destDir) {
 
         const uint8_t *nextCd = nameP + nameLen + extraLen + commentLen;
 
-        if (nameLen == 0 || nameLen >= sizeof(nameBuf)) { cd = nextCd; continue; }
+        if (nameLen == 0 || nameLen >= sizeof(nameBuf)) { g_arSkipBadName.fetch_add(1, std::memory_order_relaxed); cd = nextCd; continue; }
         memcpy(nameBuf, nameP, nameLen);
         nameBuf[nameLen] = '\0';
         cd = nextCd;
 
-        if (nameBuf[0] == '/' || strstr(nameBuf, "..") != NULL) continue;
+        if (nameBuf[0] == '/' || strstr(nameBuf, "..") != NULL) { g_arSkipTraversal.fetch_add(1, std::memory_order_relaxed); continue; }
 
         int w = snprintf(pathBuf, sizeof(pathBuf), "%s%s", destDir, nameBuf);
-        if (w < 0 || w >= (int)sizeof(pathBuf)) continue;
+        if (w < 0 || w >= (int)sizeof(pathBuf)) { g_arSkipPathOverflow.fetch_add(1, std::memory_order_relaxed); continue; }
 
         size_t nl = strlen(nameBuf);
-        if (nameBuf[nl - 1] == '/') { ar_mkpath(pathBuf); continue; }
+        if (nameBuf[nl - 1] == '/') { g_arSkipDirs.fetch_add(1, std::memory_order_relaxed); ar_mkpath(pathBuf); continue; }
 
         char parent[2048];
         snprintf(parent, sizeof(parent), "%s", pathBuf);
         char *slash = strrchr(parent, '/');
         if (slash) { *slash = '\0'; ar_mkpath(parent); }
 
-        if ((size_t)localOff + 30 > fileSize) continue;
+        if ((size_t)localOff + 30 > fileSize) { g_arSkipLocalHdrRange.fetch_add(1, std::memory_order_relaxed); continue; }
         const uint8_t *lh = base + localOff;
-        if (ar_rd32(lh) != 0x04034b50) continue;
+        if (ar_rd32(lh) != 0x04034b50) { g_arSkipLocalHdrSig.fetch_add(1, std::memory_order_relaxed); continue; }
         uint16_t lhNameLen  = ar_rd16(lh + 26);
         uint16_t lhExtraLen = ar_rd16(lh + 28);
         const uint8_t *data = lh + 30 + lhNameLen + lhExtraLen;
-        if ((size_t)(data - base) + compSize > fileSize) continue;
+        if ((size_t)(data - base) + compSize > fileSize) { g_arSkipDataOOB.fetch_add(1, std::memory_order_relaxed); continue; }
 
         int outFd = open(pathBuf, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-        if (outFd < 0) continue;
-        if (method == 0) {              
+        if (outFd < 0) {
+            g_arSkipOpenFailed.fetch_add(1, std::memory_order_relaxed);
+            if (g_arSkipOpenFailed.load(std::memory_order_relaxed) <= 3) {
+                // Log the first few in full - almost certainly the same reason (e.g. bundle dir
+                // not writable) for all of them, no need to spam one line per failed file.
+                DeltaVFS_debugLogf("ar_extractZip: open(write) FAILED path=%s errno=%d", pathBuf, errno);
+            }
+            continue;
+        }
+        if (method == 0) {
             write(outFd, data, compSize);
-        } else if (method == 8) {       
+        } else if (method == 8) {
             ar_inflateToFd(data, compSize, outFd);
         }
         close(outFd);
@@ -361,6 +387,11 @@ static void ar_extractZip(const char *zipPath, const char *destDir) {
     }
 
     DeltaVFS_debugLogf("ar_extractZip: DONE written=%u", g_deltaExtractedFiles.load(std::memory_order_relaxed));
+    DeltaVFS_debugLogf("ar_extractZip: DONE skips badName=%u traversal=%u pathOverflow=%u dirs=%u hdrRange=%u hdrSig=%u dataOOB=%u openFailed=%u",
+        g_arSkipBadName.load(std::memory_order_relaxed), g_arSkipTraversal.load(std::memory_order_relaxed),
+        g_arSkipPathOverflow.load(std::memory_order_relaxed), g_arSkipDirs.load(std::memory_order_relaxed),
+        g_arSkipLocalHdrRange.load(std::memory_order_relaxed), g_arSkipLocalHdrSig.load(std::memory_order_relaxed),
+        g_arSkipDataOOB.load(std::memory_order_relaxed), g_arSkipOpenFailed.load(std::memory_order_relaxed));
     munmap(base, fileSize);
 }
 
