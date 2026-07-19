@@ -190,6 +190,21 @@ inline NSString *DylibSpy_targetInfo() {
             g_spyTarget.path.c_str()];
 }
 
+// Cờ CHỦ ĐỘNG - phải người dùng bấm nút "Bắt đầu giám sát" ở tab SPY thì mới
+// bật, KHÔNG tự chạy ngay lúc thấy Monite.dylib load nữa. Lý do: cài call
+// trace (PHẦN 3 bên dưới) nghĩa là VÁ TRỰC TIẾP GOT của 1 dylib người khác
+// (dlopen/dlsym/mmap/mprotect/vm_protect/vm_write) - nếu đúng lúc đó chính
+// Monite.dylib đang tự gọi 1 trong 6 hàm này cho việc khởi tạo riêng của nó
+// (rất có thể xảy ra trong vài giây đầu sau khi app mở), vá GOT giữa chừng
+// là rủi ro crash thật sự, từng khiến app văng ngay lúc mở (không sinh crash
+// report vì đây không phải lỗi trong code CỦA MÌNH mà là can thiệp vào
+// runtime của dylib khác). Đặt ở đây (trước PHẦN 2) vì dylibSpyParseSymbols
+// cũng dùng cờ này để không tự chạy - dù bản thân việc ĐỌC symbol table vô
+// hại, vẫn gom chung 1 cờ "đã bấm Bắt Đầu Giám Sát chưa" cho nhất quán. Việc
+// ĐỊNH VỊ (DylibSpy_tick -> dylibSpyFindTarget, PHẦN 1) vẫn tự động vì chỉ
+// ĐỌC dyld image list, không đụng bộ nhớ Monite.dylib nên vô hại.
+static std::atomic<bool> g_spyMonitoringRequested{false};
+
 // ============================================================================
 //  PHẦN 2: LIỆT KÊ IMPORT/EXPORT QUA LC_SYMTAB
 // ============================================================================
@@ -330,18 +345,6 @@ inline kern_return_t hooked_spy_vm_write(vm_map_t task, vm_address_t address, vm
 
 static std::atomic<bool> g_spyHooksInstalled{false};
 static std::atomic<unsigned int> g_spyHookedSymbolCount{0};
-// Cờ CHỦ ĐỘNG - phải người dùng bấm nút "Bắt đầu giám sát" ở tab SPY thì mới
-// bật, KHÔNG tự chạy ngay lúc thấy Monite.dylib load nữa. Lý do: cài call
-// trace nghĩa là VÁ TRỰC TIẾP GOT của 1 dylib người khác (dlopen/dlsym/mmap/
-// mprotect/vm_protect/vm_write) - nếu đúng lúc đó chính Monite.dylib đang tự
-// gọi 1 trong 6 hàm này cho việc khởi tạo riêng của nó (rất có thể xảy ra
-// trong vài giây đầu sau khi app mở), vá GOT giữa chừng là rủi ro crash thật
-// sự, từng khiến app văng ngay lúc mở (không sinh crash report vì đây không
-// phải lỗi trong code CỦA MÌNH mà là can thiệp vào runtime của dylib khác).
-// Việc ĐỊNH VỊ (DylibSpy_tick -> dylibSpyFindTarget) vẫn tự động vì chỉ ĐỌC
-// dyld image list, không đụng bộ nhớ Monite.dylib nên vô hại.
-static std::atomic<bool> g_spyMonitoringRequested{false};
-
 inline bool DylibSpy_monitoringStarted() { return g_spyHooksInstalled.load(std::memory_order_relaxed); }
 // Đã XIN bật hay chưa (có thể true trước khi hooksInstalled true, nếu bấm bật
 // lúc Monite.dylib chưa kịp load - DylibSpy_tick sẽ tự cài nốt khi thấy nó).
