@@ -1088,13 +1088,19 @@ game_sdk_t *game_sdk = new game_sdk_t();
     NSString *symbols = DylibSpy_symbolSummary();
     NSString *callSummary = DylibSpy_callTraceSummary();
     NSString *callLog = DylibSpy_callTraceLog();
+    // Ring buffer trong RAM mất sạch nếu app crash - mỗi dòng log CŨNG được
+    // ghi thẳng (write() syscall, không buffer) vào file này trong App Bundle,
+    // sống sót qua crash. Hiện đường dẫn ngay trên UI để biết chỗ lấy bằng
+    // Filza/SSH sau khi game văng, không cần đoán.
+    NSString *logFile = DylibSpy_logFilePath();
 
     _spyCallLogView.text = [NSString stringWithFormat:
         @"── TARGET ──\n%@\n\n"
          "── HOOK STATUS ──\n%@\n\n"
+         "── FILE LOG (sống sót qua crash) ──\n%@\n\n"
          "── IMPORT/EXPORT ──\n%@\n\n"
          "── LOG ──\n%@",
-        target, callSummary, symbols, callLog];
+        target, callSummary, logFile, symbols, callLog];
 
     _spyMemLogView.text = DylibSpy_memWatchLog();
 }

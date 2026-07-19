@@ -61,6 +61,8 @@
 #include <mach/mach.h>
 #include <mach/vm_map.h>
 #include <sys/mman.h>
+#include <fcntl.h>
+#include <unistd.h>
 #include <dlfcn.h>
 #include <string>
 #include <vector>
@@ -91,6 +93,46 @@
 #define DYLIBSPY_MEMWATCH_CAP (16 * 1024 * 1024)
 
 // ============================================================================
+//  GHI FILE SỐNG SÓT QUA CRASH - dùng để soi Monite.dylib đúng lúc nó làm app
+//  văng: ring buffer bên dưới chỉ nằm trong RAM, tiến trình chết là mất sạch,
+//  không kịp đọc. Mỗi dòng log (call trace lẫn mem diff) NGOÀI việc ghi vào
+//  ring còn được write() THẲNG (không qua buffer libc, không cần fflush) vào
+//  1 file trong chính App Bundle - write() là syscall, dữ liệu đã tới kernel
+//  ngay khi hàm trả về, sống sót được kể cả nếu tiến trình chết ngay dòng kế
+//  tiếp. Lấy file này ra bằng Filza/SSH sau khi crash: xem DylibSpy_logFilePath().
+// ============================================================================
+static int g_spyLogFd = -1;
+static std::mutex g_spyLogFileMutex;
+
+inline void dylibSpyEnsureLogFile() {
+    if (g_spyLogFd >= 0) return;
+    std::lock_guard<std::mutex> lock(g_spyLogFileMutex);
+    if (g_spyLogFd >= 0) return;
+    @autoreleasepool {
+        NSString *bundlePath = [[NSBundle mainBundle] bundlePath];
+        if (!bundlePath) return;
+        NSString *logPath = [bundlePath stringByAppendingPathComponent:@"DylibSpyLog.txt"];
+        g_spyLogFd = open([logPath UTF8String], O_WRONLY | O_CREAT | O_APPEND, 0644);
+    }
+}
+
+inline NSString *DylibSpy_logFilePath() {
+    NSString *bundlePath = [[NSBundle mainBundle] bundlePath];
+    if (!bundlePath) return @"(chưa xác định bundle)";
+    return [bundlePath stringByAppendingPathComponent:@"DylibSpyLog.txt"];
+}
+
+inline void dylibSpyAppendLineToFile(const char *tag, const char *line) {
+    dylibSpyEnsureLogFile();
+    if (g_spyLogFd < 0) return;
+    char buf[192];
+    int n = snprintf(buf, sizeof(buf), "[%s] %s\n", tag, line);
+    if (n <= 0) return;
+    size_t writeLen = ((size_t)n < sizeof(buf)) ? (size_t)n : sizeof(buf) - 1;
+    write(g_spyLogFd, buf, writeLen);
+}
+
+// ============================================================================
 //  RING BUFFER LOG (giống NetLogRing bên NetLog.h, tách riêng cho DylibSpy để
 //  không lẫn traffic mạng với traffic "hàm nội bộ" vào chung 1 khung).
 // ============================================================================
@@ -99,9 +141,13 @@ struct DylibSpyRing {
     int head = 0;
     unsigned int total = 0;
     std::mutex mutex;
+    const char *fileTag;
+    // Constructor tường minh thay vì designated initializer ({.fileTag = ...})
+    // vì file này build với -std=c++11 - designated init chỉ chuẩn hoá từ C++20.
+    explicit DylibSpyRing(const char *tag) : fileTag(tag) {}
 };
-static DylibSpyRing g_spyCallRing;  // log CALL TRACE (dlopen/dlsym/mmap/mprotect/vm_protect/vm_write)
-static DylibSpyRing g_spyMemRing;   // log MEM WATCH (checksum đổi)
+static DylibSpyRing g_spyCallRing("CALL");  // log CALL TRACE (dlopen/dlsym/mmap/mprotect/vm_protect/vm_write)
+static DylibSpyRing g_spyMemRing("MEM");    // log MEM WATCH (checksum đổi)
 
 inline void dylibSpyLogTo(DylibSpyRing &ring, const char *fmt, ...) {
     char buf[136];
@@ -114,11 +160,17 @@ inline void dylibSpyLogTo(DylibSpyRing &ring, const char *fmt, ...) {
     struct tm tmv;
     localtime_r(&t, &tmv);
 
-    std::lock_guard<std::mutex> lock(ring.mutex);
-    snprintf(ring.lines[ring.head], sizeof(ring.lines[0]), "%02d:%02d:%02d %s",
-             tmv.tm_hour, tmv.tm_min, tmv.tm_sec, buf);
-    ring.head = (ring.head + 1) % DYLIBSPY_RING_LINES;
-    ring.total++;
+    char fullLine[160];
+    snprintf(fullLine, sizeof(fullLine), "%02d:%02d:%02d %s", tmv.tm_hour, tmv.tm_min, tmv.tm_sec, buf);
+
+    {
+        std::lock_guard<std::mutex> lock(ring.mutex);
+        snprintf(ring.lines[ring.head], sizeof(ring.lines[0]), "%s", fullLine);
+        ring.head = (ring.head + 1) % DYLIBSPY_RING_LINES;
+        ring.total++;
+    }
+
+    dylibSpyAppendLineToFile(ring.fileTag, fullLine);
 }
 
 inline NSString *dylibSpyRingSnapshot(DylibSpyRing &ring) {
