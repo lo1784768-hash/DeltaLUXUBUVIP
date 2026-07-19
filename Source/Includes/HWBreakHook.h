@@ -78,6 +78,13 @@ static std::atomic<bool> g_hwbreakSelfTestPassed{false};
 static std::atomic<bool> g_hwbreakSelfTestDone{false};
 static std::atomic<bool> g_hwbreakSelfTestMode{false}; // true trong lúc tự kiểm tra - không redirect thật
 
+// Đếm số lần open() THẬT (không tính self-test) đã bị chặn và xử lý xong - dùng để phát "nhịp
+// tim" định kỳ trong log (xem hwbreakRearmPollThreadFn) mà không cần log từng lần open() một
+// (quá dày, game/Unity có thể gọi open() hàng nghìn lần). Nếu số này còn tăng đến sát lúc app
+// treo thì HWBreakHook vẫn đang hoạt động bình thường, không phải thủ phạm; nếu dừng tăng từ
+// khá lâu trước khi treo thì nghi ngờ chính nó.
+static std::atomic<unsigned long long> g_hwbreakInterceptCount{0};
+
 // Bộ đệm xoay vòng cho path đã redirect - tránh cấp phát động trong exception handler (không
 // an toàn để gọi malloc từ ngữ cảnh này) và tránh đụng độ giữa các lần gọi liên tiếp.
 #define HWBREAK_PATHBUF_SLOTS 8
@@ -163,9 +170,18 @@ static void hwbreakArmAllExistingThreads(uint64_t addr) {
 // giảm mạnh khả năng trúng đúng lúc dyld đang giữ khoá, nhưng KHÔNG đảm bảo tuyệt đối 100%.
 static void *hwbreakRearmPollThreadFn(void *ctx) {
     usleep(400 * 1000); // chờ 400ms trước lần arm đầu tiên - xem giải thích ở trên
+    int tick = 0;
     while (g_hwbreakActive.load(std::memory_order_relaxed)) {
         if (g_hwbreakOpenAddr != 0) {
             hwbreakArmAllExistingThreads(g_hwbreakOpenAddr);
+        }
+        // "Nhịp tim" mỗi ~1s (5 x 200ms) - bằng chứng trực tiếp HWBreakHook có còn đang xử lý
+        // open() thật hay không ngay trước lúc app treo, không cần chờ đoán qua log của chỗ
+        // khác. Xem giải thích ở g_hwbreakInterceptCount.
+        tick++;
+        if (tick % 5 == 0) {
+            DeltaVFS_debugLogf("HWBreakHook heartbeat: đã chặn %llu lần open() thật",
+                                g_hwbreakInterceptCount.load(std::memory_order_relaxed));
         }
         usleep(200 * 1000); // 200ms
     }
@@ -202,6 +218,7 @@ static void hwbreakHandleException(const hwbreak_exc_request_t *req) {
             // chạm được không.
             g_hwbreakSelfTestPassed.store(true, std::memory_order_relaxed);
         } else {
+            g_hwbreakInterceptCount.fetch_add(1, std::memory_order_relaxed);
             // Truy cập trực tiếp state.__x[0] (x0 = đối số đầu tiên = path) - KHÔNG dùng
             // các hàm accessor arm_thread_state64_get_pc()/... vì những hàm đó chỉ tồn
             // tại (và chỉ cần thiết) cho pc/lr do Pointer Authentication (PAC) - thanh ghi
