@@ -92,6 +92,16 @@ static NSString *LOC(NSString *key) {
 }
 
 @interface DeltaMenu : NSObject <UITextFieldDelegate, UIGestureRecognizerDelegate>
+
+// First-run extraction flow - declared here (not just defined later in @implementation) because
+// the app-delegate-launch-guard C functions (hooked_setDelegate/hooked_didFinishLaunching, above
+// @implementation) call these via [DeltaMenu ...], and plain C functions - unlike code inside
+// @implementation itself - need the selector declared ahead of time or the build fails with
+// "no known class method for selector".
++ (void)installAppDelegateLaunchGuard;
++ (void)pollUntilAppReadyThenBlockAndUpdate;
++ (void)showUpdatingPopupThenRelaunch;
+
 @property (nonatomic, strong) UIView *menuView;
 @property (nonatomic, strong) CAGradientLayer *borderGradient;
 @property (nonatomic, strong) CADisplayLink *displayLink;
