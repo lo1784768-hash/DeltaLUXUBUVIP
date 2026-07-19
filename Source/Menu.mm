@@ -13,7 +13,6 @@
 #import "Includes/ESP.h"
 #import "Includes/Encryption.h"
 #import "Includes/ModHacks.h"
-#import "Includes/DNSBlock.h"
 #import "Includes/AssetRedirect.h"
 #import "Includes/DylibSpy.h"
 
@@ -231,12 +230,6 @@ UIWindow *mainWindow;
 game_sdk_t *game_sdk = new game_sdk_t();
 
 + (void)load {
-    // Called immediately, not inside the 3s-delayed block below - banner/ad requests
-    // can fire during early app launch, well before that delay elapses, and neither the
-    // getaddrinfo hook nor NSURLProtocol registration depend on game_sdk/UIApplication
-    // being ready.
-    installDNSBlockHook();
-
     if (DeltaVFS_needsFirstRunExtraction()) {
         // Delta/ hasn't been unzipped yet (fresh install or Delta.zip changed). A block window on
         // top of everything only HIDES the game - it does NOT stop the game's own code from
@@ -1169,11 +1162,6 @@ static NSTimer *deltaDebugLogTimer;
         verdict = isEnglishMode ? @"⚠️ Bundle calls seen, but ALL missing in Delta -> now failing (ENOENT), not reading original" : @"⚠️ Có gọi bundle nhưng Delta thiếu HẾT -> giờ LỖI (ENOENT), không đọc bản gốc";
     }
 
-    // Thống kê chặn DNS/mạng
-    unsigned long long dnsBlocked = DNSBlock_count();
-    const char *dnsHostC = DNSBlock_lastHost();
-    NSString *dnsHost = (dnsHostC && dnsHostC[0]) ? [NSString stringWithUTF8String:dnsHostC] : @"—";
-
     // Chữ ký: Delta.zip / folder Delta có được ký vào app không (đọc CodeResources)
     NSString *signInfo = DeltaVFS_signatureSummary();
 
@@ -1193,15 +1181,11 @@ static NSTimer *deltaDebugLogTimer;
          "Hits (từ Delta): %llu\n"
          "Miss (đọc bản gốc - bình thường, Delta chỉ chứa vài icon custom): %llu\n\n"
          "── CHỮ KÝ DELTA ──\n"
-         "%@\n\n"
-         "── CHẶN DNS ──\n"
-         "Đã chặn: %llu request\n"
-         "Host chặn gần nhất:\n%@",
+         "%@",
         verdict, hookLine, extractLine, dir,
         totalCalls, bundleCalls, hits, misses, pct, anyPath, last,
         DeltaVFS_abHotUpdatesHits(), DeltaVFS_abHotUpdatesMisses(),
-        signInfo,
-        dnsBlocked, dnsHost];
+        signInfo];
 
     _deltaLogView.text = text;
 }
