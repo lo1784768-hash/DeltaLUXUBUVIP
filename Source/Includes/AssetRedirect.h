@@ -124,7 +124,7 @@ inline void deltaLogEnsureOpen() {
     int (*rawOpen)(const char *, int, ...) = (int (*)(const char *, int, ...))dlsym(RTLD_DEFAULT, "open");
     if (!rawOpen) return;
     char logPath[1200];
-    snprintf(logPath, sizeof(logPath), "%s.debug.log", g_moddedPrefixC);
+    snprintf(logPath, sizeof(logPath), "%sdebug.log", g_moddedPrefixC);
     g_deltaLogFd = rawOpen(logPath, O_WRONLY | O_CREAT | O_APPEND, 0644);
 }
 
@@ -180,7 +180,7 @@ inline void DeltaVFS_debugLogf(const char *fmt, ...) {
 
 inline NSString *DeltaVFS_debugLogPath() {
     if (g_moddedPrefixLen == 0) return @"(chưa xác định)";
-    return [NSString stringWithFormat:@"%s.debug.log", g_moddedPrefixC];
+    return [NSString stringWithFormat:@"%sdebug.log", g_moddedPrefixC];
 }
 
 // API cho Menu.mm đọc trạng thái
