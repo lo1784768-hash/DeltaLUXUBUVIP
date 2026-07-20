@@ -505,8 +505,14 @@ static bool ar_extractZipEntry(int idx, const char *destPath) {
 // đường chậm (lần đầu file này được yêu cầu) tìm trong index rồi giải nén ngay, đồng bộ, trên
 // CHÍNH thread đang gọi (an toàn - xem chỗ gọi trong redirectAllTrafficPath()).
 static bool ar_extractOneEntryIfNeeded(const char *destPath, const char *relativePath) {
-    if (!destPath || !relativePath || g_arZipEntryCount == 0) return false;
+    if (!destPath || !relativePath) return false;
+    // Đường nhanh PHẢI đứng trước check g_arZipEntryCount==0: ở process bình thường (marker
+    // khớp), ar_ensureFirstRunChecked() CỐ Ý không build index nữa (đã bung sẵn từ trước, xem
+    // PHẦN 1) nên g_arZipEntryCount luôn = 0 - nếu check đó đứng trước thì hàm này LUÔN return
+    // false ngay cả khi file đã thật sự nằm sẵn trên đĩa, gây miss 100% dù Delta/ đầy đủ file
+    // (xác nhận qua ảnh chụp máy thật: folder có file nhưng INFO tab báo miss hết).
     if (orig_access && orig_access(destPath, F_OK) == 0) return true;
+    if (g_arZipEntryCount == 0) return false;
 
     for (int i = 0; i < g_arZipEntryCount; i++) {
         if (strcmp(g_arZipEntries[i].name, relativePath) == 0) {
