@@ -66,9 +66,20 @@
 // sẽ gọi tới tên đã mangle sai (hoặc ngược lại), lỗi lúc link. Tự bọc extern "C" quanh #import để
 // mọi khai báo trong header này (và định nghĩa tương ứng bên dưới) đều là linkage C thống nhất,
 // khớp với mach_excServer.c.
+//
+// Header này include lại 1 loạt header hệ thống (<string.h>, <mach/port.h>, ...) - dưới
+// -fmodules (Clang modules, mặc định bật khi build cho iOS), các include đó được dịch thành
+// "@import module" ngầm, mà Clang KHÔNG cho phép 1 "@import" nằm bên trong khối extern "C" (lỗi
+// -Wmodule-import-in-extern-c). Đây chỉ là hạn chế CÚ PHÁP - các module vẫn được import đúng và
+// hợp lệ về mặt ngữ nghĩa, Clang chỉ cảnh báo vì cách viết này khác thường - nên tắt riêng đúng
+// cảnh báo đó quanh #import thay vì tìm cách viết lại (không sửa được nội dung file do mig tự
+// sinh ra mỗi lần build).
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wmodule-import-in-extern-c"
 extern "C" {
 #import "Generated/mach_exc_server.h"
 }
+#pragma clang diagnostic pop
 
 // mach_msg_server() là hàm chuẩn của libsystem (chạy vòng lặp nhận/dispatch/reply đúng giao
 // thức MIG cho mình, gọi callback "demux" - ở đây là mach_exc_server() do mig sinh ra) - không
