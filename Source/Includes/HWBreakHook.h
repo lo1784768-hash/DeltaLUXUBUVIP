@@ -276,11 +276,39 @@ static int hwbreakOpenTrampoline(const char *path, int flags, int mode) {
     bool selfTestLog = g_hwbreakSelfTestMode.load(std::memory_order_relaxed);
     if (selfTestLog) DeltaVFS_debugLogf("HWBreakHook: [self-test] trampoline bắt đầu chạy, path=%s", path ? path : "(null)");
 
+    // LỖI ĐÃ XÁC NHẬN QUA debug.log (không phải đoán): gọi thẳng fn() (địa chỉ open() thật) ở
+    // đây mà KHÔNG tắt breakpoint trước sẽ lập tức CHẠM LẠI ĐÚNG breakpoint đó (open() thật và
+    // địa chỉ đang bị theo dõi LÀ MỘT) - log cho thấy handler/trampoline gọi nhau vô hạn, không
+    // bao giờ tới dòng "gọi xong". Phải tắt breakpoint TRÊN CHÍNH THREAD NÀY trước khi gọi, rồi
+    // bật lại ngay sau - luôn AN TOÀN vì đang thao tác debug register của chính thread đang chạy
+    // đoạn code này (không phải thread khác, không cần cross-thread RPC). Khoá g_hwbreakDbgMutex
+    // quanh mỗi lần đọc-sửa-ghi để rearm-poll thread (bật lại breakpoint cho MỌI thread mỗi
+    // 200ms) không chen vào đúng lúc đang tắt - xem lý do đầy đủ ở khai báo g_hwbreakDbgMutex.
+    thread_t self = mach_thread_self();
+    arm_debug_state64_t dbg;
+    memset(&dbg, 0, sizeof(dbg));
+
+    pthread_mutex_lock(&g_hwbreakDbgMutex);
+    bool haveState = hwbreakArmThreadState(self, &dbg);
+    if (haveState) {
+        dbg.__bcr[0] &= ~0x1u; // tắt breakpoint trên chính thread này
+        hwbreakSetThreadState(self, &dbg);
+    }
+    pthread_mutex_unlock(&g_hwbreakDbgMutex);
+
     int (*fn)(const char *, int, ...) = g_hwbreakRealOpen.load(std::memory_order_relaxed);
-    if (selfTestLog) DeltaVFS_debugLogf("HWBreakHook: [self-test] trampoline sắp gọi open() thật, fn=%p", (void *)fn);
+    if (selfTestLog) DeltaVFS_debugLogf("HWBreakHook: [self-test] trampoline sắp gọi open() thật (đã tắt breakpoint), fn=%p", (void *)fn);
 
     int result = fn ? fn(path, flags, mode) : -1;
     if (selfTestLog) DeltaVFS_debugLogf("HWBreakHook: [self-test] trampoline gọi open() thật XONG, result=%d errno=%d", result, errno);
+
+    if (haveState) {
+        pthread_mutex_lock(&g_hwbreakDbgMutex);
+        dbg.__bcr[0] |= 0x1u; // bật lại breakpoint cho lần open() tiếp theo
+        hwbreakSetThreadState(self, &dbg);
+        pthread_mutex_unlock(&g_hwbreakDbgMutex);
+    }
+    mach_port_deallocate(mach_task_self(), self); // mach_thread_self() cấp 1 send right mới mỗi lần gọi
 
     g_hwbreakTrampolineCompletions.fetch_add(1, std::memory_order_relaxed);
     return result;
