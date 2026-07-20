@@ -804,6 +804,18 @@ inline const char* redirectAllTrafficPath(const char *path) {
         return path;
     }
 
+    // Frameworks/ (VD: UnityFramework.framework/UnityFramework) TUYỆT ĐỐI không được redirect -
+    // đây là BINARY THỰC THI (code máy, không phải asset/config), đã được dyld load thẳng từ bản
+    // gốc TRƯỚC KHI hook của mình kịp cài xong. Delta.zip chỉ là ảnh chụp đóng gói sẵn từ 1 thời
+    // điểm khác, không đảm bảo khớp byte-for-byte với bản đang thực sự chạy trong bộ nhớ - nếu có
+    // bước tự kiểm tra tính toàn vẹn engine nào đó đọc lại file này để verify (giống lý do
+    // CodeResources gây lỗi ở trên) thì phát hiện sai lệch dễ dẫn tới hậu quả nặng hơn (khoá tài
+    // khoản) chứ không chỉ 1 popup lỗi thường. Xác nhận trên máy thật: REDIRECTED FILES cho thấy
+    // UnityFramework bị đọc lặp lại từ Delta ngay lúc màn hình báo tài khoản bị khoá hiện ra.
+    if (strncmp(relative, "Frameworks/", 11) == 0) {
+        return path;
+    }
+
     // The game's own main executable ("FreeFire.app/FreeFire") is special-cased to a
     // differently-named destination file ("FreeFire2") instead of the generic same-name mapping
     // - a clean, unpatched copy ships under that name in Delta.zip, so if the game reads its own
