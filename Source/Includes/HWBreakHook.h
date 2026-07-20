@@ -195,12 +195,28 @@ static bool hwbreakArmBreakpointOnThread(thread_t thread, uint64_t addr) {
     return ok;
 }
 
+// Thread chạy mach_msg_server() (xử lý exception) - KHÔNG BAO GIỜ được arm breakpoint, xem giải
+// thích chi tiết ở hwbreakArmAllExistingThreads bên dưới.
+static std::atomic<thread_t> g_hwbreakServerMachThread{MACH_PORT_NULL};
+
 static void hwbreakArmAllExistingThreads(uint64_t addr) {
     thread_act_array_t threads = NULL;
     mach_msg_type_number_t threadCount = 0;
     if (task_threads(mach_task_self(), &threads, &threadCount) != KERN_SUCCESS) return;
+    thread_t serverThread = g_hwbreakServerMachThread.load(std::memory_order_relaxed);
     for (mach_msg_type_number_t i = 0; i < threadCount; i++) {
-        hwbreakArmBreakpointOnThread(threads[i], addr);
+        // BẮT BUỘC loại trừ chính thread server (chạy mach_msg_server(), xử lý exception) -
+        // AssetRedirect.h's ar_extractOneEntryIfNeeded (gọi từ redirectAllTrafficPath, mà
+        // catch_mach_exception_raise_state gọi trực tiếp trên CHÍNH thread server này) có thể tự
+        // gọi open() thật để ghi file giải nén ra đĩa. Nếu thread server cũng bị arm breakpoint,
+        // lệnh gọi open() đó sẽ tự sinh ra 1 exception MỚI cần chính thread server xử lý - nhưng
+        // nó đang bị kernel treo (suspended) chờ reply cho exception HIỆN TẠI, không thể đồng
+        // thời quay lại vòng lặp mach_msg_server() để nhận exception MỚI của chính mình - TỰ
+        // KHOÁ CHẾT (deadlock) vĩnh viễn, không crash, không log gì thêm - khớp chính xác với
+        // debug.log: mọi lần khởi động đều dừng lại ngay sau "ĐÃ KÍCH HOẠT", im bặt hoàn toàn.
+        if (threads[i] != serverThread) {
+            hwbreakArmBreakpointOnThread(threads[i], addr);
+        }
         mach_port_deallocate(mach_task_self(), threads[i]);
     }
     vm_deallocate(mach_task_self(), (vm_address_t)threads, threadCount * sizeof(thread_act_t));
@@ -518,6 +534,9 @@ inline bool HWBreakHook_tryInstallForOpen() {
         DeltaVFS_debugLog("HWBreakHook: tạo server thread thất bại, huỷ");
         return false;
     }
+    // Ghi lại Mach thread port của CHÍNH thread server này để hwbreakArmAllExistingThreads loại
+    // trừ vĩnh viễn - xem giải thích chi tiết ở đó (tự khoá chết nếu thread server bị arm).
+    g_hwbreakServerMachThread.store(pthread_mach_thread_np(serverThread), std::memory_order_relaxed);
     pthread_detach(serverThread);
     DeltaVFS_debugLog("HWBreakHook: server thread đã tạo, chuẩn bị tự kiểm tra");
 
