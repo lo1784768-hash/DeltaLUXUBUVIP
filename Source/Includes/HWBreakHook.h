@@ -118,7 +118,12 @@ extern "C" mach_msg_return_t mach_msg_server(
     mach_msg_options_t options);
 
 static mach_port_t g_hwbreakExcPort = MACH_PORT_NULL;
-static uint64_t g_hwbreakOpenAddr = 0;
+// Atomic (không chỉ plain uint64_t như trước) - đọc từ NHIỀU thread khác nhau (exception
+// handler, rearm-poll thread, self-test thread) sau khi được ghi 1 lần từ thread constructor;
+// dùng atomic để loại bỏ hoàn toàn nghi vấn lý thuyết về visibility trên kiến trúc weakly-
+// ordered như ARM64, thay vì dựa vào các syscall (pthread_create, mach_port_allocate...) tình
+// cờ đóng vai trò memory barrier.
+static std::atomic<uint64_t> g_hwbreakOpenAddr{0};
 static std::atomic<bool> g_hwbreakActive{false};
 static std::atomic<bool> g_hwbreakSelfTestPassed{false};
 static std::atomic<bool> g_hwbreakSelfTestDone{false};
@@ -130,6 +135,12 @@ static std::atomic<bool> g_hwbreakSelfTestMode{false}; // true trong lúc tự k
 // treo thì HWBreakHook vẫn đang hoạt động bình thường, không phải thủ phạm; nếu dừng tăng từ
 // khá lâu trước khi treo thì nghi ngờ chính nó.
 static std::atomic<unsigned long long> g_hwbreakInterceptCount{0};
+
+// Đếm số lần hàm trampoline CHẠY XONG HOÀN TOÀN (open() thật đã return, kể cả self-test) - đối
+// chiếu với g_hwbreakInterceptCount (đếm ngay LÚC HANDLER redirect PC, TRƯỚC khi trampoline
+// chạy) cho biết chính xác có lần chặn nào bị kẹt/crash giữa chừng trong khoảng từ lúc handler
+// đổi PC tới lúc trampoline thật sự chạy xong hay không.
+static std::atomic<unsigned long long> g_hwbreakTrampolineCompletions{0};
 
 // Bộ đệm xoay vòng cho path đã redirect - tránh cấp phát động trong exception handler (không
 // an toàn để gọi malloc từ ngữ cảnh này) và tránh đụng độ giữa các lần gọi liên tiếp.
@@ -207,16 +218,22 @@ static void *hwbreakRearmPollThreadFn(void *ctx) {
     usleep(400 * 1000); // chờ 400ms trước lần arm đầu tiên - xem giải thích ở trên
     int tick = 0;
     while (g_hwbreakActive.load(std::memory_order_relaxed)) {
-        if (g_hwbreakOpenAddr != 0) {
-            hwbreakArmAllExistingThreads(g_hwbreakOpenAddr);
+        uint64_t addr = g_hwbreakOpenAddr.load(std::memory_order_relaxed);
+        if (addr != 0) {
+            hwbreakArmAllExistingThreads(addr);
         }
         // "Nhịp tim" mỗi ~1s (5 x 200ms) - bằng chứng trực tiếp HWBreakHook có còn đang xử lý
         // open() thật hay không ngay trước lúc app treo, không cần chờ đoán qua log của chỗ
         // khác. Xem giải thích ở g_hwbreakInterceptCount.
         tick++;
         if (tick % 5 == 0) {
-            DeltaVFS_debugLogf("HWBreakHook heartbeat: đã chặn %llu lần open() thật",
-                                g_hwbreakInterceptCount.load(std::memory_order_relaxed));
+            // 2 số này PHẢI luôn sát nhau (completions chỉ trễ hơn 1 chút do độ trễ round-trip
+            // Mach RPC bình thường). Nếu "chặn" tăng nhưng "xong" đứng yên/tụt lại xa - bằng
+            // chứng trực tiếp có thread đang kẹt/crash NGAY GIỮA lúc handler đổi PC và lúc
+            // trampoline thực thi xong - khoanh vùng chính xác chỗ lỗi cho lần debug tiếp theo.
+            DeltaVFS_debugLogf("HWBreakHook heartbeat: đã chặn=%llu đã xong=%llu",
+                                g_hwbreakInterceptCount.load(std::memory_order_relaxed),
+                                g_hwbreakTrampolineCompletions.load(std::memory_order_relaxed));
         }
         usleep(200 * 1000); // 200ms
     }
@@ -247,12 +264,15 @@ static void *hwbreakRearmPollThreadFn(void *ctx) {
 //  bị lẫn sang thread khác. Khi hàm return, epilogue chuẩn của Clang tự nhảy về đúng địa chỉ
 //  LR (chưa từng bị đụng tới) - tức trả kết quả về đúng chỗ gọi open() ban đầu, y hệt như open()
 //  thật tự chạy xong và return - không cần biết/replay lệnh gốc bị breakpoint đè lên nữa.
-static int (*g_hwbreakRealOpen)(const char *, int, ...) = NULL;
-static uint64_t g_hwbreakTrampolineAddr = 0;
+static std::atomic<int (*)(const char *, int, ...)> g_hwbreakRealOpen{nullptr};
+static std::atomic<uint64_t> g_hwbreakTrampolineAddr{0};
 
 __attribute__((noinline))
 static int hwbreakOpenTrampoline(const char *path, int flags, int mode) {
-    return g_hwbreakRealOpen(path, flags, mode);
+    int (*fn)(const char *, int, ...) = g_hwbreakRealOpen.load(std::memory_order_relaxed);
+    int result = fn ? fn(path, flags, mode) : -1;
+    g_hwbreakTrampolineCompletions.fetch_add(1, std::memory_order_relaxed);
+    return result;
 }
 
 // ---- 3 hàm callback mà mach_exc_server() (demux do mig sinh ra) gọi ngược lại - PHẢI đúng tên
@@ -307,7 +327,8 @@ extern "C" kern_return_t catch_mach_exception_raise_state(
     // x0-x28 (state.__x[i]) là GPR thường, không opaque, đọc thẳng field được (xem chỗ dùng
     // inState->__x[0]/outState->__x[0] bên dưới).
     uint64_t pc = (uint64_t)arm_thread_state64_get_pc(*inState);
-    if (pc != g_hwbreakOpenAddr || g_hwbreakTrampolineAddr == 0) {
+    uint64_t trampolineAddr = g_hwbreakTrampolineAddr.load(std::memory_order_relaxed);
+    if (pc != g_hwbreakOpenAddr.load(std::memory_order_relaxed) || trampolineAddr == 0) {
         // Không đúng địa chỉ đang theo dõi (không nên xảy ra - chỉ arm đúng 1 địa chỉ) hoặc
         // trampoline chưa dựng xong. AN TOÀN HƠN là để nguyên state (breakpoint có thể tự chạm
         // lại) còn hơn nhảy PC vào 1 địa chỉ chưa chắc hợp lệ.
@@ -341,7 +362,7 @@ extern "C" kern_return_t catch_mach_exception_raise_state(
     // nguyên nhân crash mới sau khi đổi sang trampoline). "_presigned_fptr" bỏ qua hẳn bước
     // auth+resign, chỉ gán thẳng giá trị - an toàn ở MỌI nhánh (kể cả các nhánh không-ptrauth,
     // nơi 2 biến thể này giống hệt nhau).
-    arm_thread_state64_set_pc_presigned_fptr(*outState, (void *)g_hwbreakTrampolineAddr);
+    arm_thread_state64_set_pc_presigned_fptr(*outState, (void *)trampolineAddr);
     return KERN_SUCCESS;
 }
 
@@ -377,7 +398,7 @@ static void *hwbreakServerThreadFn(void *ctx) {
 // Thread riêng để tự gọi open() thử - KHÔNG chạy trên thread constructor, để nếu cơ chế
 // treo thì chỉ thread thử nghiệm này bị kẹt, không kéo theo cả app không mở được.
 static void *hwbreakSelfTestCallerThreadFn(void *ctx) {
-    hwbreakArmBreakpointOnThread(mach_thread_self(), g_hwbreakOpenAddr);
+    hwbreakArmBreakpointOnThread(mach_thread_self(), g_hwbreakOpenAddr.load(std::memory_order_relaxed));
     int (*realOpen)(const char *, int, ...) = (int (*)(const char *, int, ...))dlsym(RTLD_DEFAULT, "open");
     if (realOpen) {
         // Với bản trampoline (v2/v3), lệnh gọi này giờ THẬT SỰ hoàn tất bình thường (không còn
@@ -401,9 +422,9 @@ inline bool HWBreakHook_tryInstallForOpen() {
         DeltaVFS_debugLog("HWBreakHook: dlsym(open) thất bại, huỷ - dùng fishhook như cũ");
         return false;
     }
-    g_hwbreakOpenAddr = (uint64_t)openSym;
-    g_hwbreakRealOpen = (int (*)(const char *, int, ...))openSym;
-    g_hwbreakTrampolineAddr = (uint64_t)(void *)hwbreakOpenTrampoline;
+    g_hwbreakOpenAddr.store((uint64_t)openSym, std::memory_order_relaxed);
+    g_hwbreakRealOpen.store((int (*)(const char *, int, ...))openSym, std::memory_order_relaxed);
+    g_hwbreakTrampolineAddr.store((uint64_t)(void *)hwbreakOpenTrampoline, std::memory_order_relaxed);
 
     kern_return_t kr = mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_RECEIVE, &g_hwbreakExcPort);
     if (kr != KERN_SUCCESS) {
@@ -442,15 +463,27 @@ inline bool HWBreakHook_tryInstallForOpen() {
     }
     pthread_detach(testThread);
 
+    // Chờ đủ 2 mốc, KHÔNG chỉ g_hwbreakSelfTestPassed (chỉ chứng minh breakpoint CHẠM được -
+    // set NGAY TRONG handler, TRƯỚC khi trampoline chạy xong) mà còn phải chờ
+    // g_hwbreakSelfTestDone (set ở CUỐI hwbreakSelfTestCallerThreadFn, SAU KHI open() thật đã
+    // return và fd đã đóng) - đây là lỗ hổng thật trong bản trước: "tự kiểm tra THÀNH CÔNG" đã
+    // từng được log trong debug.log ngay cả những lần sau đó app bị crash, vì flag đó không hề
+    // chứng minh trampoline chạy xong trót lọt, chỉ chứng minh exception đã được bắt. Chờ cả 2
+    // giúp phát hiện đúng trường hợp trampoline bị treo (timeout, coi như thất bại, an toàn) -
+    // KHÔNG giúp gì nếu trampoline CRASH thẳng (tiến trình chết ngay tại đây, không có gì để bắt
+    // - đó là lý do phải kiểm tra kỹ ownership của g_hwbreakTrampolineCompletions ở heartbeat).
     int waited = 0;
-    while (!g_hwbreakSelfTestPassed.load(std::memory_order_relaxed) && waited < 500) {
+    while (!g_hwbreakSelfTestDone.load(std::memory_order_relaxed) && waited < 500) {
         usleep(10 * 1000);
         waited += 10;
     }
     g_hwbreakSelfTestMode.store(false, std::memory_order_relaxed);
 
-    bool passed = g_hwbreakSelfTestPassed.load(std::memory_order_relaxed);
-    DeltaVFS_debugLogf("HWBreakHook: tự kiểm tra %s sau %dms", passed ? "THÀNH CÔNG" : "THẤT BẠI", waited);
+    bool hitBreakpoint = g_hwbreakSelfTestPassed.load(std::memory_order_relaxed);
+    bool callCompleted = g_hwbreakSelfTestDone.load(std::memory_order_relaxed);
+    bool passed = hitBreakpoint && callCompleted;
+    DeltaVFS_debugLogf("HWBreakHook: tự kiểm tra %s sau %dms (chạm breakpoint=%d, gọi xong=%d)",
+                        passed ? "THÀNH CÔNG" : "THẤT BẠI", waited, hitBreakpoint, callCompleted);
 
     if (!passed) {
         // KHÔNG dùng cho open() thật - nhưng KHÔNG thu hồi exception port/server thread vì
