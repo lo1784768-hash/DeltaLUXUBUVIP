@@ -1226,7 +1226,7 @@ static UIView *ar_makeFakeAlertBox(UIView *parent, NSString *title, NSString *me
     } else if (hits > 0) {
         verdict = isEnglishMode ? @"✅ Game IS reading through Delta" : @"✅ Game ĐANG đọc qua Delta";
     } else {
-        verdict = isEnglishMode ? @"⚠️ Bundle calls seen, but ALL missing in Delta -> now failing (ENOENT), not reading original" : @"⚠️ Có gọi bundle nhưng Delta thiếu HẾT -> giờ LỖI (ENOENT), không đọc bản gốc";
+        verdict = isEnglishMode ? @"⚠️ Bundle calls seen, but ALL missing in Delta -> falling back to original every time" : @"⚠️ Có gọi bundle nhưng Delta thiếu HẾT -> luôn đọc bản gốc (Delta không phát huy tác dụng)";
     }
 
     // Chữ ký: Delta.zip / folder Delta có được ký vào app không (đọc CodeResources)
@@ -1240,7 +1240,7 @@ static UIView *ar_makeFakeAlertBox(UIView *parent, NSString *title, NSString *me
          "Tổng lời gọi file: %llu\n"
          "Trong bundle: %llu\n"
          "Hits  (đọc từ Delta): %llu\n"
-         "Miss  (Delta thiếu -> LỖI, không đọc gốc): %llu\n"
+         "Miss  (Delta thiếu -> đọc bản gốc): %llu\n"
          "Tỉ lệ qua Delta: %.1f%%\n\n"
          "Path bất kỳ gần nhất:\n%@\n"
          "File Delta gần nhất:\n%@\n\n"

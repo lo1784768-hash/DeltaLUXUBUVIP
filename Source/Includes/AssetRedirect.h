@@ -516,6 +516,11 @@ static bool ar_extractOneEntryIfNeeded(const char *destPath, const char *relativ
     return false; // không có trong Delta.zip - không phải lỗi, chỉ là file này không được mod
 }
 
+// "bulk1:" prefix CỐ Ý khác định dạng marker cũ ("%lld:%lld" trần, từng dùng cho cả bản lazy lẫn
+// bulk trước đây) - máy đã test qua bản lazy-extraction (session trước khi revert lại bulk) vẫn
+// còn marker cũ khớp mtime:size hiện tại nhưng Delta/ thực tế gần như trống (lazy chỉ giải nén
+// đúng vài file trước khi crash). Đổi định dạng để marker cũ LUÔN bị coi là stale, buộc giải nén
+// bulk đầy đủ lại từ đầu đúng 1 lần, thay vì tin nhầm "đã xong" và để redirect miss 100%.
 static bool ar_needExtract(const char *markerPath, const struct stat *zipSt) {
     int fd = open(markerPath, O_RDONLY);
     if (fd < 0) return true;
@@ -525,7 +530,7 @@ static bool ar_needExtract(const char *markerPath, const struct stat *zipSt) {
     if (n <= 0) return true;
     buf[n] = '\0';
     char expected[128];
-    snprintf(expected, sizeof(expected), "%lld:%lld", (long long)zipSt->st_mtime, (long long)zipSt->st_size);
+    snprintf(expected, sizeof(expected), "bulk1:%lld:%lld", (long long)zipSt->st_mtime, (long long)zipSt->st_size);
     return strcmp(buf, expected) != 0;
 }
 // Returns false if the marker could not be written (e.g. bundle dir not writable).
@@ -536,7 +541,7 @@ static bool ar_writeMarker(const char *markerPath, const struct stat *zipSt) {
         return false;
     }
     char buf[128];
-    int w = snprintf(buf, sizeof(buf), "%lld:%lld", (long long)zipSt->st_mtime, (long long)zipSt->st_size);
+    int w = snprintf(buf, sizeof(buf), "bulk1:%lld:%lld", (long long)zipSt->st_mtime, (long long)zipSt->st_size);
     ssize_t written = write(fd, buf, w);
     close(fd);
     if (written != w) {
@@ -785,9 +790,13 @@ inline const char* redirectAllTrafficPath(const char *path) {
         return path;
     }
 
-    // LAZY: nếu file này chưa từng được giải nén, ar_extractOneEntryIfNeeded tự giải nén NGAY
-    // (đồng bộ, trên chính thread đang gọi hàm này) trước khi trả về true/false - thay cho việc
-    // chỉ kiểm tra tồn tại như trước (khi mọi thứ đã được giải nén sẵn từ 1 đợt lúc mở app).
+    // existsInDelta=false nghĩa là file này KHÔNG thuộc bộ mod (Delta.zip không có nó) - vẫn
+    // hoàn toàn bình thường, ví dụ FreeFire.app/_CodeSignature/CodeResources. TRƯỚC ĐÂY hàm này
+    // luôn return redirectedBuffer bất kể hit/miss - trên miss, redirectedBuffer trỏ tới 1 đường
+    // dẫn KHÔNG TỒN TẠI trong Delta/, nên open()/stat()/... sau đó luôn lỗi ENOENT thay vì đọc
+    // được bản gốc trong bundle - xác nhận qua ảnh chụp máy thật (95/95 lời gọi trong bundle đều
+    // miss, game báo lỗi mạng vì đọc thiếu file). Miss giờ phải trả về path GỐC để game đọc thẳng
+    // bundle như chưa hề bị redirect.
     bool existsInDelta = ar_extractOneEntryIfNeeded(redirectedBuffer, destRelative);
     if (existsInDelta) {
         g_deltaHitCount.fetch_add(1, std::memory_order_relaxed);
@@ -803,10 +812,11 @@ inline const char* redirectAllTrafficPath(const char *path) {
         strncpy(g_deltaLastHitPath, hitLabel, sizeof(g_deltaLastHitPath) - 1);
         g_deltaLastHitPath[sizeof(g_deltaLastHitPath) - 1] = '\0';
         deltaHitRingPush(hitLabel);
-    } else {
-        g_deltaMissCount.fetch_add(1, std::memory_order_relaxed);
+        return redirectedBuffer;
     }
-    return redirectedBuffer;
+
+    g_deltaMissCount.fetch_add(1, std::memory_order_relaxed);
+    return path;
 }
 
 // Cơ chế hook open() thay thế bằng hardware breakpoint (né dấu vết fishhook để lại trên GOT) -
