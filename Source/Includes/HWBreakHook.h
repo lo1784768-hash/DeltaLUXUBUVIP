@@ -332,7 +332,16 @@ extern "C" kern_return_t catch_mach_exception_raise_state(
         }
     }
 
-    arm_thread_state64_set_pc_fptr(*outState, (void *)g_hwbreakTrampolineAddr);
+    // Dùng biến thể "_presigned_fptr" thay vì "_set_pc_fptr" thường - đã kiểm tra header thật
+    // của SDK (Xcode 26.5, in ra qua bước CI riêng): nhánh có ptrauth dùng
+    // ptrauth_auth_and_resign() cho "_set_pc_fptr", đòi hỏi con trỏ đưa vào PHẢI đã được ký PAC
+    // hợp lệ từ trước - g_hwbreakTrampolineAddr chỉ là địa chỉ hàm thô (build ARCHS=arm64
+    // thường, không tự ký PAC khi lấy địa chỉ hàm), nếu bản build chọn đúng nhánh ptrauth thì
+    // "resign" 1 con trỏ chưa từng ký sẽ auth thất bại ngay lập tức -> crash (rất có thể là
+    // nguyên nhân crash mới sau khi đổi sang trampoline). "_presigned_fptr" bỏ qua hẳn bước
+    // auth+resign, chỉ gán thẳng giá trị - an toàn ở MỌI nhánh (kể cả các nhánh không-ptrauth,
+    // nơi 2 biến thể này giống hệt nhau).
+    arm_thread_state64_set_pc_presigned_fptr(*outState, (void *)g_hwbreakTrampolineAddr);
     return KERN_SUCCESS;
 }
 
