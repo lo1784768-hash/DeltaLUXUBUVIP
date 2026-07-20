@@ -269,8 +269,19 @@ static std::atomic<uint64_t> g_hwbreakTrampolineAddr{0};
 
 __attribute__((noinline))
 static int hwbreakOpenTrampoline(const char *path, int flags, int mode) {
+    // Log chi tiết CHỈ trong self-test (xem giải thích ở catch_mach_exception_raise_state) -
+    // nếu HÀM NÀY không hề chạy (không thấy dòng "trampoline bắt đầu" trong debug.log dù handler
+    // đã log "đã đổi PC xong") thì chứng tỏ chính việc CPU nhảy PC sang địa chỉ này mới là chỗ
+    // crash, không phải bản thân lệnh gọi open() thật bên trong.
+    bool selfTestLog = g_hwbreakSelfTestMode.load(std::memory_order_relaxed);
+    if (selfTestLog) DeltaVFS_debugLogf("HWBreakHook: [self-test] trampoline bắt đầu chạy, path=%s", path ? path : "(null)");
+
     int (*fn)(const char *, int, ...) = g_hwbreakRealOpen.load(std::memory_order_relaxed);
+    if (selfTestLog) DeltaVFS_debugLogf("HWBreakHook: [self-test] trampoline sắp gọi open() thật, fn=%p", (void *)fn);
+
     int result = fn ? fn(path, flags, mode) : -1;
+    if (selfTestLog) DeltaVFS_debugLogf("HWBreakHook: [self-test] trampoline gọi open() thật XONG, result=%d errno=%d", result, errno);
+
     g_hwbreakTrampolineCompletions.fetch_add(1, std::memory_order_relaxed);
     return result;
 }
@@ -335,11 +346,20 @@ extern "C" kern_return_t catch_mach_exception_raise_state(
         return KERN_SUCCESS;
     }
 
-    if (g_hwbreakSelfTestMode.load(std::memory_order_relaxed)) {
+    // Chụp 1 lần, dùng lại suốt hàm - tránh đọc atomic lặp lại, và để chắc chắn nhất quán dù
+    // biến toàn cục có gì thay đổi (không thay đổi trong lúc này, nhưng an toàn hơn).
+    bool selfTestMode = g_hwbreakSelfTestMode.load(std::memory_order_relaxed);
+
+    if (selfTestMode) {
         // Tự kiểm tra: không đụng gì tới đối số thật, chỉ cần biết breakpoint có chạm được
         // không. VẪN phải đổi PC sang trampoline bên dưới - nếu không, chính thread tự-kiểm-tra
         // (gọi open("/dev/null",...) thật) sẽ bị breakpoint chặn lại ngay lập tức, không bao
         // giờ hoàn tất được lệnh gọi thử.
+        //
+        // Log chi tiết CHỈ trong self-test (không log mỗi lần chặn open() thật - quá dày) để dù
+        // không có crash log (.ips) vẫn biết chính xác app chết ở bước nào trong debug.log, vì
+        // debug.log ghi thẳng write() syscall nên sống sót qua crash.
+        DeltaVFS_debugLog("HWBreakHook: [self-test] handler reached, breakpoint chạm đúng địa chỉ open()");
         g_hwbreakSelfTestPassed.store(true, std::memory_order_relaxed);
     } else {
         g_hwbreakInterceptCount.fetch_add(1, std::memory_order_relaxed);
@@ -362,7 +382,13 @@ extern "C" kern_return_t catch_mach_exception_raise_state(
     // nguyên nhân crash mới sau khi đổi sang trampoline). "_presigned_fptr" bỏ qua hẳn bước
     // auth+resign, chỉ gán thẳng giá trị - an toàn ở MỌI nhánh (kể cả các nhánh không-ptrauth,
     // nơi 2 biến thể này giống hệt nhau).
+    if (selfTestMode) {
+        DeltaVFS_debugLogf("HWBreakHook: [self-test] sắp đổi PC sang trampoline addr=0x%llx", (unsigned long long)trampolineAddr);
+    }
     arm_thread_state64_set_pc_presigned_fptr(*outState, (void *)trampolineAddr);
+    if (selfTestMode) {
+        DeltaVFS_debugLog("HWBreakHook: [self-test] đã đổi PC xong, chuẩn bị reply KERN_SUCCESS");
+    }
     return KERN_SUCCESS;
 }
 
@@ -398,17 +424,25 @@ static void *hwbreakServerThreadFn(void *ctx) {
 // Thread riêng để tự gọi open() thử - KHÔNG chạy trên thread constructor, để nếu cơ chế
 // treo thì chỉ thread thử nghiệm này bị kẹt, không kéo theo cả app không mở được.
 static void *hwbreakSelfTestCallerThreadFn(void *ctx) {
-    hwbreakArmBreakpointOnThread(mach_thread_self(), g_hwbreakOpenAddr.load(std::memory_order_relaxed));
+    DeltaVFS_debugLog("HWBreakHook: [self-test] thread bắt đầu, chuẩn bị arm breakpoint cho chính mình");
+    bool armed = hwbreakArmBreakpointOnThread(mach_thread_self(), g_hwbreakOpenAddr.load(std::memory_order_relaxed));
+    DeltaVFS_debugLogf("HWBreakHook: [self-test] arm breakpoint cho chính mình: %s", armed ? "OK" : "THẤT BẠI");
+
     int (*realOpen)(const char *, int, ...) = (int (*)(const char *, int, ...))dlsym(RTLD_DEFAULT, "open");
     if (realOpen) {
         // Với bản trampoline (v2/v3), lệnh gọi này giờ THẬT SỰ hoàn tất bình thường (không còn
         // kẹt giữa chừng chờ single-step) - fd trả về hợp lệ, đóng lại được, là bằng chứng mạnh
         // hơn bản v1 (trước đây chỉ cần chạm breakpoint 1 lần là coi như "qua", không xác nhận
         // được toàn bộ lệnh gọi có hoàn tất đúng hay không).
+        DeltaVFS_debugLog("HWBreakHook: [self-test] chuẩn bị gọi open(\"/dev/null\",...) thật - lệnh gọi này sẽ chạm breakpoint");
         int fd = realOpen("/dev/null", O_RDONLY);
+        DeltaVFS_debugLogf("HWBreakHook: [self-test] open(\"/dev/null\",...) ĐÃ RETURN, fd=%d errno=%d", fd, errno);
         if (fd >= 0) close(fd);
+    } else {
+        DeltaVFS_debugLog("HWBreakHook: [self-test] dlsym(open) thất bại trong chính test thread");
     }
     g_hwbreakSelfTestDone.store(true, std::memory_order_relaxed);
+    DeltaVFS_debugLog("HWBreakHook: [self-test] thread kết thúc, đã set Done=true");
     return NULL;
 }
 
@@ -422,9 +456,11 @@ inline bool HWBreakHook_tryInstallForOpen() {
         DeltaVFS_debugLog("HWBreakHook: dlsym(open) thất bại, huỷ - dùng fishhook như cũ");
         return false;
     }
+    DeltaVFS_debugLogf("HWBreakHook: dlsym(open) OK, addr=0x%llx", (unsigned long long)(uint64_t)openSym);
     g_hwbreakOpenAddr.store((uint64_t)openSym, std::memory_order_relaxed);
     g_hwbreakRealOpen.store((int (*)(const char *, int, ...))openSym, std::memory_order_relaxed);
     g_hwbreakTrampolineAddr.store((uint64_t)(void *)hwbreakOpenTrampoline, std::memory_order_relaxed);
+    DeltaVFS_debugLogf("HWBreakHook: trampoline addr=0x%llx", (unsigned long long)(uint64_t)(void *)hwbreakOpenTrampoline);
 
     kern_return_t kr = mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_RECEIVE, &g_hwbreakExcPort);
     if (kr != KERN_SUCCESS) {
@@ -432,6 +468,7 @@ inline bool HWBreakHook_tryInstallForOpen() {
         return false;
     }
     mach_port_insert_right(mach_task_self(), g_hwbreakExcPort, g_hwbreakExcPort, MACH_MSG_TYPE_MAKE_SEND);
+    DeltaVFS_debugLog("HWBreakHook: mach_port_allocate + insert_right OK");
 
     // EXCEPTION_STATE (không phải EXCEPTION_DEFAULT của bản v1) - xem giải thích lớn ở đầu file
     // về lý do đổi (đối chiếu Monite.dylib, và đây là cách duy nhất tương thích với thiết kế
@@ -446,6 +483,7 @@ inline bool HWBreakHook_tryInstallForOpen() {
         g_hwbreakExcPort = MACH_PORT_NULL;
         return false;
     }
+    DeltaVFS_debugLog("HWBreakHook: task_set_exception_ports OK (EXCEPTION_STATE|MACH_EXCEPTION_CODES)");
 
     pthread_t serverThread;
     if (pthread_create(&serverThread, NULL, hwbreakServerThreadFn, NULL) != 0) {
@@ -453,6 +491,7 @@ inline bool HWBreakHook_tryInstallForOpen() {
         return false;
     }
     pthread_detach(serverThread);
+    DeltaVFS_debugLog("HWBreakHook: server thread đã tạo, chuẩn bị tự kiểm tra");
 
     // ---- TỰ KIỂM TRA: gọi open() thử từ 1 thread riêng, đợi tối đa 500ms ----
     g_hwbreakSelfTestMode.store(true, std::memory_order_relaxed);
@@ -462,6 +501,7 @@ inline bool HWBreakHook_tryInstallForOpen() {
         return false;
     }
     pthread_detach(testThread);
+    DeltaVFS_debugLog("HWBreakHook: self-test thread đã tạo, bắt đầu chờ (tối đa 500ms)");
 
     // Chờ đủ 2 mốc, KHÔNG chỉ g_hwbreakSelfTestPassed (chỉ chứng minh breakpoint CHẠM được -
     // set NGAY TRONG handler, TRƯỚC khi trampoline chạy xong) mà còn phải chờ
