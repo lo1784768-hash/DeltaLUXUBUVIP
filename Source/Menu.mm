@@ -93,15 +93,6 @@ static NSString *LOC(NSString *key) {
 
 @interface DeltaMenu : NSObject <UITextFieldDelegate, UIGestureRecognizerDelegate>
 
-// First-run extraction flow - declared here (not just defined later in @implementation) because
-// the app-delegate-launch-guard C functions (hooked_setDelegate/hooked_didFinishLaunching, above
-// @implementation) call these via [DeltaMenu ...], and plain C functions - unlike code inside
-// @implementation itself - need the selector declared ahead of time or the build fails with
-// "no known class method for selector".
-+ (void)installAppDelegateLaunchGuard;
-+ (void)pollUntilAppReadyThenBlockAndUpdate;
-+ (void)showUpdatingPopupThenRelaunch;
-
 @property (nonatomic, strong) UIView *menuView;
 @property (nonatomic, strong) CAGradientLayer *borderGradient;
 @property (nonatomic, strong) CADisplayLink *displayLink;
@@ -170,66 +161,6 @@ static NSString *LOC(NSString *key) {
 @property (nonatomic, strong) UILabel *toastLabel;
 @end
 
-// ============================================================================
-//  APP-DELEGATE LAUNCH GUARD - genuinely holds the game's OWN startup back during a
-//  first-run extraction, instead of just covering the screen while it runs underneath
-//  anyway (a block window and the game's AppDelegate/Unity bootstrap are both just
-//  cooperatively scheduled on the same main run loop - one does not pause the other).
-//  Swizzle -[UIApplication setDelegate:] to catch the REAL app delegate the moment
-//  UIApplicationMain assigns it (this fires well before -application:didFinishLaunching...
-//  is called), then swizzle THAT delegate's own -application:didFinishLaunchingWithOptions:
-//  (where Unity's engine actually starts) so we can hold it. Plain C functions (not ObjC
-//  methods) since these patch Apple/game classes, same pattern as fishhook's hooked_open etc.
-// ============================================================================
-typedef void (*OrigSetDelegateIMP)(id, SEL, id<UIApplicationDelegate>);
-static OrigSetDelegateIMP orig_setDelegate = NULL;
-static BOOL g_realDelegateLaunchSwizzled = NO;
-// Set at the very top of +showUpdatingPopupThenRelaunch - lets installAppDelegateLaunchGuard's
-// safety-net timer (below) tell whether the swizzle path actually fired, so it knows whether to
-// fall back to the poll+block approach instead of the popup silently never appearing at all.
-static std::atomic<bool> g_firstRunPopupShown{false};
-
-typedef BOOL (*OrigDidFinishLaunchingIMP)(id, SEL, UIApplication *, NSDictionary *);
-static OrigDidFinishLaunchingIMP orig_didFinishLaunching = NULL;
-
-static BOOL hooked_didFinishLaunching(id self, SEL _cmd, UIApplication *application, NSDictionary *launchOptions) {
-    DeltaVFS_debugLog("hooked_didFinishLaunching: entered - holding game startup until extraction resolves");
-    [DeltaMenu showUpdatingPopupThenRelaunch];
-    // KHÔNG gọi orig_didFinishLaunching thật (đây mới là chỗ Unity thật sự khởi động) - game
-    // vẫn không bao giờ chạy trong lần launch này, vẫn đúng ý đồ ban đầu. NHƯNG PHẢI return
-    // NGAY thay vì tự bơm run loop vô hạn như trước: launch screen tĩnh của hệ thống (ảnh tĩnh
-    // SpringBoard tự hiện lúc app mới mở) chỉ được gỡ xuống sau khi didFinishLaunching THẬT SỰ
-    // return và UIApplicationMain hoàn tất chuỗi khởi động bình thường - giữ hàm này chạy mãi
-    // (như bản cũ) khiến UIKit không bao giờ coi launch là "xong", nên launch screen của hệ
-    // thống cứ nằm đè lên trên window/popup của mình suốt - đúng như user báo cáo: thấy logo
-    // treo lại chứ không hề thấy popup "Vui lòng chờ" nào, dù log xác nhận popup đã được add
-    // vào view hierarchy đúng lúc đó. Return sớm để UIKit gỡ launch screen bình thường; các
-    // NSTimer/dispatch_after đã lên lịch (deltaDebugLogTimer, extraction completion...) vẫn
-    // chạy đúng như thường lệ ngay khi main run loop chuẩn của UIApplicationMain bắt đầu quay,
-    // không cần tự bơm run loop thủ công nữa.
-    return YES;
-}
-
-static void hooked_setDelegate(id self, SEL _cmd, id<UIApplicationDelegate> delegate) {
-    if (orig_setDelegate) orig_setDelegate(self, _cmd, delegate);
-    if (!delegate || g_realDelegateLaunchSwizzled) return;
-    g_realDelegateLaunchSwizzled = YES;
-
-    Class cls = [(id)delegate class];
-    SEL sel = @selector(application:didFinishLaunchingWithOptions:);
-    Method m = class_getInstanceMethod(cls, sel);
-    if (!m) {
-        // Delegate doesn't implement the classic launch method (e.g. scene-only lifecycle) -
-        // fall back to the old "cover the screen and hope" approach rather than never firing at all.
-        DeltaVFS_debugLogf("hooked_setDelegate: %s has no application:didFinishLaunchingWithOptions: - falling back to poll+block", class_getName(cls));
-        [DeltaMenu pollUntilAppReadyThenBlockAndUpdate];
-        return;
-    }
-    orig_didFinishLaunching = (OrigDidFinishLaunchingIMP)method_getImplementation(m);
-    method_setImplementation(m, (IMP)hooked_didFinishLaunching);
-    DeltaVFS_debugLogf("hooked_setDelegate: swizzled %s's didFinishLaunching to hold game startup", class_getName(cls));
-}
-
 @implementation DeltaMenu
 
 static DeltaMenu *extraInfo;
@@ -244,21 +175,11 @@ game_sdk_t *game_sdk = new game_sdk_t();
     // passive traffic logging, neither of which is DNS/ad-domain blocking.
     installNetLogHook();
 
-    if (DeltaVFS_needsFirstRunExtraction()) {
-        // Delta/ hasn't been unzipped yet (fresh install or Delta.zip changed). A block window on
-        // top of everything only HIDES the game - it does NOT stop the game's own code from
-        // running underneath, since our popup and the game's AppDelegate/Unity startup are both
-        // just cooperatively scheduled on the same main run loop. To actually PREVENT the game
-        // from running this session, swizzle -[UIApplication setDelegate:] so we catch the real
-        // app delegate the instant UIApplicationMain assigns it, then swizzle THAT delegate's own
-        // -application:didFinishLaunchingWithOptions: (where Unity's engine actually starts) and
-        // never call the original implementation until extraction has resolved - see
-        // installAppDelegateLaunchGuard below.
-        DeltaVFS_debugLog("Menu +load: needsFirstRunExtraction=true, installing app-delegate launch guard");
-        [DeltaMenu installAppDelegateLaunchGuard];
-        return;
-    }
-    DeltaVFS_debugLog("Menu +load: needsFirstRunExtraction=false, normal menu flow, scheduling setup in 3s");
+    // Không còn "first-run extraction" chặn game khởi động nữa - AssetRedirect.h giờ giải nén
+    // TỪNG FILE MỘT, đúng lúc file đó được yêu cầu lần đầu (lazy), thay vì giải nén hết 1 lượt
+    // lúc mở app. VFS active NGAY LẬP TỨC (miễn Delta.zip tồn tại), không cần popup/chặn game
+    // khởi động/crash-relaunch như trước - xem AssetRedirect.h.
+    DeltaVFS_debugLog("Menu +load: normal menu flow, scheduling setup in 3s");
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         // Checkpoint - nếu dòng này KHÔNG xuất hiện trong debug.log, nghĩa là main thread bị
@@ -288,189 +209,7 @@ game_sdk_t *game_sdk = new game_sdk_t();
     });
 }
 
-+ (void)installAppDelegateLaunchGuard {
-    Method m = class_getInstanceMethod([UIApplication class], @selector(setDelegate:));
-    if (!m) {
-        // Should never happen (setDelegate: is a stable public UIKit API) - fall back rather
-        // than silently do nothing.
-        DeltaVFS_debugLog("installAppDelegateLaunchGuard: -[UIApplication setDelegate:] not found, falling back to poll+block");
-        [DeltaMenu pollUntilAppReadyThenBlockAndUpdate];
-        return;
-    }
-    orig_setDelegate = (OrigSetDelegateIMP)method_getImplementation(m);
-    method_setImplementation(m, (IMP)hooked_setDelegate);
-    DeltaVFS_debugLog("installAppDelegateLaunchGuard: swizzled -[UIApplication setDelegate:]");
-
-    // Safety net: -setDelegate: swizzling is not 100% guaranteed to catch UIApplicationMain's own
-    // delegate assignment on every iOS version/app setup (e.g. if it's assigned through some path
-    // that doesn't go through the public setter). If the swizzle path hasn't shown the popup within
-    // 2s, fall back to the poll+block approach instead of the player seeing nothing at all and the
-    // game silently running unblocked.
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        if (!g_firstRunPopupShown.load(std::memory_order_relaxed)) {
-            DeltaVFS_debugLog("installAppDelegateLaunchGuard: safety-net fired - swizzle never showed the popup, falling back to poll+block");
-            [DeltaMenu pollUntilAppReadyThenBlockAndUpdate];
-        }
-    });
-}
-
-+ (void)pollUntilAppReadyThenBlockAndUpdate {
-    // UIApplication doesn't exist yet this early (we're running before main()/UIApplicationMain).
-    // Poll at a short interval instead of a fixed multi-second wait - the game's own UI must never
-    // get a chance to draw a frame before our blocking window covers it.
-    if (![UIApplication sharedApplication]) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [DeltaMenu pollUntilAppReadyThenBlockAndUpdate];
-        });
-        return;
-    }
-    DeltaVFS_debugLog("Menu poll: UIApplication ready, showing block window + popup");
-    [DeltaMenu showUpdatingPopupThenRelaunch];
-}
-
-static UILabel *deltaDebugLogLabel;
-static NSTimer *deltaDebugLogTimer;
-
-// Tự vẽ 1 khung giống UIAlertController thật (bo góc, nền xám nhạt, tiêu đề đậm) làm subview
-// TRỰC TIẾP trong parent - KHÔNG dùng UIAlertController thật nữa. Lý do: UIKit tự vẽ 1 lớp
-// dimming/scrim phía sau alert thật khi present, che mất hoàn toàn deltaDebugLogLabel dù label
-// đã được add vào blockVC.view TRƯỚC khi present popup - xác nhận qua ảnh chụp màn hình thực tế
-// trên máy (hộp thoại hiện đúng chữ nhưng vùng log debug phía dưới trống trơn, không hiện gì).
-// Vẽ tay thế này thì mọi thứ đều nằm chung 1 cấp view do chính mình kiểm soát, không có
-// view/scrim hệ thống nào chen vào giữa nữa nên chắc chắn thấy được cả khung lẫn log cùng lúc.
-// Trả về chính view đó để caller có thể removeFromSuperview khi xong (VD: khi extraction thành
-// công thì cứ để yên tới lúc abort(); khi thất bại thì remove khung "đang chờ" trước khi vẽ
-// khung lỗi mới).
-static UIView *ar_makeFakeAlertBox(UIView *parent, NSString *title, NSString *message, BOOL showOKButton, void (^onOK)(void)) {
-    CGFloat boxWidth = MIN(320.0, kWidth - 48.0);
-    CGFloat innerWidth = boxWidth - 40.0; // padding 20pt mỗi bên
-
-    UIFont *titleFont = [UIFont boldSystemFontOfSize:17];
-    UIFont *msgFont = [UIFont systemFontOfSize:14];
-
-    CGRect titleRect = [title boundingRectWithSize:CGSizeMake(innerWidth, CGFLOAT_MAX)
-                                            options:NSStringDrawingUsesLineFragmentOrigin
-                                         attributes:@{NSFontAttributeName: titleFont}
-                                            context:nil];
-    CGRect msgRect = [message boundingRectWithSize:CGSizeMake(innerWidth, CGFLOAT_MAX)
-                                            options:NSStringDrawingUsesLineFragmentOrigin
-                                         attributes:@{NSFontAttributeName: msgFont}
-                                            context:nil];
-    CGFloat titleH = ceil(titleRect.size.height);
-    CGFloat msgH = ceil(msgRect.size.height);
-    CGFloat buttonH = showOKButton ? 44.0 : 0.0;
-    CGFloat boxHeight = 20 + titleH + 10 + msgH + 20 + buttonH;
-
-    UIView *box = [[UIView alloc] initWithFrame:CGRectMake((kWidth - boxWidth) * 0.5,
-                                                             (kHeight - boxHeight) * 0.42,
-                                                             boxWidth, boxHeight)];
-    box.backgroundColor = [UIColor colorWithWhite:0.82 alpha:1.0];
-    box.layer.cornerRadius = 18.0;
-    box.clipsToBounds = YES;
-
-    UILabel *titleLabel = [[UILabel alloc] initWithFrame:CGRectMake(20, 20, innerWidth, titleH)];
-    titleLabel.text = title;
-    titleLabel.font = titleFont;
-    titleLabel.textColor = [UIColor blackColor];
-    titleLabel.numberOfLines = 0;
-    [box addSubview:titleLabel];
-
-    UILabel *msgLabel = [[UILabel alloc] initWithFrame:CGRectMake(20, 20 + titleH + 10, innerWidth, msgH)];
-    msgLabel.text = message;
-    msgLabel.font = msgFont;
-    msgLabel.textColor = [UIColor colorWithWhite:0.15 alpha:1.0];
-    msgLabel.numberOfLines = 0;
-    [box addSubview:msgLabel];
-
-    if (showOKButton) {
-        UIView *sep = [[UIView alloc] initWithFrame:CGRectMake(0, boxHeight - buttonH, boxWidth, 0.5)];
-        sep.backgroundColor = [UIColor colorWithWhite:0.6 alpha:1.0];
-        [box addSubview:sep];
-
-        UIButton *okButton = [UIButton buttonWithType:UIButtonTypeSystem];
-        okButton.frame = CGRectMake(0, boxHeight - buttonH, boxWidth, buttonH);
-        [okButton setTitle:@"OK" forState:UIControlStateNormal];
-        okButton.titleLabel.font = [UIFont systemFontOfSize:17];
-        [okButton addAction:[UIAction actionWithHandler:^(__kindof UIAction *action) {
-            [box removeFromSuperview];
-            if (onOK) onOK();
-        }] forControlEvents:UIControlEventTouchUpInside];
-        [box addSubview:okButton];
-    }
-
-    [parent addSubview:box];
-    return box;
-}
-
-+ (void)showUpdatingPopupThenRelaunch {
-    // Set FIRST, synchronously, before any async/animated work - installAppDelegateLaunchGuard's
-    // 2s safety-net timer checks this to know whether it still needs to fall back to poll+block.
-    if (g_firstRunPopupShown.exchange(true, std::memory_order_relaxed)) {
-        DeltaVFS_debugLog("showUpdatingPopupThenRelaunch: already shown once this run, ignoring duplicate call");
-        return;
-    }
-
-    // Our own full-screen, top-level window - deliberately NOT the game's keyWindow/rootViewController,
-    // which may not exist yet (that's the whole point: block before the game gets there).
-    UIWindow *blockWindow = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
-    blockWindow.windowLevel = UIWindowLevelAlert + 1;
-    blockWindow.backgroundColor = [UIColor blackColor];
-    UIViewController *blockVC = [UIViewController new];
-    blockVC.view.backgroundColor = [UIColor blackColor];
-    blockWindow.rootViewController = blockVC;
-    [blockWindow makeKeyAndVisible];
-    mainWindow = blockWindow; // keep a strong ref so ARC doesn't tear it down
-
-    // Live debug panel, no Filza/SSH/Mac needed - reads straight from the in-RAM ring buffer
-    // that DeltaVFS_debugLog() also feeds (see AssetRedirect.h). Sits below the alert so it's
-    // visible the whole time, and freezes on whatever it last showed if the process gets killed.
-    deltaDebugLogLabel = [[UILabel alloc] initWithFrame:CGRectMake(16, kHeight - 220, kWidth - 32, 200)];
-    deltaDebugLogLabel.numberOfLines = 0;
-    deltaDebugLogLabel.font = [UIFont fontWithName:@"Courier" size:10] ?: [UIFont systemFontOfSize:10];
-    deltaDebugLogLabel.textColor = [UIColor colorWithWhite:1.0 alpha:0.55];
-    deltaDebugLogLabel.textAlignment = NSTextAlignmentLeft;
-    [blockVC.view addSubview:deltaDebugLogLabel];
-    deltaDebugLogTimer = [NSTimer scheduledTimerWithTimeInterval:0.25 repeats:YES block:^(NSTimer *timer) {
-        deltaDebugLogLabel.text = DeltaVFS_debugLogSnapshot(30);
-    }];
-    [[NSRunLoop mainRunLoop] addTimer:deltaDebugLogTimer forMode:NSRunLoopCommonModes];
-
-    // Explicitly tells the player we're freezing the game on purpose and to NOT force-quit -
-    // without this, a few seconds of a frozen screen reads as a crash/bug and people bail out
-    // mid-extraction, leaving Delta/ half-written for the next launch to retry.
-    NSString *title = isEnglishMode ? @"Please Wait" : @"Vui lòng chờ";
-    NSString *message = isEnglishMode
-        ? @"We need to freeze the game while we prepare required files.\n\nPlease wait and do not close the game until this process finishes."
-        : @"Game cần tạm dừng để chuẩn bị các file cần thiết.\n\nVui lòng chờ và không tắt game cho đến khi quá trình này hoàn tất.";
-
-    UIView *popupBox = ar_makeFakeAlertBox(blockVC.view, title, message, NO, nil);
-
-    DeltaVFS_debugLog("Menu popup: đã hiện khung thông báo (tự vẽ), gọi DeltaVFS_runFirstRunExtraction");
-    DeltaVFS_runFirstRunExtraction(^(BOOL success) {
-        if (success) {
-            DeltaVFS_debugLog("Menu popup: extraction succeeded, aborting in 0.6s");
-            // Keep the popup on screen a moment so it doesn't just flash, then relaunch.
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                abort();
-            });
-            return;
-        }
-
-        // Extraction failed (0 files written, or the marker couldn't be saved). Do NOT
-        // crash here - the marker never got written, so every relaunch would just show
-        // this same popup again forever with no way to see why. Show the error + full
-        // log right on screen instead, so it's readable/screenshot-able without Filza.
-        DeltaVFS_debugLog("Menu popup: extraction FAILED - staying on screen, not crashing");
-        [popupBox removeFromSuperview];
-        NSString *errTitle = isEnglishMode ? @"Extraction failed" : @"Giải nén thất bại";
-        NSString *errMsg = isEnglishMode
-            ? @"Something went wrong preparing files. The log below has the details - screenshot it and send it over."
-            : @"Có lỗi khi chuẩn bị file. Log bên dưới có chi tiết - chụp màn hình gửi lại giúp mình.";
-        ar_makeFakeAlertBox(blockVC.view, errTitle, errMsg, YES, nil);
-        deltaDebugLogLabel.frame = CGRectMake(16, 150, kWidth - 32, kHeight - 170);
-        deltaDebugLogLabel.font = [UIFont fontWithName:@"Courier" size:12] ?: [UIFont systemFontOfSize:12];
-    });
-}
+// (đã xoá khối installAppDelegateLaunchGuard/pollUntilAppReadyThenBlockAndUpdate/ar_makeFakeAlertBox/showUpdatingPopupThenRelaunch - không còn dùng first-run popup nữa, xem AssetRedirect.h)
 
 - (void)setupDisplayLink {
     _displayLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(updateMenu)];
