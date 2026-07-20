@@ -1025,6 +1025,14 @@ static void initDeltaAllTrafficVFS() {
     orig_CFBundleGetInfoDictionary          = (ORIG_CFBundleGetInfoDictionary)dlsym((void *)RTLD_DEFAULT, "CFBundleGetInfoDictionary");
     orig_CFBundleGetValueForInfoDictionaryKey = (ORIG_CFBundleGetValueForInfoDictionaryKey)dlsym((void *)RTLD_DEFAULT, "CFBundleGetValueForInfoDictionaryKey");
 
+    // CHẨN ĐOÁN TẠM: ép TẮT hẳn HWBreakHook, quay lại fishhook thường cho open() giống bản cũ (chưa
+    // từng bị lỗi "hotfix: SaveFailed") - để xác nhận HWBreakHook có phải nguyên nhân hay không.
+    // Đổi lại thành "needsFirstRun ? false : HWBreakHook_tryInstallForOpen();" khi hết cần test.
+    #define HWBREAK_DIAGNOSTIC_FORCE_DISABLE 1
+#if HWBREAK_DIAGNOSTIC_FORCE_DISABLE
+    (void)needsFirstRun;
+    bool hwBreakOpenActive = false;
+#else
     // THỬ NGHIỆM: cố dùng hardware breakpoint (né dấu vết fishhook để lại trên GOT) cho riêng
     // open() trước - xem HWBreakHook.h. Có tự kiểm tra + fallback an toàn: nếu KHÔNG hoạt
     // động đúng trong 500ms, hàm trả false và "open" vẫn được thêm vào fishhook như bình
@@ -1034,6 +1042,7 @@ static void initDeltaAllTrafficVFS() {
     // lý do gì để mạo hiểm kích hoạt breakpoint đúng lúc I/O nặng nhất, và process này sẽ không
     // bao giờ chạy tới lúc game thật sự đọc file cả.
     bool hwBreakOpenActive = needsFirstRun ? false : HWBreakHook_tryInstallForOpen();
+#endif
 
     struct rebinding rebindings[8];
     int n = 0;
