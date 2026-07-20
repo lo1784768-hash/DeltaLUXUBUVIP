@@ -58,7 +58,17 @@
 #import <dlfcn.h>
 #include <atomic>
 
+// Header do mig sinh ra KHÔNG tự bọc extern "C" cho người dùng C++ (thấy rõ qua lỗi build:
+// "declaration of 'catch_mach_exception_raise' has a different language linkage" - Clang coi
+// khai báo trong header này là C++ mangled vì file .mm include nó không có gì báo là C). Nhưng
+// Source/Includes/Generated/mach_excServer.c lại là 1 file .c THUẦN, biên dịch với linkage C
+// bình thường - nếu 2 bên linkage khác nhau, code trong mach_excServer.c gọi catch_mach_exception_raise
+// sẽ gọi tới tên đã mangle sai (hoặc ngược lại), lỗi lúc link. Tự bọc extern "C" quanh #import để
+// mọi khai báo trong header này (và định nghĩa tương ứng bên dưới) đều là linkage C thống nhất,
+// khớp với mach_excServer.c.
+extern "C" {
 #import "Generated/mach_exc_server.h"
+}
 
 // mach_msg_server() là hàm chuẩn của libsystem (chạy vòng lặp nhận/dispatch/reply đúng giao
 // thức MIG cho mình, gọi callback "demux" - ở đây là mach_exc_server() do mig sinh ra) - không
