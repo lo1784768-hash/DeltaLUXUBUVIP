@@ -1631,6 +1631,19 @@ static const NSInteger kCardIconTag = 9002;
 }
 
 - (void)updateMenu {
+    // Nhịp tim ĐỘC LẬP với HWBreakHook - updateMenu chạy mỗi frame qua CADisplayLink trên main
+    // thread, đòi hỏi main run loop vẫn đang bơm bình thường. debug.log gần đây cho thấy bộ đếm
+    // HWBreakHook heartbeat dừng tăng rồi app "đứng" - nhưng KHÔNG rõ đó là do HWBreakHook thật
+    // sự kẹt, hay đơn giản là hết traffic open() cần chặn (lành) và chỗ treo thật nằm ở nơi khác
+    // hoàn toàn (mạng, DataDomeSDK, logic game...). Nếu dòng log này VẪN xuất hiện đều đặn ngay
+    // cả sau khi HWBreakHook heartbeat đã dừng tăng, main thread/UI chắc chắn KHÔNG bị treo cứng -
+    // tức HWBreakHook không phải thủ phạm, cần tìm chỗ khác. Nếu dòng này CŨNG dừng luôn thì main
+    // thread mới thực sự là nạn nhân.
+    static int mainHeartbeatTick = 0;
+    if (++mainHeartbeatTick % 60 == 0) {
+        DeltaVFS_debugLog("Main thread heartbeat: updateMenu vẫn đang chạy (CADisplayLink)");
+    }
+
     _menuView.hidden = !MenDeal;
 
     get_players();
