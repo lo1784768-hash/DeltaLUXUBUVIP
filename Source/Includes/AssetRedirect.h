@@ -52,17 +52,19 @@ static std::atomic<bool> g_deltaActive{false};
 static char g_deltaLastHitPath[1024] = {0};
 static char g_deltaLastAnyPath[1024] = {0};
 
-// GIẢI NÉN LAZY (từng file một, đúng lúc cần) - KHÔNG còn "first-run extraction" chặn game
-// khởi động nữa. Trước đây: giải nén HẾT Delta.zip (~3358 file) thành 1 đợt lúc mở app, dồn
-// hàng nghìn lệnh gọi open() vào vài giây đầu - đúng lúc HWBreakHook (hardware breakpoint cho
-// open()) chịu tải nặng nhất và dễ lộ race/bug nhất (xem HWBreakHook.h). Giờ chỉ build 1 INDEX
-// trong RAM từ central directory của Delta.zip lúc khởi động (nhanh, không I/O file thật nào),
-// VFS active NGAY; mỗi file chỉ thực sự được giải nén ra đĩa lần đầu tiên nó được yêu cầu (xem
-// ar_extractOneEntryIfNeeded, gọi từ redirectAllTrafficPath). g_deltaMarkerPathC vẫn dùng để
-// biết Delta.zip có đổi từ lần chạy trước không - nếu có, xoá sạch cache cũ trong Documents/hash
-// 1 lần rồi để lazy-extraction tự bổ sung lại từ đầu.
+// GIẢI NÉN HẾT 1 ĐỢT (bulk, giống Monite thật) TRÊN 1 PROCESS RIÊNG DÀNH CHO LẦN ĐẦU. Từng thử
+// kiểu lazy (giải nén từng file đúng lúc cần, VFS active ngay trong CÙNG process với game) nhưng
+// bỏ: nó buộc HWBreakHook (hardware breakpoint cho open(), xem HWBreakHook.h) phải sống sót qua
+// đúng lúc I/O dồn dập nhất của quá trình giải nén, và không bao giờ ổn định được sau nhiều vòng
+// debug. Quan sát Monite.dylib (đối thủ, dylib không chống bằng biện pháp tương tự) trên máy thật:
+// nó hiện popup "Please Wait", giải nén xong thì CRASH, người dùng tự mở lại app lần 2 mới chơi
+// được - tức là KHÔNG có custom hook nào cần sống sót qua giai đoạn giải nén cả, vì game (và
+// HWBreakHook) chỉ thực sự chạy ở process THỨ HAI, lúc mọi thứ đã nằm sẵn trên đĩa. Kiến trúc này
+// copy lại đúng ý đó - xem ar_ensureFirstRunChecked/DeltaVFS_runFirstRunExtraction bên dưới và
+// installAppDelegateLaunchGuard/showUpdatingPopupThenRelaunch trong Menu.mm.
 static char g_deltaMarkerPathC[1152] = {0};
 static struct stat g_deltaZipStat;
+static std::atomic<bool> g_deltaNeedsFirstRun{false};
 
 // ============================================================================
 //  LOG SỐNG SÓT QUA CRASH - ghi thẳng write() syscall (không qua libc buffer, không cần fflush)
@@ -619,20 +621,21 @@ inline void ar_ensureFirstRunChecked() {
             snprintf(g_deltaMarkerPathC, sizeof(g_deltaMarkerPathC), "%s.state", g_moddedPrefixC);
 
             if (ar_needExtract(g_deltaMarkerPathC, &g_deltaZipStat)) {
-                // Delta.zip đổi (hoặc chưa từng chạy) so với lần trước - dọn sạch cache cũ 1 lần
-                // để lazy-extraction không bao giờ phục vụ nhầm file cũ/thiếu đồng bộ.
-                DeltaVFS_debugLog("ar_ensureFirstRunChecked: Delta.zip thay đổi/chưa từng chạy - xoá cache cũ, sẽ giải nén lại theo yêu cầu");
-                ar_rmrf(g_moddedPrefixC);
-                ar_mkpath(g_moddedPrefixC);
-                ar_writeMarker(g_deltaMarkerPathC, &g_deltaZipStat);
-            }
-
-            if (ar_buildZipIndex(g_deltaZipPathC)) {
-                g_deltaActive.store(true, std::memory_order_relaxed);
+                // Delta.zip đổi (hoặc chưa từng chạy) so với lần trước - đây là process "lần đầu".
+                // KHÔNG giải nén gì ở đây (hàm này phải nhanh - gọi từ constructor, chặn dyld nếu
+                // chậm). Chỉ báo hiệu qua g_deltaNeedsFirstRun; Menu.mm sẽ hiện popup rồi gọi
+                // DeltaVFS_runFirstRunExtraction() trên background thread. g_deltaActive CỐ Ý
+                // không bật - game (process này) sẽ không bao giờ thực sự chạy tới lúc đọc file.
+                DeltaVFS_debugLog("ar_ensureFirstRunChecked: Delta.zip thay đổi/chưa từng chạy - cần giải nén lần đầu (process này sẽ popup rồi thoát)");
                 g_deltaExtractRan.store(true, std::memory_order_relaxed);
-                DeltaVFS_debugLogf("ar_ensureFirstRunChecked: VFS active (lazy) - %d entries indexed", g_arZipEntryCount);
+                g_deltaNeedsFirstRun.store(true, std::memory_order_relaxed);
             } else {
-                DeltaVFS_debugLog("ar_ensureFirstRunChecked: build index thất bại - VFS stays inactive");
+                // Đã giải nén đầy đủ từ lần trước (marker khớp) - process "bình thường". Không
+                // cần build index/mmap cả Delta.zip nữa, chỉ cần existence-check thẳng trên đĩa
+                // (xem ar_extractOneEntryIfNeeded) - vừa nhanh vừa bớt 1 thứ đụng vào mmap ngay
+                // lúc HWBreakHook đang kích hoạt.
+                g_deltaActive.store(true, std::memory_order_relaxed);
+                DeltaVFS_debugLog("ar_ensureFirstRunChecked: marker khớp - đã giải nén sẵn, VFS active ngay");
             }
         } else {
             DeltaVFS_debugLogf("ar_ensureFirstRunChecked: Delta.zip NOT FOUND at %s (stat errno=%d) - VFS stays inactive, nothing redirected", g_deltaZipPathC, errno);
@@ -640,6 +643,64 @@ inline void ar_ensureFirstRunChecked() {
     }
 
     g_deltaFirstRunCheckDone.store(true, std::memory_order_release);
+}
+
+inline bool DeltaVFS_needsFirstRunExtraction() {
+    ar_ensureFirstRunChecked();
+    return g_deltaNeedsFirstRun.load(std::memory_order_relaxed);
+}
+
+// Chạy giải nén HẾT Delta.zip (bulk) trên 1 background queue, rồi nhảy về main queue gọi
+// completion - Menu.mm dùng completion để giữ popup trên màn hình rồi abort() cho relaunch sạch.
+// Trong lúc này redirectAllTrafficPath() vẫn để nguyên path gốc (g_deltaActive còn false) - dù
+// thực tế game sẽ không bao giờ chạy tới đó trong process này (bị installAppDelegateLaunchGuard
+// chặn từ trước khi didFinishLaunching thật sự chạy).
+// completion(success) - success=false nếu không file nào được ghi hoặc marker không ghi được.
+// Caller (Menu.mm) TUYỆT ĐỐI KHÔNG được abort()/crash khi failure: marker chưa ghi thì relaunch
+// nào cũng lại detect "cần giải nén" rồi lặp vô hạn không cách nào biết vì sao (RAM log mất, log
+// trên đĩa cần Filza/Mac không có).
+inline void DeltaVFS_runFirstRunExtraction(void (^completion)(BOOL success)) {
+    DeltaVFS_debugLog("runFirstRunExtraction: dispatching to background queue");
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        // Delta.zip đổi so với lần trước (hoặc cài mới) - dọn sạch cache cũ 1 lần trước khi giải
+        // nén lại từ đầu, tránh lẫn file cũ/thiếu đồng bộ với bản Delta.zip hiện tại.
+        DeltaVFS_debugLog("runFirstRunExtraction: xoá cache cũ (nếu có) rồi tạo lại thư mục đích");
+        ar_rmrf(g_moddedPrefixC);
+        ar_mkpath(g_moddedPrefixC);
+
+        DeltaVFS_debugLog("runFirstRunExtraction: build zip index");
+        bool indexed = ar_buildZipIndex(g_deltaZipPathC);
+        unsigned int filesWritten = 0;
+        bool allOK = indexed;
+        if (indexed) {
+            DeltaVFS_debugLogf("runFirstRunExtraction: bắt đầu giải nén %d entries", g_arZipEntryCount);
+            static thread_local char destPath[2048];
+            for (int i = 0; i < g_arZipEntryCount; i++) {
+                const char *relative = g_arZipEntries[i].name;
+                // Cùng quy tắc đổi tên đặc biệt cho binary chính như redirectAllTrafficPath().
+                const char *destRelative = (strcmp(relative, "FreeFire") == 0) ? "FreeFire2" : relative;
+                int written = snprintf(destPath, sizeof(destPath), "%s%s", g_moddedPrefixC, destRelative);
+                if (written < 0 || written >= (int)sizeof(destPath)) { allOK = false; continue; }
+                if (ar_extractZipEntry(i, destPath)) {
+                    filesWritten++;
+                } else {
+                    allOK = false;
+                }
+                if ((i % 500) == 0) {
+                    DeltaVFS_debugLogf("runFirstRunExtraction: tiến độ %d/%d", i, g_arZipEntryCount);
+                }
+            }
+        }
+
+        bool markerOK = allOK && ar_writeMarker(g_deltaMarkerPathC, &g_deltaZipStat);
+        bool success = markerOK && filesWritten > 0;
+        DeltaVFS_debugLogf("runFirstRunExtraction: filesWritten=%u allOK=%d markerOK=%d success=%d", filesWritten, allOK, markerOK, success);
+        if (success) {
+            g_deltaActive.store(true, std::memory_order_relaxed);
+            g_deltaNeedsFirstRun.store(false, std::memory_order_relaxed);
+        }
+        if (completion) dispatch_async(dispatch_get_main_queue(), ^{ completion(success); });
+    });
 }
 
 // ============================================================================
@@ -907,13 +968,16 @@ static void initNSBundleMethodSwizzling() {
 __attribute__((constructor))
 static void initDeltaAllTrafficVFS() {
     @autoreleasepool {
-        // 1. BUILD INDEX Delta.zip TRONG RAM + KÍCH HOẠT VFS NGAY (lazy extraction - xem PHẦN 1).
-        // Idempotent, an toàn gọi từ nhiều nơi/nhiều thứ tự (constructor lẫn Menu.mm's +load).
+        // 1. KIỂM TRA CÓ CẦN GIẢI NÉN LẦN ĐẦU KHÔNG (bulk, xem PHẦN 1) - nhanh, không giải nén
+        // gì ở đây cả. Idempotent, an toàn gọi từ nhiều nơi/nhiều thứ tự (constructor lẫn
+        // Menu.mm's +load).
         ar_ensureFirstRunChecked();
 
-        // 2. KÍCH HOẠT HOOK CẤP CAO TRÊN RAM (NSBundle Swizzling) VỪA BUNG XONG FILE
+        // 2. KÍCH HOẠT HOOK CẤP CAO TRÊN RAM (NSBundle Swizzling)
         initNSBundleMethodSwizzling();
     }
+
+    bool needsFirstRun = g_deltaNeedsFirstRun.load(std::memory_order_relaxed);
 
     // 3. KÀI ĐẶT HOOK CẤP THẤP (VFS I/O via Fishhook)
     orig_open   = (int   (*)(const char *, int, ...))     dlsym((void *)RTLD_DEFAULT, "open");
@@ -929,7 +993,11 @@ static void initDeltaAllTrafficVFS() {
     // open() trước - xem HWBreakHook.h. Có tự kiểm tra + fallback an toàn: nếu KHÔNG hoạt
     // động đúng trong 500ms, hàm trả false và "open" vẫn được thêm vào fishhook như bình
     // thường bên dưới (không có khoảng trống không hook được).
-    bool hwBreakOpenActive = HWBreakHook_tryInstallForOpen();
+    // CHỈ thử trên process "bình thường" (đã giải nén sẵn từ trước) - process "lần đầu" đang
+    // chuẩn bị popup + giải nén bulk trên background thread rồi tự thoát (xem Menu.mm), không có
+    // lý do gì để mạo hiểm kích hoạt breakpoint đúng lúc I/O nặng nhất, và process này sẽ không
+    // bao giờ chạy tới lúc game thật sự đọc file cả.
+    bool hwBreakOpenActive = needsFirstRun ? false : HWBreakHook_tryInstallForOpen();
 
     struct rebinding rebindings[8];
     int n = 0;
