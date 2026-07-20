@@ -794,6 +794,16 @@ inline const char* redirectAllTrafficPath(const char *path) {
         return path;
     }
 
+    // Data/Raw/ios/versioninfo + fileinfo là manifest của hệ thống hotfix/asset-streaming (version
+    // bản vá hiện tại + checksum từng file) - PHẢI luôn phản ánh đúng trạng thái THẬT của máy đang
+    // chạy, không phải ảnh chụp cũ đóng gói sẵn trong Delta.zip. Xác nhận trên máy thật: sau khi
+    // loại _CodeSignature/ vẫn còn lỗi "hotfix: SaveFailed", REDIRECTED FILES cho thấy đúng 2 file
+    // này bị đọc lặp đi lặp lại từ Delta ngay lúc lỗi hiện ra - game đọc nhầm version/checksum cũ
+    // nên lưu hotfix mới đè lên bị fail. Cùng bản chất với CodeResources ở trên - loại khỏi redirect.
+    if (strcmp(relative, "Data/Raw/ios/versioninfo") == 0 || strcmp(relative, "Data/Raw/ios/fileinfo") == 0) {
+        return path;
+    }
+
     // The game's own main executable ("FreeFire.app/FreeFire") is special-cased to a
     // differently-named destination file ("FreeFire2") instead of the generic same-name mapping
     // - a clean, unpatched copy ships under that name in Delta.zip, so if the game reads its own
