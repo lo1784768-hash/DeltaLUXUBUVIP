@@ -12,25 +12,25 @@
 //  Không thể dùng inline hook (MSHookFunction) thay thế vì libc nằm trong dyld shared cache
 //  read-only, không patch code được - xem memory mshookfunction-shared-cache-limit.
 //
-//  CƠ CHẾ (bản v2 - dùng TRAMPOLINE, KHÔNG single-step): đặt breakpoint CPU (ARM64 DBGBCRn/
-//  DBGBVRn qua thread_set_state) ngay tại địa chỉ hàm open() thật. Khi CPU chạm tới, kernel
-//  gửi Mach exception EXC_BREAKPOINT tới port mình đăng ký VỚI BEHAVIOR = EXCEPTION_STATE (xem
-//  giải thích dưới) - handler sửa thẳng x0 (path đã redirect) VÀ pc (trỏ sang 1 trampoline nhỏ
-//  tự dựng) ngay trong state trả về, kernel áp dụng nguyên tử lúc reply. Trampoline chứa đúng 4
-//  byte lệnh gốc đã sao chép sẵn (đọc 1 lần lúc cài đặt, KHÔNG patch code gốc) rồi nhảy tiếp vào
-//  open()+4 - tiếp tục chạy bình thường từ lệnh thứ 2. Bản chất là trampoline kinh điển (như
-//  MSHookFunction/Detours vẫn dùng cho inline hook), chỉ khác chỗ kích hoạt là hardware
-//  breakpoint thay vì vá byte tĩnh.
+//  CƠ CHẾ (bản v3 - TRAMPOLINE LÀ 1 HÀM C BIÊN DỊCH SẴN, KHÔNG single-step, KHÔNG cấp phát bộ
+//  nhớ thực thi runtime): đặt breakpoint CPU (ARM64 DBGBCRn/DBGBVRn qua thread_set_state) ngay
+//  tại địa chỉ hàm open() thật. Khi CPU chạm tới, kernel gửi Mach exception EXC_BREAKPOINT tới
+//  port mình đăng ký VỚI BEHAVIOR = EXCEPTION_STATE (xem giải thích dưới) - handler sửa thẳng x0
+//  (path đã redirect) VÀ pc (trỏ sang hwbreakOpenTrampoline - 1 hàm C bình thường, biên dịch/ký
+//  sẵn cùng dylib) ngay trong state trả về, kernel áp dụng nguyên tử lúc reply. Vì x0/x1/x2 lúc
+//  đó đang giữ đúng path/flags/mode - khớp thẳng với 3 đối số đầu 1 lệnh gọi hàm C chuẩn AAPCS64
+//  - hàm trampoline chỉ cần gọi lại open() thật với đúng các đối số đó, rồi return bình thường
+//  (Clang tự sinh epilogue nhảy về đúng LR, chưa từng bị đụng tới - trả kết quả đúng chỗ gọi
+//  open() ban đầu).
 //
-//  TẠI SAO ĐỔI TỪ SINGLE-STEP SANG TRAMPOLINE: bản v1 dùng behavior=EXCEPTION_DEFAULT (có
+//  TẠI SAO ĐỔI TỪ SINGLE-STEP (v1) SANG TRAMPOLINE: bản v1 dùng behavior=EXCEPTION_DEFAULT (có
 //  thread/task port), sau khi sửa x0 thì tắt breakpoint + bật single-step (MDSCR_EL1.SS) qua 1
 //  cặp thread_get_state/thread_set_state RIÊNG, cho đúng 1 lệnh gốc chạy, bắt exception single-
-//  step tiếp theo, rồi tắt single-step + bật lại breakpoint. Qua nhiều vòng test trên máy thật
-//  (xem debug.log các bản trước), app luôn treo cứng sau 1 số lần chặn open() không cố định (75,
-//  178, 889, 1354...) - "nhịp tim" (heartbeat) độc lập ở main thread (CADisplayLink) xác nhận
-//  CHÍNH main thread bị treo thật, không phải giả treo do hết việc. Đổi hẳn sang code MIG chuẩn
-//  của Apple (thay bộ khung tự viết tay) vẫn bị treo Y HỆT - loại trừ khả năng lỗi nằm ở giao
-//  thức message, dồn nghi vấn về đúng chỗ single-step/debug-register dance này.
+//  step tiếp theo, rồi tắt single-step + bật lại breakpoint. Qua nhiều vòng test trên máy thật,
+//  app luôn treo cứng sau 1 số lần chặn open() không cố định (75, 178, 889, 1354...) - "nhịp
+//  tim" độc lập ở main thread (CADisplayLink) xác nhận CHÍNH main thread bị treo thật. Đổi hẳn
+//  sang code MIG chuẩn của Apple (thay bộ khung tự viết tay) vẫn bị treo Y HỆT - loại trừ khả
+//  năng lỗi nằm ở giao thức message, dồn nghi vấn về đúng chỗ single-step/debug-register dance.
 //
 //  Soi kỹ Monite.dylib (dùng capstone + tự parse chained-fixups để dò call site) phát hiện: nó
 //  đăng ký exception port với behavior=EXCEPTION_STATE (KHÔNG PHẢI EXCEPTION_DEFAULT), và
@@ -39,12 +39,22 @@
 //  được thread/task port - CHỈ nhận/trả thẳng state thanh ghi (bao gồm cả PC) qua chính request/
 //  reply, kernel tự áp dụng khi reply - tức về mặt kỹ thuật KHÔNG THỂ single-step (không có
 //  thread port để gọi thread_get_state/set_state cho debug register). Cách duy nhất còn lại để
-//  breakpoint không tự chạm lại ngay là ĐỔI THẲNG PC - đúng cơ chế trampoline áp dụng ở đây. Bản
-//  v2 này bỏ hẳn: mọi thao tác đọc/ghi ARM_DEBUG_STATE64 trong đường xử lý mỗi lần chặn, mutex
-//  giữa exception handler và rearm-poll thread (không còn 2 bên cùng đụng debug register nữa -
-//  chỉ còn rearm-poll thread chạm tới), và toàn bộ logic phân biệt "chạm breakpoint thật" với
-//  "vừa single-step xong" (không còn khái niệm single-step nữa, MỌI lần chặn đều là 1 lần chặn
-//  thật, xử lý y hệt nhau).
+//  breakpoint không tự chạm lại ngay là ĐỔI THẲNG PC.
+//
+//  TẠI SAO v2 (mmap 1 trang RX rồi tự chép lệnh máy vào đó) THẤT BẠI, ĐỔI SANG v3: v2 bị kill
+//  ngay lần test đầu trên máy thật - EXC_BAD_ACCESS/KERN_PROTECTION_FAILURE, termination reason
+//  "CODESIGNING: Invalid Page" (crash log FreeFire-2026-07-20-080014.ips), PC/FAR trùng khớp
+//  100% với địa chỉ trang mmap. Đây là giới hạn cứng của iOS không jailbreak: KHÔNG THỂ thực thi
+//  code trên bộ nhớ tự cấp phát runtime dù đã mprotect(PROT_EXEC) - cần entitlement JIT đặc biệt
+//  mà 1 dylib chèn vào sideloaded app không có. v3 né hoàn toàn giới hạn này bằng cách dùng 1 HÀM
+//  C THẬT, nằm trong chính __TEXT của dylib, được ký hợp lệ cùng lúc với cả gói lúc build - không
+//  có bộ nhớ thực thi runtime nào được tạo ra cả.
+//
+//  Bản v3 này bỏ hẳn: mọi thao tác đọc/ghi ARM_DEBUG_STATE64 trong đường xử lý mỗi lần chặn,
+//  mutex giữa exception handler và rearm-poll thread (không còn 2 bên cùng đụng debug register
+//  nữa - chỉ còn rearm-poll thread chạm tới), toàn bộ logic phân biệt "chạm breakpoint thật" với
+//  "vừa single-step xong" (không còn khái niệm single-step, MỌI lần chặn đều xử lý y hệt nhau),
+//  VÀ mọi mmap/mprotect/sys_icache_invalidate (không còn bộ nhớ thực thi runtime nào nữa).
 //
 //  AN TOÀN: có bước TỰ KIỂM TRA (self-test) trước khi dùng thật - tự gọi open() giả từ 1
 //  thread riêng (không phải thread constructor, để nếu treo cũng không treo cả app), đợi
@@ -70,8 +80,6 @@
 #import <mach/arm/thread_status.h>
 #import <pthread.h>
 #import <dlfcn.h>
-#import <sys/mman.h>
-#import <libkern/OSCacheControl.h>
 #import <unistd.h>
 #include <atomic>
 
@@ -143,7 +151,7 @@ static inline char *hwbreakNextPathBuf() {
 }
 
 // ---- Đọc/ghi thanh ghi debug 1 thread - CHỈ dùng lúc arm/rearm (cài đặt breakpoint), KHÔNG
-// còn dùng trong đường xử lý exception nữa (bản v2 dùng trampoline, xem giải thích ở đầu file) ----
+// còn dùng trong đường xử lý exception nữa (bản v3 dùng trampoline, xem giải thích ở đầu file) ----
 static inline bool hwbreakArmThreadState(thread_t thread, arm_debug_state64_t *dbg) {
     mach_msg_type_number_t count = ARM_DEBUG_STATE64_COUNT;
     return thread_get_state(thread, ARM_DEBUG_STATE64, (thread_state_t)dbg, &count) == KERN_SUCCESS;
@@ -156,7 +164,7 @@ static inline bool hwbreakSetThreadState(thread_t thread, arm_debug_state64_t *d
 // BCR: BAS=1111 (khớp đủ 4 byte lệnh) | PMC=10 (chỉ EL0 - userspace) | E=1 (bật)
 #define HWBREAK_BCR_VALUE ((0xFu << 5) | (0x2u << 1) | 0x1u)
 
-// Khoá cho hwbreakArmBreakpointOnThread - bản v2 chỉ còn rearm-poll thread VÀ self-test thread
+// Khoá cho hwbreakArmBreakpointOnThread - bản v3 chỉ còn rearm-poll thread VÀ self-test thread
 // (arm chính mình lúc khởi động) cùng có thể gọi hàm này, không còn exception handler đụng vào
 // debug register nữa (đã bỏ hẳn single-step) nên rủi ro tranh chấp thấp hơn nhiều bản v1 - vẫn
 // giữ mutex cho chắc, chi phí không đáng kể.
@@ -216,49 +224,35 @@ static void *hwbreakRearmPollThreadFn(void *ctx) {
 }
 
 // ============================================================================
-//  TRAMPOLINE - thay thế hoàn toàn cơ chế single-step của bản v1 (xem giải thích lớn ở đầu
-//  file). Khi breakpoint chạm, exception handler đổi PC (trong state trả về) sang địa chỉ này
-//  thay vì để nguyên PC ở open() (sẽ tự chạm breakpoint lại ngay) hoặc tự single-step (không
-//  làm được với EXCEPTION_STATE - không có thread port).
-// ============================================================================
+//  TRAMPOLINE v3 - HÀM C BIÊN DỊCH SẴN, KHÔNG cấp phát bộ nhớ thực thi lúc runtime nữa.
+//
+//  v2 (mmap 1 trang RW rồi mprotect sang RX, chép lệnh gốc + LDR/BR vào đó) BỊ KILL NGAY LẦN
+//  TEST ĐẦU: crash log FreeFire-2026-07-20-080014.ips cho thấy EXC_BAD_ACCESS/KERN_PROTECTION_
+//  FAILURE, termination reason "CODESIGNING: Invalid Page", PC/FAR trùng khớp 100% với địa chỉ
+//  trang mmap đó (vmRegionInfo xác nhận đây là VM_ALLOCATE do chính mình tạo). Đây là giới hạn
+//  cứng của iOS không jailbreak: KHÔNG THỂ thực thi code trên bộ nhớ tự cấp phát lúc runtime dù
+//  đã mprotect(PROT_EXEC) - cần entitlement JIT đặc biệt (com.apple.security.cs.allow-jit) mà 1
+//  dylib chèn vào sideloaded app không có và không thể tự cấp cho mình. Đây CHÍNH LÀ lý do gốc
+//  không thể patch code tĩnh trực tiếp nữa (đã ghi ở memory mshookfunction-shared-cache-limit) -
+//  hoá ra cũng chặn luôn cả cách "tạo trampoline runtime" tưởng là né được giới hạn đó.
+//
+//  CÁCH SỬA: dùng 1 HÀM C BÌNH THƯỜNG, biên dịch/ký cùng lúc với cả dylib (không phải bộ nhớ
+//  cấp phát runtime) làm trampoline. Khi breakpoint chạm, đổi PC thẳng vào ĐỊA CHỈ HÀM NÀY (đúng
+//  lệnh đầu tiên của nó) thay vì 1 trang RX tự dựng. Vì lúc CPU nhảy tới đây x0/x1/x2 đang giữ
+//  đúng nguyên giá trị handler vừa set (path đã redirect nếu có, flags/mode giữ nguyên) - KHỚP
+//  CHÍNH XÁC với đối số 1 lệnh gọi hàm C bình thường (chuẩn AAPCS64: x0-x2 = 3 đối số đầu) - nên
+//  hàm này chỉ cần gọi lại open() THẬT (qua con trỏ đã dlsym) với đúng x0/x1/x2 đó, coi như vừa
+//  được CPU "gọi" bình thường. Chạy TRÊN CHÍNH thread vừa chạm breakpoint (không phải thread xử
+//  lý exception) nên errno cũng được set đúng vào TLS của đúng thread đó - không có vấn đề errno
+//  bị lẫn sang thread khác. Khi hàm return, epilogue chuẩn của Clang tự nhảy về đúng địa chỉ
+//  LR (chưa từng bị đụng tới) - tức trả kết quả về đúng chỗ gọi open() ban đầu, y hệt như open()
+//  thật tự chạy xong và return - không cần biết/replay lệnh gốc bị breakpoint đè lên nữa.
+static int (*g_hwbreakRealOpen)(const char *, int, ...) = NULL;
 static uint64_t g_hwbreakTrampolineAddr = 0;
 
-// Dựng 1 trang nhớ RX chứa: [4 byte lệnh gốc sao chép từ open()] [LDR X16,#8] [BR X16]
-// [8 byte địa chỉ open()+4]. Thread chạm breakpoint, sau khi handler đổi PC sang đây, sẽ chạy
-// đúng lệnh gốc (x0 đã được sửa từ trước bởi handler) rồi tự nhảy tiếp vào open()+4 - tiếp tục
-// thực thi bình thường từ lệnh thứ 2 trở đi, không bỏ sót hiệu ứng của lệnh đầu tiên. Dùng X16 vì
-// đó là thanh ghi scratch chuẩn AAPCS64 dành riêng cho nhảy gián tiếp (dyld cũng tự dùng y hệt
-// cho các stub PLT của chính nó - xem __stubs section) nên không đụng tới thanh ghi nào caller
-// đang cần giữ giá trị qua lệnh gọi.
-static bool hwbreakBuildTrampoline(uint64_t targetAddr) {
-    long pageSize = sysconf(_SC_PAGESIZE);
-    if (pageSize <= 0) pageSize = 16384;
-    void *page = mmap(NULL, (size_t)pageSize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
-    if (page == MAP_FAILED) return false;
-
-    uint8_t *p = (uint8_t *)page;
-    memcpy(p, (const void *)targetAddr, 4); // sao chép đúng lệnh gốc bị breakpoint đè lên (chỉ đọc)
-
-    uint32_t ldrX16 = 0x58000050; // LDR X16, #8  (PC-relative, nạp 8 byte ngay sau lệnh BR)
-    uint32_t brX16  = 0xD61F0200; // BR X16
-    memcpy(p + 4, &ldrX16, 4);
-    memcpy(p + 8, &brX16, 4);
-
-    uint64_t resumeAddr = targetAddr + 4; // tiếp tục open() từ lệnh thứ 2 trở đi
-    memcpy(p + 12, &resumeAddr, 8);
-
-    if (mprotect(page, (size_t)pageSize, PROT_READ | PROT_EXEC) != 0) {
-        munmap(page, (size_t)pageSize);
-        return false;
-    }
-    // BẮT BUỘC: vừa ghi lệnh máy mới vào trang nhớ này qua đường D-cache - I-cache của CPU có
-    // thể vẫn giữ bản cũ/rác nếu không chủ động đồng bộ, khiến CPU fetch nhầm lệnh rác khi nhảy
-    // vào đây thực thi -> crash ngẫu nhiên rất khó tái hiện. sys_icache_invalidate lo đúng việc
-    // đồng bộ I-cache/D-cache trên ARM64 - bắt buộc phải gọi sau khi ghi code mới vào bộ nhớ.
-    sys_icache_invalidate(page, (size_t)pageSize);
-
-    g_hwbreakTrampolineAddr = (uint64_t)page;
-    return true;
+__attribute__((noinline))
+static int hwbreakOpenTrampoline(const char *path, int flags, int mode) {
+    return g_hwbreakRealOpen(path, flags, mode);
 }
 
 // ---- 3 hàm callback mà mach_exc_server() (demux do mig sinh ra) gọi ngược lại - PHẢI đúng tên
@@ -377,7 +371,7 @@ static void *hwbreakSelfTestCallerThreadFn(void *ctx) {
     hwbreakArmBreakpointOnThread(mach_thread_self(), g_hwbreakOpenAddr);
     int (*realOpen)(const char *, int, ...) = (int (*)(const char *, int, ...))dlsym(RTLD_DEFAULT, "open");
     if (realOpen) {
-        // Với bản v2 (trampoline), lệnh gọi này giờ THẬT SỰ hoàn tất bình thường (không còn
+        // Với bản trampoline (v2/v3), lệnh gọi này giờ THẬT SỰ hoàn tất bình thường (không còn
         // kẹt giữa chừng chờ single-step) - fd trả về hợp lệ, đóng lại được, là bằng chứng mạnh
         // hơn bản v1 (trước đây chỉ cần chạm breakpoint 1 lần là coi như "qua", không xác nhận
         // được toàn bộ lệnh gọi có hoàn tất đúng hay không).
@@ -399,11 +393,8 @@ inline bool HWBreakHook_tryInstallForOpen() {
         return false;
     }
     g_hwbreakOpenAddr = (uint64_t)openSym;
-
-    if (!hwbreakBuildTrampoline(g_hwbreakOpenAddr)) {
-        DeltaVFS_debugLog("HWBreakHook: dựng trampoline thất bại, huỷ - dùng fishhook như cũ");
-        return false;
-    }
+    g_hwbreakRealOpen = (int (*)(const char *, int, ...))openSym;
+    g_hwbreakTrampolineAddr = (uint64_t)(void *)hwbreakOpenTrampoline;
 
     kern_return_t kr = mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_RECEIVE, &g_hwbreakExcPort);
     if (kr != KERN_SUCCESS) {
