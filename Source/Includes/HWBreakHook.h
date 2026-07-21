@@ -82,6 +82,8 @@
 #import <dlfcn.h>
 #import <unistd.h>
 #include <atomic>
+#include <cstdlib>
+#import "fishhook.h"
 
 // Header do mig sinh ra KHÔNG tự bọc extern "C" cho người dùng C++ (thấy rõ qua lỗi build:
 // "declaration of 'catch_mach_exception_raise' has a different language linkage" - Clang coi
@@ -502,6 +504,72 @@ static void *hwbreakServerThreadFn(void *ctx) {
     return NULL;
 }
 
+// ============================================================================
+//  HOOK pthread_create() - ĐÓNG HẲN cửa sổ hở cho thread MỚI, thay vì chỉ giảm xác suất như poll.
+//
+//  Đối chiếu hook/hook.c (tool tham khảo "TLOI"): họ hook hàm GAMEPLAY (GetFovNormal, OnDestroy...
+//  xem Esp_Full.mm:984-1009), chỉ được gọi từ main thread Unity + vài worker thread CỐ ĐỊNH, sống
+//  suốt vòng đời app (tạo 1 lần, không tạo/huỷ lặp lại) - nên arm 1 lần lúc gọi hook() là đủ,
+//  KHÔNG cần vòng poll nào cả. open() thì khác hẳn: bị gọi từ BẤT KỲ thread nào, kể cả 1 thread
+//  sống rất ngắn tạo ra CHỈ ĐỂ tải+ghi 1 file (VD hotfix) rồi kết thúc luôn. Poll (dù 20ms) vẫn để
+//  hở 1 khoảng thời gian hữu hạn giữa lúc thread đó bắt đầu chạy và lúc poll kịp arm nó - nếu nó
+//  gọi open() ngay trong khoảng đó thì lọt qua HOÀN TOÀN, không qua breakpoint, không tăng
+//  g_hwbreakInterceptCount (vô hình với heartbeat, xem lịch sử trao đổi/debug.log Jul 21).
+//
+//  Cách đóng hẳn: hook pthread_create() (qua fishhook, không cần breakpoint) - bọc start_routine
+//  bằng 1 wrapper tự arm breakpoint cho CHÍNH NÓ ngay dòng lệnh ĐẦU TIÊN nó chạy, TRƯỚC bất kỳ code
+//  thật nào của thread đó (kể cả lệnh gọi open() đầu tiên). Không còn phụ thuộc tốc độ poll nữa -
+//  poll vẫn giữ lại làm lưới an toàn thừa (phòng trường hợp thread tạo ra bằng cách khác, không
+//  qua pthread_create - hiếm trên Darwin vì NSThread/GCD cũng dựng trên pthread_create).
+// ============================================================================
+struct HWBreakThreadWrapperArgs {
+    void *(*realStart)(void *);
+    void *realArg;
+};
+
+static void *hwbreakThreadEntryWrapper(void *rawArgs) {
+    HWBreakThreadWrapperArgs *wrapped = (HWBreakThreadWrapperArgs *)rawArgs;
+    void *(*realStart)(void *) = wrapped->realStart;
+    void *realArg = wrapped->realArg;
+    free(wrapped);
+
+    // Arm NGAY DÒNG ĐẦU - g_hwbreakOpenAddr đã set xong từ trước khi hook pthread_create này được
+    // cài (xem thứ tự trong HWBreakHook_tryInstallForOpen), nên luôn đọc được giá trị hợp lệ.
+    uint64_t addr = g_hwbreakOpenAddr.load(std::memory_order_relaxed);
+    if (addr != 0) {
+        thread_t self = mach_thread_self();
+        hwbreakArmBreakpointOnThread(self, addr);
+        // mach_thread_self() cấp 1 send-right MỚI mỗi lần gọi - PHẢI tự giải phóng (không như
+        // hwbreakArmAllExistingThreads/task_threads(), nơi caller đã tự deallocate port riêng).
+        // Hàm này chạy trên MỌI thread mới tạo ra khi HWBreakHook đang active (không phải 1 lần
+        // như self-test cũ) - không giải phóng sẽ rò rỉ port tích luỹ liên tục theo số thread.
+        mach_port_deallocate(mach_task_self(), self);
+    }
+
+    return realStart(realArg);
+}
+
+static int (*orig_pthread_create)(pthread_t *, const pthread_attr_t *, void *(*)(void *), void *);
+static int hooked_pthread_create(pthread_t *thread, const pthread_attr_t *attr,
+                                  void *(*start_routine)(void *), void *arg) {
+    if (!g_hwbreakActive.load(std::memory_order_relaxed)) {
+        return orig_pthread_create(thread, attr, start_routine, arg);
+    }
+    HWBreakThreadWrapperArgs *wrapped = (HWBreakThreadWrapperArgs *)malloc(sizeof(HWBreakThreadWrapperArgs));
+    if (!wrapped) {
+        // Cấp phát thất bại (cực hiếm) - AN TOÀN HƠN là để thread này không được arm ngay (vẫn có
+        // cơ hội được poll bắt ở lần tick kế tiếp) còn hơn làm pthread_create() thất bại hẳn.
+        return orig_pthread_create(thread, attr, start_routine, arg);
+    }
+    wrapped->realStart = start_routine;
+    wrapped->realArg = arg;
+    int rc = orig_pthread_create(thread, attr, hwbreakThreadEntryWrapper, wrapped);
+    if (rc != 0) {
+        free(wrapped); // tạo thread thất bại - wrapper không bao giờ chạy để tự free
+    }
+    return rc;
+}
+
 // Thread riêng để tự gọi open() thử - KHÔNG chạy trên thread constructor, để nếu cơ chế
 // treo thì chỉ thread thử nghiệm này bị kẹt, không kéo theo cả app không mở được.
 static void *hwbreakSelfTestCallerThreadFn(void *ctx) {
@@ -638,6 +706,17 @@ inline bool HWBreakHook_tryInstallForOpen() {
     // còn lại. hwbreakRearmPollThreadFn (spawn ngay dưới đây) tự chờ 1 nhịp trước khi thực hiện
     // lần arm đầu tiên - xem giải thích chi tiết ở khai báo hàm đó.
     g_hwbreakActive.store(true, std::memory_order_relaxed);
+
+    // Cài hook pthread_create() NGAY SAU KHI g_hwbreakActive=true (hooked_pthread_create tự kiểm
+    // tra cờ này) - mọi thread tạo ra TỪ ĐÂY TRỞ ĐI (kể cả rearm-poll thread ngay dưới đây, vô hại
+    // nếu tự arm 2 lần) sẽ tự động arm breakpoint cho chính nó ngay khi bắt đầu chạy, không còn
+    // phải chờ poll. Xem giải thích lớn ở khai báo hooked_pthread_create.
+    struct rebinding ptCreateRebinding[1];
+    ptCreateRebinding[0].name = "pthread_create";
+    ptCreateRebinding[0].replacement = (void *)hooked_pthread_create;
+    ptCreateRebinding[0].replaced = (void **)&orig_pthread_create;
+    int ptRebindRet = rebind_symbols(ptCreateRebinding, 1);
+    DeltaVFS_debugLogf("HWBreakHook: rebind pthread_create rc=%d (0=OK) - thread mới từ giờ tự arm breakpoint ngay lúc bắt đầu chạy, không chờ poll nữa", ptRebindRet);
 
     pthread_t rearmThread;
     if (pthread_create(&rearmThread, NULL, hwbreakRearmPollThreadFn, NULL) == 0) {
