@@ -784,27 +784,12 @@ inline const char* redirectAllTrafficPath(const char *path) {
     static thread_local char redirectedBuffer[2048];
     const char *relative = cmpPath + g_bundlePrefixLen;
 
-    // Data/Raw/ios/versioninfo + fileinfo là manifest của hệ thống hotfix/asset-streaming (version
-    // bản vá hiện tại + checksum từng file) - PHẢI luôn phản ánh đúng trạng thái THẬT của máy đang
-    // chạy, không phải ảnh chụp cũ đóng gói sẵn trong Delta.zip. Xác nhận trên máy thật: sau khi
-    // loại _CodeSignature/ vẫn còn lỗi "hotfix: SaveFailed", REDIRECTED FILES cho thấy đúng 2 file
-    // này bị đọc lặp đi lặp lại từ Delta ngay lúc lỗi hiện ra - game đọc nhầm version/checksum cũ
-    // nên lưu hotfix mới đè lên bị fail. Cùng bản chất với CodeResources ở trên - loại khỏi redirect.
-    if (strcmp(relative, "Data/Raw/ios/versioninfo") == 0 || strcmp(relative, "Data/Raw/ios/fileinfo") == 0) {
-        return path;
-    }
-
-    // Frameworks/ (VD: UnityFramework.framework/UnityFramework) TUYỆT ĐỐI không được redirect -
-    // đây là BINARY THỰC THI (code máy, không phải asset/config), đã được dyld load thẳng từ bản
-    // gốc TRƯỚC KHI hook của mình kịp cài xong. Delta.zip chỉ là ảnh chụp đóng gói sẵn từ 1 thời
-    // điểm khác, không đảm bảo khớp byte-for-byte với bản đang thực sự chạy trong bộ nhớ - nếu có
-    // bước tự kiểm tra tính toàn vẹn engine nào đó đọc lại file này để verify (giống lý do
-    // CodeResources gây lỗi ở trên) thì phát hiện sai lệch dễ dẫn tới hậu quả nặng hơn (khoá tài
-    // khoản) chứ không chỉ 1 popup lỗi thường. Xác nhận trên máy thật: REDIRECTED FILES cho thấy
-    // UnityFramework bị đọc lặp lại từ Delta ngay lúc màn hình báo tài khoản bị khoá hiện ra.
-    if (strncmp(relative, "Frameworks/", 11) == 0) {
-        return path;
-    }
+    // KHÔNG còn blocklist nào ở đây nữa (versioninfo/fileinfo, Frameworks/ đã bỏ theo yêu cầu
+    // CHỦ Ý của user - CHẤP NHẬN RỦI RO đã biết trước, không phải quên): Frameworks/ (VD:
+    // UnityFramework.framework/UnityFramework) từng gây màn hình "tài khoản bị khoá" trên máy
+    // thật khi redirect (REDIRECTED FILES xác nhận UnityFramework bị đọc lặp lại từ Delta đúng
+    // lúc lỗi đó hiện ra), và Data/Raw/ios/versioninfo+fileinfo từng gây "hotfix: SaveFailed".
+    // Redirect TOÀN BỘ mọi thứ có mặt trong Delta.zip, không ngoại lệ.
 
     // The game's own main executable ("FreeFire.app/FreeFire") is special-cased to a
     // differently-named destination file ("FreeFire2") instead of the generic same-name mapping
