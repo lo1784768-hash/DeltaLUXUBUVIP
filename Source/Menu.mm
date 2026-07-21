@@ -194,6 +194,19 @@ static BOOL g_realDelegateLaunchSwizzled = NO;
 // installAppDelegateLaunchGuard biết liệu nhánh swizzle đã thực sự hiện popup hay chưa.
 static std::atomic<bool> g_firstRunPopupShown{false};
 
+typedef BOOL (*OrigWillFinishLaunchingIMP)(id, SEL, UIApplication *, NSDictionary *);
+static OrigWillFinishLaunchingIMP orig_willFinishLaunching = NULL;
+
+// Chặn thêm application:willFinishLaunchingWithOptions: - phòng thân (defense-in-depth) cho
+// trường hợp UnityAppController/CustomUnityAppController khởi tạo engine hoặc bắt đầu load data
+// NGAY TỪ ĐÂY thay vì ở didFinishLaunchingWithOptions: bên dưới. Không gọi hàm gốc, y hệt lý do
+// ở hooked_didFinishLaunching - game tuyệt đối không được chạy tới bất kỳ đâu trong process đang
+// giải nén lần đầu này.
+static BOOL hooked_willFinishLaunching(id self, SEL _cmd, UIApplication *application, NSDictionary *launchOptions) {
+    DeltaVFS_debugLog("hooked_willFinishLaunching: entered - holding, not forwarding to real implementation");
+    return YES;
+}
+
 typedef BOOL (*OrigDidFinishLaunchingIMP)(id, SEL, UIApplication *, NSDictionary *);
 static OrigDidFinishLaunchingIMP orig_didFinishLaunching = NULL;
 
@@ -229,6 +242,17 @@ static void hooked_setDelegate(id self, SEL _cmd, id<UIApplicationDelegate> dele
     orig_didFinishLaunching = (OrigDidFinishLaunchingIMP)method_getImplementation(m);
     method_setImplementation(m, (IMP)hooked_didFinishLaunching);
     DeltaVFS_debugLogf("hooked_setDelegate: swizzled %s's didFinishLaunching to hold game startup", class_getName(cls));
+
+    // Phòng thân: nếu delegate CÓ implement willFinishLaunchingWithOptions: (nơi 1 số bản Unity
+    // export bắt đầu khởi tạo engine sớm hơn cả didFinishLaunching), chặn luôn cả nó - không để
+    // lọt đường nào cho game load data trong lúc đang giải nén lần đầu.
+    SEL willSel = @selector(application:willFinishLaunchingWithOptions:);
+    Method wm = class_getInstanceMethod(cls, willSel);
+    if (wm) {
+        orig_willFinishLaunching = (OrigWillFinishLaunchingIMP)method_getImplementation(wm);
+        method_setImplementation(wm, (IMP)hooked_willFinishLaunching);
+        DeltaVFS_debugLogf("hooked_setDelegate: swizzled %s's willFinishLaunching too (defense-in-depth)", class_getName(cls));
+    }
 }
 
 @implementation DeltaMenu
@@ -410,19 +434,11 @@ static UIView *ar_makeFakeAlertBox(UIView *parent, NSString *title, NSString *me
     [blockWindow makeKeyAndVisible];
     mainWindow = blockWindow; // giữ strong ref để ARC không dọn nó đi
 
-    // Panel debug log sống, không cần Filza/SSH/Mac - đọc thẳng từ ring buffer trong RAM mà
-    // DeltaVFS_debugLog() cũng ghi vào (xem AssetRedirect.h). Nằm dưới khung alert nên luôn thấy
-    // được, và đứng yên ở dòng cuối nếu process bị kill.
-    deltaDebugLogLabel = [[UILabel alloc] initWithFrame:CGRectMake(16, kHeight - 220, kWidth - 32, 200)];
-    deltaDebugLogLabel.numberOfLines = 0;
-    deltaDebugLogLabel.font = [UIFont fontWithName:@"Courier" size:10] ?: [UIFont systemFontOfSize:10];
-    deltaDebugLogLabel.textColor = [UIColor colorWithWhite:1.0 alpha:0.55];
-    deltaDebugLogLabel.textAlignment = NSTextAlignmentLeft;
-    [blockVC.view addSubview:deltaDebugLogLabel];
-    deltaDebugLogTimer = [NSTimer scheduledTimerWithTimeInterval:0.25 repeats:YES block:^(NSTimer *timer) {
-        deltaDebugLogLabel.text = DeltaVFS_debugLogSnapshot(30);
-    }];
-    [[NSRunLoop mainRunLoop] addTimer:deltaDebugLogTimer forMode:NSRunLoopCommonModes];
+    // KHÔNG hiện panel debug log ở đây nữa lúc đang giải nén bình thường (trước đây hiện ngay từ
+    // đầu) - font "Courier" cũ thiếu glyph dấu tiếng Việt nên chữ có dấu hiện ra méo/ký tự lạ (xác
+    // nhận qua ảnh chụp máy thật), với lại người chơi bình thường không cần thấy log kỹ thuật này.
+    // Panel chỉ được tạo (xem nhánh failure bên dưới, đã đổi sang font Menlo hỗ trợ đủ Unicode)
+    // khi THỰC SỰ có lỗi cần chụp màn hình gửi lại - đúng lúc cần, không phải lúc nào cũng hiện.
 
     // Nói rõ cho người chơi biết đang CỐ Ý tạm dừng game, đừng force-quit - không có dòng này vài
     // giây màn hình đứng im giống crash/bug, dễ khiến người dùng thoát giữa chừng, để lại Delta/
@@ -456,8 +472,22 @@ static UIView *ar_makeFakeAlertBox(UIView *parent, NSString *title, NSString *me
             ? @"Something went wrong preparing files. The log below has the details - screenshot it and send it over."
             : @"Có lỗi khi chuẩn bị file. Log bên dưới có chi tiết - chụp màn hình gửi lại giúp mình.";
         ar_makeFakeAlertBox(blockVC.view, errTitle, errMsg, YES, nil);
-        deltaDebugLogLabel.frame = CGRectMake(16, 150, kWidth - 32, kHeight - 170);
-        deltaDebugLogLabel.font = [UIFont fontWithName:@"Courier" size:12] ?: [UIFont systemFontOfSize:12];
+
+        // Panel debug log CHỈ tạo ở đây (lúc thật sự có lỗi cần chụp gửi lại) - đọc thẳng từ ring
+        // buffer trong RAM mà DeltaVFS_debugLog() cũng ghi vào (xem AssetRedirect.h). Dùng
+        // monospacedSystemFontOfSize thay vì "Courier" cũ - "Courier" thiếu glyph dấu tiếng Việt,
+        // font hệ thống này hỗ trợ đủ Unicode nên chữ có dấu hiện đúng, không còn méo/ký tự lạ.
+        deltaDebugLogLabel = [[UILabel alloc] initWithFrame:CGRectMake(16, 150, kWidth - 32, kHeight - 170)];
+        deltaDebugLogLabel.numberOfLines = 0;
+        deltaDebugLogLabel.font = [UIFont monospacedSystemFontOfSize:12 weight:UIFontWeightRegular];
+        deltaDebugLogLabel.textColor = [UIColor colorWithWhite:1.0 alpha:0.55];
+        deltaDebugLogLabel.textAlignment = NSTextAlignmentLeft;
+        deltaDebugLogLabel.text = DeltaVFS_debugLogSnapshot(30);
+        [blockVC.view addSubview:deltaDebugLogLabel];
+        deltaDebugLogTimer = [NSTimer scheduledTimerWithTimeInterval:0.25 repeats:YES block:^(NSTimer *timer) {
+            deltaDebugLogLabel.text = DeltaVFS_debugLogSnapshot(30);
+        }];
+        [[NSRunLoop mainRunLoop] addTimer:deltaDebugLogTimer forMode:NSRunLoopCommonModes];
     });
 }
 
