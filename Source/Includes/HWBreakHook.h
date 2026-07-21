@@ -477,6 +477,34 @@ extern "C" kern_return_t catch_mach_exception_raise_state(
     const arm_thread_state64_t *inState = (const arm_thread_state64_t *)old_state;
     arm_thread_state64_t *outState = (arm_thread_state64_t *)new_state;
 
+    // CRASH LOGGER (tham khảo Monite - giải mã được format string "Crash=true"/"x0=%s x1=%s..."
+    // và "File: %s\nBase Address: %p\nSymbol Name: %s\nSymbol Address: %p\n" trong chính code họ,
+    // xem MoniteAnalysis/README.md mục 3c) - đăng ký CHUNG 1 port với breakpoint (xem mask ở
+    // HWBreakHook_tryInstallForOpen) nên mọi loại exception khác BREAKPOINT đều rơi vào đây trước
+    // tiên. KHÔNG được lẫn vào nhánh xử lý breakpoint bên dưới (dùng chung "return KERN_SUCCESS
+    // với state không đổi" sẽ khiến CPU chạy lại NGUYÊN VĂN lệnh vừa crash -> lặp crash vô hạn,
+    // không phải hành vi an toàn cho BAD_ACCESS/BAD_INSTRUCTION/ARITHMETIC thật). Chỉ LOG rồi trả
+    // KERN_FAILURE - không sửa state, không nhận xử lý - kernel tự chuyển tiếp cho handler mặc
+    // định của OS (Apple vẫn tự tạo .ips bình thường, không mất) - đây chỉ "nghe lén" thêm thông
+    // tin vào debug.log (sống sót qua crash vì ghi thẳng write()), không can thiệp crash flow thật.
+    if (exception != EXC_BREAKPOINT) {
+        uint64_t crashPc = (uint64_t)arm_thread_state64_get_pc(*inState);
+        Dl_info info;
+        memset(&info, 0, sizeof(info));
+        dladdr((void *)crashPc, &info);
+        DeltaVFS_debugLogf(
+            "CrashLogger: exc=%d pc=0x%llx File=%s Base=%p Symbol=%s SymAddr=%p "
+            "x0=0x%llx x1=0x%llx x2=0x%llx x3=0x%llx x4=0x%llx x5=0x%llx x6=0x%llx x7=0x%llx",
+            (int)exception, (unsigned long long)crashPc,
+            info.dli_fname ? info.dli_fname : "?", info.dli_fbase,
+            info.dli_sname ? info.dli_sname : "?", info.dli_saddr,
+            (unsigned long long)inState->__x[0], (unsigned long long)inState->__x[1],
+            (unsigned long long)inState->__x[2], (unsigned long long)inState->__x[3],
+            (unsigned long long)inState->__x[4], (unsigned long long)inState->__x[5],
+            (unsigned long long)inState->__x[6], (unsigned long long)inState->__x[7]);
+        return KERN_FAILURE;
+    }
+
     // Lưu ý: field pc trong arm_thread_state64_t là opaque (có thể mang PAC) trên SDK thật -
     // PHẢI dùng arm_thread_state64_get_pc()/set_pc_fptr() thay vì đọc/ghi field thô, khác với
     // x0-x28 (state.__x[i]) là GPR thường, không opaque, đọc thẳng field được (xem chỗ dùng
@@ -729,12 +757,23 @@ inline bool HWBreakHook_tryInstallForOpen() {
     // kẹt vô hạn trên đúng thread đó, hoàn toàn vô hình với heartbeat của mình (chỉ tăng khi PC
     // khớp đúng open()). Bản này CHƯA implement forward/chain lại cho port cũ (việc đó phức tạp
     // hơn nhiều) - chỉ log ra để XÁC NHẬN giả thuyết trước khi quyết định có đáng làm tiếp không.
+    // ĐÃ TEST THẬT trên máy (xem debug.log Jul 21): oldCount=1 nhưng port=0x0 (MACH_PORT_NULL) -
+    // tức KHÔNG có ai đăng ký thật, chỉ là task_swap_exception_ports luôn trả đủ 1 "slot" cho
+    // đúng mask xin dù rỗng - ĐÃ SỬA log bên dưới để lọc port==NULL, tránh báo giả như log cũ.
+    //
+    // Mở rộng thêm mask CRASH THẬT (BAD_ACCESS/BAD_INSTRUCTION/ARITHMETIC) - tham khảo Monite (đã
+    // giải mã được string "Crash=true"/"x0=%s..." trong code họ, xem MoniteAnalysis/README.md mục
+    // 3c) để tự dump thanh ghi + symbol lúc crash thật vào debug.log. Đăng ký CHUNG 1 port với
+    // breakpoint (rẻ hơn mở port thứ 2) - catch_mach_exception_raise_state tự rẽ nhánh theo
+    // "exception" param, xem đầu hàm đó.
     exception_mask_t oldMasks[EXC_TYPES_COUNT];
     mach_port_t oldPorts[EXC_TYPES_COUNT];
     exception_behavior_t oldBehaviors[EXC_TYPES_COUNT];
     thread_state_flavor_t oldFlavors[EXC_TYPES_COUNT];
     mach_msg_type_number_t oldCount = EXC_TYPES_COUNT;
-    kr = task_swap_exception_ports(mach_task_self(), EXC_MASK_BREAKPOINT, g_hwbreakExcPort,
+    exception_mask_t hwbreakMask = EXC_MASK_BREAKPOINT | EXC_MASK_BAD_ACCESS |
+                                    EXC_MASK_BAD_INSTRUCTION | EXC_MASK_ARITHMETIC;
+    kr = task_swap_exception_ports(mach_task_self(), hwbreakMask, g_hwbreakExcPort,
                                     (exception_behavior_t)(EXCEPTION_STATE | MACH_EXCEPTION_CODES),
                                     ARM_THREAD_STATE64,
                                     oldMasks, &oldCount, oldPorts, oldBehaviors, oldFlavors);
@@ -744,13 +783,16 @@ inline bool HWBreakHook_tryInstallForOpen() {
         g_hwbreakExcPort = MACH_PORT_NULL;
         return false;
     }
-    DeltaVFS_debugLogf("HWBreakHook: task_swap_exception_ports OK (EXCEPTION_STATE|MACH_EXCEPTION_CODES) - %u entry CŨ trước khi ghi đè", (unsigned int)oldCount);
-    if (oldCount == 0) {
-        DeltaVFS_debugLog("HWBreakHook: KHÔNG có ai đăng ký EXC_MASK_BREAKPOINT trước mình - loại được giả thuyết ghi đè port của thành phần khác");
-    }
+    DeltaVFS_debugLogf("HWBreakHook: task_swap_exception_ports OK (breakpoint+crash, EXCEPTION_STATE|MACH_EXCEPTION_CODES) - %u entry CŨ trước khi ghi đè", (unsigned int)oldCount);
+    bool anyRealConflict = false;
     for (mach_msg_type_number_t i = 0; i < oldCount; i++) {
-        DeltaVFS_debugLogf("HWBreakHook: !!! PHÁT HIỆN port CŨ đã đăng ký trước - mask=0x%x port=0x%x behavior=0x%x flavor=%d - MÌNH VỪA GHI ĐÈ MẤT NÓ, nghi vấn hàng đầu cho lỗi hotfix: SaveFailed",
+        if (oldPorts[i] == MACH_PORT_NULL) continue; // slot rỗng - task_swap luôn trả đủ slot cho mask xin, không phải bằng chứng có ai đăng ký
+        anyRealConflict = true;
+        DeltaVFS_debugLogf("HWBreakHook: !!! PHÁT HIỆN port CŨ đã đăng ký thật - mask=0x%x port=0x%x behavior=0x%x flavor=%d - MÌNH VỪA GHI ĐÈ MẤT NÓ",
             (unsigned int)oldMasks[i], (unsigned int)oldPorts[i], (unsigned int)oldBehaviors[i], (int)oldFlavors[i]);
+    }
+    if (!anyRealConflict) {
+        DeltaVFS_debugLog("HWBreakHook: KHÔNG có port nào (breakpoint lẫn crash-type) được đăng ký thật trước mình");
     }
 
     pthread_t serverThread;

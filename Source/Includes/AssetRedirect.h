@@ -24,8 +24,15 @@
 // Gói Delta.zip nằm NGAY TRONG App Bundle: FreeFire.app/Delta.zip
 #define DELTA_ZIP_BUNDLE_NAME "Delta.zip"
 // Tên thư mục đích trong Documents/ - cố tình không phải "Delta" để không lộ ra là thư mục mod
-// nếu ai đó duyệt Documents qua Files app (user bật File Sharing để tự xem log/debug).
-#define DELTA_DEST_DIR_NAME "a3f8c91e2b47d6089d2a71c5f8e93b06"
+// nếu ai đó duyệt Documents qua Files app (user bật File Sharing để tự xem log/debug). Đổi từ hash
+// trần sang kiểu nguỵ trang "com.apple.*" tham khảo Monite (giải mã được string
+// "com.apple.cache.dat"/"com.apple.cache.mrk" trong chính code họ, xem MoniteAnalysis/README.md
+// mục 3c) - trông giống tên định danh cache hệ thống hơn là 1 chuỗi hash ngẫu nhiên, tuy KHÔNG
+// đảm bảo thuyết phục hơn hẳn (Documents/ vốn không phải nơi Apple thật đặt cache "com.apple.*" -
+// cache thật nằm ở Library/Caches - người tinh ý vẫn có thể thấy lạ nếu để ý kỹ). ĐỔI GIÁ TRỊ NÀY
+// sẽ khiến lần chạy kế tiếp bị coi là "chưa từng giải nén" (thư mục cũ theo tên hash trước đó vẫn
+// còn nhưng không còn được dùng tới) - giải nén lại 1 lần là bình thường, không phải lỗi.
+#define DELTA_DEST_DIR_NAME "com.apple.cache.dat"
 static char g_deltaZipPathC[1152] = {0};
 
 // Quản lý tiền tố đường dẫn gốc của App Bundle và thư mục Delta trong Cache
