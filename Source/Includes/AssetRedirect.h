@@ -815,21 +815,28 @@ inline const char *redirectABHotUpdatesPath(const char *path) {
 }
 
 // ============================================================================
-//  CHẶN TUYỆT ĐỐI: watermark "SignedByEsign" - dịch vụ ký lại IPA (esign.yyyue.xyz) tự nhét file
-//  này thẳng vào GỐC bundle (FreeFire.app/SignedByEsign, ngang hàng Info.plist) lúc ký, nội dung
-//  "Signed By Esign\n...\nhttps://esign.yyyue.xyz". Đây là dấu vết lộ app không được ký bởi cert
-//  gốc Garena - SDK bên thứ 3 trong app (VD DataDomeSDK.framework, chuyên chống gian lận/bot) có
-//  thể quét bundle root và phát hiện. Chặn ĐỘC LẬP với DeltaVFS (không phụ thuộc g_deltaActive,
-//  g_bundlePrefixC đã sẵn sàng ngay trong ar_ensureFirstRunChecked() TRƯỚC KHI hook cài xong) -
-//  luôn có hiệu lực ngay từ constructor, kể cả ở process "lần đầu" popup rồi thoát.
+//  CHẶN TUYỆT ĐỐI: watermark do dịch vụ ký lại IPA (esign.yyyue.xyz) tự nhét file vào GỐC bundle
+//  (ngang hàng Info.plist) lúc ký - đã xác nhận có "SignedByEsign" (nội dung "Signed By Esign\n
+//  ...\nhttps://esign.yyyue.xyz"), user báo thêm biến thể tên "SignByEsign" (khác tool/khác lần
+//  ký, chưa lấy được nội dung file để xác nhận qua IDE - RAR temp folder đã dọn trước khi đọc
+//  được). Đây là dấu vết lộ app không được ký bởi cert gốc Garena - SDK bên thứ 3 trong app (VD
+//  DataDomeSDK.framework, chuyên chống gian lận/bot) có thể quét bundle root và phát hiện. Chặn
+//  ĐỘC LẬP với DeltaVFS (không phụ thuộc g_deltaActive, g_bundlePrefixC đã sẵn sàng ngay trong
+//  ar_ensureFirstRunChecked() TRƯỚC KHI hook cài xong) - luôn có hiệu lực ngay từ constructor, kể
+//  cả ở process "lần đầu" popup rồi thoát. Danh sách tên bị chặn - thêm tên mới vào đây nếu phát
+//  hiện thêm biến thể khác.
 // ============================================================================
-#define AR_ESIGN_MARKER_NAME "SignedByEsign"
+static const char *AR_ESIGN_MARKER_NAMES[] = {
+    "SignedByEsign",
+    "SignByEsign",
+};
+#define AR_ESIGN_MARKER_NAME_COUNT (sizeof(AR_ESIGN_MARKER_NAMES) / sizeof(AR_ESIGN_MARKER_NAMES[0]))
 
 // Path chắc chắn không tồn tại trên đĩa - dùng làm "kết quả redirect" khi phát hiện path trỏ tới
-// marker Esign, để CHÍNH orig_open/orig_stat/orig_access/orig_fopen thật tự báo lỗi ENOENT như
-// file chưa từng có mặt. Không cần sửa riêng từng call site (hooked_open/openat/fopen/access/
-// stat/lstat VÀ đường HWBreakHook.h cùng đi qua redirectAllTrafficPath() bên dưới) - 1 chỗ chặn
-// duy nhất, không có nguy cơ quên 1 call site nào.
+// 1 trong các marker Esign, để CHÍNH orig_open/orig_stat/orig_access/orig_fopen thật tự báo lỗi
+// ENOENT như file chưa từng có mặt. Không cần sửa riêng từng call site (hooked_open/openat/fopen/
+// access/stat/lstat VÀ đường HWBreakHook.h cùng đi qua redirectAllTrafficPath() bên dưới) - 1 chỗ
+// chặn duy nhất, không có nguy cơ quên 1 call site nào.
 static const char *AR_ESIGN_BLOCKED_PATH = "/private/var/.ar_no_such_9f3ca1e0b6";
 
 inline bool ar_isEsignMarkerPath(const char *path) {
@@ -841,7 +848,11 @@ inline bool ar_isEsignMarkerPath(const char *path) {
         if (n > 0 && n < (int)sizeof(normalizedPathBuf)) cmpPath = normalizedPathBuf;
     }
     if (strncmp(cmpPath, g_bundlePrefixC, g_bundlePrefixLen) != 0) return false;
-    return strcmp(cmpPath + g_bundlePrefixLen, AR_ESIGN_MARKER_NAME) == 0;
+    const char *relative = cmpPath + g_bundlePrefixLen;
+    for (size_t i = 0; i < AR_ESIGN_MARKER_NAME_COUNT; i++) {
+        if (strcmp(relative, AR_ESIGN_MARKER_NAMES[i]) == 0) return true;
+    }
+    return false;
 }
 
 // Có phải path này TRỎ ĐÚNG thư mục gốc bundle không (dùng để giới hạn hook readdir chỉ lọc tên
@@ -1070,7 +1081,13 @@ inline struct dirent *hooked_readdir(DIR *dir) {
     }
     struct dirent *ent;
     while ((ent = orig_readdir(dir)) != NULL) {
-        if (tracked && strcmp(ent->d_name, AR_ESIGN_MARKER_NAME) == 0) continue;
+        if (tracked) {
+            bool isMarker = false;
+            for (size_t i = 0; i < AR_ESIGN_MARKER_NAME_COUNT; i++) {
+                if (strcmp(ent->d_name, AR_ESIGN_MARKER_NAMES[i]) == 0) { isMarker = true; break; }
+            }
+            if (isMarker) continue;
+        }
         break;
     }
     return ent;
@@ -1196,10 +1213,12 @@ static void initDeltaAllTrafficVFS() {
     orig_CFBundleGetInfoDictionary          = (ORIG_CFBundleGetInfoDictionary)dlsym((void *)RTLD_DEFAULT, "CFBundleGetInfoDictionary");
     orig_CFBundleGetValueForInfoDictionaryKey = (ORIG_CFBundleGetValueForInfoDictionaryKey)dlsym((void *)RTLD_DEFAULT, "CFBundleGetValueForInfoDictionaryKey");
 
-    // CHẨN ĐOÁN TẠM: ép TẮT hẳn HWBreakHook, quay lại fishhook thường cho open() giống bản cũ (chưa
-    // từng bị lỗi "hotfix: SaveFailed") - để xác nhận HWBreakHook có phải nguyên nhân hay không.
-    // Đổi lại thành "needsFirstRun ? false : HWBreakHook_tryInstallForOpen();" khi hết cần test.
-    #define HWBREAK_DIAGNOSTIC_FORCE_DISABLE 1
+    // Đã BẬT LẠI HWBreakHook (0 = không ép tắt) để test bản v4 - trampoline giờ tự dùng
+    // "open$NOCANCEL" nếu dlsym được (né hẳn việc gọi lại đúng địa chỉ đang bị breakpoint, xem
+    // HWBreakHook.h), không cần tắt/bật debug register trong đường nóng nữa như bản v3 từng làm.
+    // Đổi lại thành 1 nếu cần cô lập lại nghi vấn "hotfix: SaveFailed" hoặc bất kỳ lỗi lạ nào khác
+    // xuất hiện trong lúc test - quay ngay về fishhook thường cho open(), không mất gì.
+    #define HWBREAK_DIAGNOSTIC_FORCE_DISABLE 0
 #if HWBREAK_DIAGNOSTIC_FORCE_DISABLE
     (void)needsFirstRun;
     bool hwBreakOpenActive = false;

@@ -283,6 +283,19 @@ static void *hwbreakRearmPollThreadFn(void *ctx) {
 static std::atomic<int (*)(const char *, int, ...)> g_hwbreakRealOpen{nullptr};
 static std::atomic<uint64_t> g_hwbreakTrampolineAddr{0};
 
+// Đối chiếu hook/hook.c (1 tool hook khác, "TLOI") và cụm exception-port của Monite.dylib (xem
+// MoniteAnalysis/README.md mục 3b) cho thấy CẢ 2 không hề có bước tắt/bật breakpoint trong lúc xử
+// lý - lý do là handler của họ chỉ đổi PC rồi return ngay, KHÔNG bao giờ tự gọi lại đúng địa chỉ
+// đang bị theo dõi. Trampoline của mình khác: gọi lại open() THẬT để lấy kết quả đúng - nhưng nếu
+// dlsym được "open$NOCANCEL" (1 entry point THẬT KHÁC trong libsystem_kernel.dylib, không phải
+// syscall thô, vẫn đi qua đường libc bình thường - chỉ là biến thể "không cho phép pthread_cancel
+// ngắt giữa chừng" của open(), tồn tại song song để phục vụ chính cơ chế cancellation nội bộ của
+// libc) thì có thể gọi thẳng qua đó - ĐỊA CHỈ KHÁC HẲN open(), không bao giờ tự chạm lại breakpoint
+// - bỏ hẳn được vòng tắt/bật debug register + khoá mutex trong đường nóng. Nếu dlsym thất bại
+// (tên có thể không tồn tại trên 1 số SDK/OS version) thì rơi về đúng cách cũ (gọi qua open() thật,
+// vẫn cần tắt/bật quanh mỗi lần gọi) - xem hwbreakOpenTrampoline bên dưới.
+static std::atomic<bool> g_hwbreakRealOpenNeedsBreakpointDance{true};
+
 __attribute__((noinline))
 static int hwbreakOpenTrampoline(const char *path, int flags, int mode) {
     // Log chi tiết CHỈ trong self-test (xem giải thích ở catch_mach_exception_raise_state) -
@@ -292,39 +305,50 @@ static int hwbreakOpenTrampoline(const char *path, int flags, int mode) {
     bool selfTestLog = g_hwbreakSelfTestMode.load(std::memory_order_relaxed);
     if (selfTestLog) DeltaVFS_debugLogf("HWBreakHook: [self-test] trampoline bắt đầu chạy, path=%s", path ? path : "(null)");
 
-    // LỖI ĐÃ XÁC NHẬN QUA debug.log (không phải đoán): gọi thẳng fn() (địa chỉ open() thật) ở
-    // đây mà KHÔNG tắt breakpoint trước sẽ lập tức CHẠM LẠI ĐÚNG breakpoint đó (open() thật và
-    // địa chỉ đang bị theo dõi LÀ MỘT) - log cho thấy handler/trampoline gọi nhau vô hạn, không
-    // bao giờ tới dòng "gọi xong". Phải tắt breakpoint TRÊN CHÍNH THREAD NÀY trước khi gọi, rồi
-    // bật lại ngay sau - luôn AN TOÀN vì đang thao tác debug register của chính thread đang chạy
-    // đoạn code này (không phải thread khác, không cần cross-thread RPC). Khoá g_hwbreakDbgMutex
-    // quanh mỗi lần đọc-sửa-ghi để rearm-poll thread (bật lại breakpoint cho MỌI thread mỗi
-    // 200ms) không chen vào đúng lúc đang tắt - xem lý do đầy đủ ở khai báo g_hwbreakDbgMutex.
-    thread_t self = mach_thread_self();
-    arm_debug_state64_t dbg;
-    memset(&dbg, 0, sizeof(dbg));
-
-    pthread_mutex_lock(&g_hwbreakDbgMutex);
-    bool haveState = hwbreakArmThreadState(self, &dbg);
-    if (haveState) {
-        dbg.__bcr[0] &= ~0x1u; // tắt breakpoint trên chính thread này
-        hwbreakSetThreadState(self, &dbg);
-    }
-    pthread_mutex_unlock(&g_hwbreakDbgMutex);
-
     int (*fn)(const char *, int, ...) = g_hwbreakRealOpen.load(std::memory_order_relaxed);
-    if (selfTestLog) DeltaVFS_debugLogf("HWBreakHook: [self-test] trampoline sắp gọi open() thật (đã tắt breakpoint), fn=%p", (void *)fn);
+    bool needsDance = g_hwbreakRealOpenNeedsBreakpointDance.load(std::memory_order_relaxed);
+    int result;
 
-    int result = fn ? fn(path, flags, mode) : -1;
-    if (selfTestLog) DeltaVFS_debugLogf("HWBreakHook: [self-test] trampoline gọi open() thật XONG, result=%d errno=%d", result, errno);
+    if (!needsDance) {
+        // CÓ "open$NOCANCEL" - địa chỉ khác hẳn open(), không bao giờ tự chạm lại breakpoint (xem
+        // giải thích ở khai báo g_hwbreakRealOpenNeedsBreakpointDance) - gọi thẳng, y hệt cách
+        // hook.c/Monite không cần đụng gì tới debug register trong lúc xử lý.
+        if (selfTestLog) DeltaVFS_debugLogf("HWBreakHook: [self-test] trampoline sắp gọi open$NOCANCEL (không cần tắt breakpoint), fn=%p", (void *)fn);
+        result = fn ? fn(path, flags, mode) : -1;
+        if (selfTestLog) DeltaVFS_debugLogf("HWBreakHook: [self-test] trampoline gọi open$NOCANCEL XONG, result=%d errno=%d", result, errno);
+    } else {
+        // KHÔNG có "open$NOCANCEL" trên SDK/OS này - rơi về cách cũ: fn() ở đây CHÍNH LÀ địa chỉ
+        // đang bị breakpoint (open() thật), nên PHẢI tắt breakpoint TRÊN CHÍNH THREAD NÀY trước
+        // khi gọi (nếu không sẽ chạm lại đúng breakpoint đó, handler/trampoline gọi nhau vô hạn -
+        // lỗi đã xác nhận qua debug.log ở bản trước), rồi bật lại ngay sau - luôn AN TOÀN vì đang
+        // thao tác debug register của chính thread đang chạy đoạn code này (không phải thread
+        // khác, không cần cross-thread RPC). Khoá g_hwbreakDbgMutex quanh mỗi lần đọc-sửa-ghi để
+        // rearm-poll thread (bật lại breakpoint cho MỌI thread mỗi 200ms) không chen vào đúng lúc
+        // đang tắt - xem lý do đầy đủ ở khai báo g_hwbreakDbgMutex.
+        thread_t self = mach_thread_self();
+        arm_debug_state64_t dbg;
+        memset(&dbg, 0, sizeof(dbg));
 
-    if (haveState) {
         pthread_mutex_lock(&g_hwbreakDbgMutex);
-        dbg.__bcr[0] |= 0x1u; // bật lại breakpoint cho lần open() tiếp theo
-        hwbreakSetThreadState(self, &dbg);
+        bool haveState = hwbreakArmThreadState(self, &dbg);
+        if (haveState) {
+            dbg.__bcr[0] &= ~0x1u; // tắt breakpoint trên chính thread này
+            hwbreakSetThreadState(self, &dbg);
+        }
         pthread_mutex_unlock(&g_hwbreakDbgMutex);
+
+        if (selfTestLog) DeltaVFS_debugLogf("HWBreakHook: [self-test] trampoline sắp gọi open() thật (đã tắt breakpoint), fn=%p", (void *)fn);
+        result = fn ? fn(path, flags, mode) : -1;
+        if (selfTestLog) DeltaVFS_debugLogf("HWBreakHook: [self-test] trampoline gọi open() thật XONG, result=%d errno=%d", result, errno);
+
+        if (haveState) {
+            pthread_mutex_lock(&g_hwbreakDbgMutex);
+            dbg.__bcr[0] |= 0x1u; // bật lại breakpoint cho lần open() tiếp theo
+            hwbreakSetThreadState(self, &dbg);
+            pthread_mutex_unlock(&g_hwbreakDbgMutex);
+        }
+        mach_port_deallocate(mach_task_self(), self); // mach_thread_self() cấp 1 send right mới mỗi lần gọi
     }
-    mach_port_deallocate(mach_task_self(), self); // mach_thread_self() cấp 1 send right mới mỗi lần gọi
 
     g_hwbreakTrampolineCompletions.fetch_add(1, std::memory_order_relaxed);
     return result;
@@ -502,7 +526,23 @@ inline bool HWBreakHook_tryInstallForOpen() {
     }
     DeltaVFS_debugLogf("HWBreakHook: dlsym(open) OK, addr=0x%llx", (unsigned long long)(uint64_t)openSym);
     g_hwbreakOpenAddr.store((uint64_t)openSym, std::memory_order_relaxed);
-    g_hwbreakRealOpen.store((int (*)(const char *, int, ...))openSym, std::memory_order_relaxed);
+
+    // Thử tìm "open$NOCANCEL" - entry point THẬT KHÁC trong libsystem_kernel.dylib (không phải
+    // syscall thô, vẫn qua đường libc bình thường), địa chỉ khác hẳn open() nên trampoline gọi
+    // qua đây sẽ KHÔNG bao giờ tự chạm lại breakpoint - bỏ được vòng tắt/bật debug register +
+    // mutex trong đường nóng (xem giải thích ở khai báo g_hwbreakRealOpenNeedsBreakpointDance).
+    // Không đảm bảo tồn tại trên mọi SDK/OS version - dlsym NULL thì rơi về cách cũ (vẫn đúng,
+    // chỉ chậm/phức tạp hơn 1 chút), KHÔNG coi là lỗi/huỷ cài đặt.
+    void *openNoCancelSym = dlsym(RTLD_DEFAULT, "open$NOCANCEL");
+    if (openNoCancelSym) {
+        DeltaVFS_debugLogf("HWBreakHook: dlsym(open$NOCANCEL) OK, addr=0x%llx - trampoline sẽ KHÔNG cần tắt/bật breakpoint", (unsigned long long)(uint64_t)openNoCancelSym);
+        g_hwbreakRealOpen.store((int (*)(const char *, int, ...))openNoCancelSym, std::memory_order_relaxed);
+        g_hwbreakRealOpenNeedsBreakpointDance.store(false, std::memory_order_relaxed);
+    } else {
+        DeltaVFS_debugLog("HWBreakHook: dlsym(open$NOCANCEL) thất bại - dùng lại open() thật, trampoline vẫn cần tắt/bật breakpoint quanh mỗi lần gọi");
+        g_hwbreakRealOpen.store((int (*)(const char *, int, ...))openSym, std::memory_order_relaxed);
+        g_hwbreakRealOpenNeedsBreakpointDance.store(true, std::memory_order_relaxed);
+    }
     g_hwbreakTrampolineAddr.store((uint64_t)(void *)hwbreakOpenTrampoline, std::memory_order_relaxed);
     DeltaVFS_debugLogf("HWBreakHook: trampoline addr=0x%llx", (unsigned long long)(uint64_t)(void *)hwbreakOpenTrampoline);
 
