@@ -255,6 +255,25 @@ static void hooked_setDelegate(id self, SEL _cmd, id<UIApplicationDelegate> dele
     }
 }
 
+// Cài launch guard NGAY TỪ __attribute__((constructor)) thay vì đợi tới +[DeltaMenu load] như
+// trước - lý do: dyld chạy TOÀN BỘ __attribute__((constructor))/static-initializer của TẤT CẢ
+// ảnh (image) đã nạp TRƯỚC KHI gọi bất kỳ +load nào, trên toàn hệ thống (không riêng gì file
+// này) - xem AssetRedirect.h's initDeltaAllTrafficVFS. Nếu chỉ cài guard trong +load như cũ, bất
+// kỳ SDK bên thứ 3 nào (Facebook/Firebase/DataDome/...) có +load riêng chạy SỚM HƠN +[DeltaMenu
+// load] (thứ tự +load giữa các class phụ thuộc link order, không do mình kiểm soát) vẫn có thể đã
+// kịp tạo/ghi cache (contentcache, ImageCache, Workshop...) TRƯỚC KHI guard kịp cài - xác nhận qua
+// ảnh chụp Files app thật: các folder cache đó đã có nội dung dù màn "Vui lòng chờ" còn đang hiện.
+// Constructor này đóng đúng lỗ hổng thứ tự đó - class UIApplication (system framework, luôn nạp
+// trước bất kỳ dylib nào của app) và class DeltaMenu (cùng ảnh, đã được objc runtime "realize" lúc
+// map ảnh, TRƯỚC khi bất kỳ constructor nào trong ảnh đó chạy) đều sẵn sàng dùng được ở đây.
+__attribute__((constructor))
+static void installFirstRunLaunchGuardEarly() {
+    if (DeltaVFS_needsFirstRunExtraction()) {
+        DeltaVFS_debugLog("installFirstRunLaunchGuardEarly: needsFirstRunExtraction=true - cài launch guard NGAY từ constructor (trước mọi +load trong process, kể cả của SDK bên thứ 3)");
+        [DeltaMenu installAppDelegateLaunchGuard];
+    }
+}
+
 @implementation DeltaMenu
 
 static DeltaMenu *extraInfo;
@@ -270,11 +289,10 @@ game_sdk_t *game_sdk = new game_sdk_t();
     installNetLogHook();
 
     if (DeltaVFS_needsFirstRunExtraction()) {
-        // Delta/ chưa được giải nén (cài mới hoặc Delta.zip đổi) - process này chỉ lo giải nén +
-        // popup rồi tự thoát, xem khối APP-DELEGATE LAUNCH GUARD phía trên vì sao cần thật sự
-        // chặn game chứ không chỉ che màn hình.
-        DeltaVFS_debugLog("Menu +load: needsFirstRunExtraction=true, installing app-delegate launch guard");
-        [DeltaMenu installAppDelegateLaunchGuard];
+        // Guard đã được installFirstRunLaunchGuardEarly() (__attribute__((constructor)) phía trên,
+        // chạy TRƯỚC +load này) cài rồi - không cài lại ở đây, chỉ return sớm để không chạy tiếp
+        // phần setup menu "bình thường" bên dưới (game process này sẽ không bao giờ chạy tới đó).
+        DeltaVFS_debugLog("Menu +load: needsFirstRunExtraction=true (guard đã cài từ constructor sớm hơn), bỏ qua setup menu");
         return;
     }
     DeltaVFS_debugLog("Menu +load: needsFirstRunExtraction=false, normal menu flow, scheduling setup in 3s");
