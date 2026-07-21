@@ -20,7 +20,6 @@
 #import <dirent.h>
 
 #import "MemoryUtils.h"
-#import "fishhook.h"
 
 // Gói Delta.zip nằm NGAY TRONG App Bundle: FreeFire.app/Delta.zip
 #define DELTA_ZIP_BUNDLE_NAME "Delta.zip"
@@ -48,9 +47,6 @@ static size_t g_bundlePrefixLen = 0;
 static char g_moddedPrefixC[1024] = {0};
 static size_t g_moddedPrefixLen = 0;
 
-// Con trỏ gốc của hàm access bắt buộc phải được gán trước
-static int (*orig_access)(const char *, int);
-
 // ============================================================================
 //  THỐNG KÊ / LOG
 // ============================================================================
@@ -58,8 +54,7 @@ static std::atomic<unsigned long long> g_deltaHitCount{0};
 static std::atomic<unsigned long long> g_deltaMissCount{0};  
 static std::atomic<unsigned long long> g_deltaTotalCalls{0}; 
 static std::atomic<unsigned long long> g_deltaBundleCalls{0};
-static std::atomic<unsigned int> g_deltaExtractedFiles{0};   
-static std::atomic<unsigned int> g_deltaHooksOK{0};          
+static std::atomic<unsigned int> g_deltaExtractedFiles{0};
 static std::atomic<bool> g_deltaExtractRan{false};
 static std::atomic<bool> g_deltaZipFound{false};
 static std::atomic<bool> g_deltaActive{false};
@@ -82,9 +77,9 @@ static std::atomic<bool> g_deltaNeedsFirstRun{false};
 
 // ============================================================================
 //  LOG SỐNG SÓT QUA CRASH - ghi thẳng write() syscall (không qua libc buffer, không cần fflush)
-//  vào 1 file cố định trong Documents/<hash>/ (dùng dlsym trực tiếp thay vì orig_open của
-//  constructor, vì hàm log này có thể được gọi trước khi constructor cài xong fishhook) - user
-//  đã bật File Sharing nên xem trực tiếp qua Files app trên điện thoại được, không cần Mac/Xcode.
+//  vào 1 file cố định trong Documents/<hash>/ (dùng dlsym trực tiếp thay vì gọi open() bình
+//  thường, vì hàm log này có thể được gọi trước khi constructor chạy xong) - user đã bật File
+//  Sharing nên xem trực tiếp qua Files app trên điện thoại được, không cần Mac/Xcode.
 //  KHÔNG có Filza/SSH/Mac thì dùng bản trong RAM (DeltaVFS_debugLogSnapshot).
 // ============================================================================
 static int g_deltaLogFd = -1;
@@ -204,7 +199,11 @@ inline unsigned long long DeltaVFS_misses()        { return g_deltaMissCount.loa
 inline unsigned long long DeltaVFS_totalCalls()    { return g_deltaTotalCalls.load(std::memory_order_relaxed); }
 inline unsigned long long DeltaVFS_bundleCalls()   { return g_deltaBundleCalls.load(std::memory_order_relaxed); }
 inline unsigned int       DeltaVFS_extractedFiles(){ return g_deltaExtractedFiles.load(std::memory_order_relaxed); }
-inline unsigned int       DeltaVFS_hooksOK()        { return g_deltaHooksOK.load(std::memory_order_relaxed); }
+// v5: KHÔNG còn hook libc/NSBundle nào cả (đổi sang kiểu Monite - xem PHẦN 3 phía dưới), nên
+// luôn trả 0. Giữ hàm này lại (thay vì xoá) chỉ để Menu.mm còn build được - dòng "Fishhook: ..."
+// trong INFO tab giờ SAI Ý NGHĨA (không phải "thất bại", chỉ là "chủ động không dùng nữa") - cần
+// sửa lại chữ hiển thị trong Menu.mm, chưa làm ở đây vì ngoài phạm vi AssetRedirect.h.
+inline unsigned int       DeltaVFS_hooksOK()        { return 0; }
 inline bool               DeltaVFS_extractRan()     { return g_deltaExtractRan.load(std::memory_order_relaxed); }
 inline bool               DeltaVFS_zipFound()        { return g_deltaZipFound.load(std::memory_order_relaxed); }
 inline bool               DeltaVFS_active()           { return g_deltaActive.load(std::memory_order_relaxed); }
@@ -534,7 +533,7 @@ static bool ar_extractOneEntryIfNeeded(const char *destPath, const char *relativ
     // PHẦN 1) nên g_arZipEntryCount luôn = 0 - nếu check đó đứng trước thì hàm này LUÔN return
     // false ngay cả khi file đã thật sự nằm sẵn trên đĩa, gây miss 100% dù Delta/ đầy đủ file
     // (xác nhận qua ảnh chụp máy thật: folder có file nhưng INFO tab báo miss hết).
-    if (orig_access && orig_access(destPath, F_OK) == 0) return true;
+    if (access(destPath, F_OK) == 0) return true;
     if (g_arZipEntryCount == 0) return false;
 
     int idx = ar_findZipEntryIndex(relativePath);
@@ -695,8 +694,7 @@ inline void ar_ensureFirstRunChecked() {
             } else {
                 // Đã giải nén đầy đủ từ lần trước (marker khớp) - process "bình thường". Không
                 // cần build index/mmap cả Delta.zip nữa, chỉ cần existence-check thẳng trên đĩa
-                // (xem ar_extractOneEntryIfNeeded) - vừa nhanh vừa bớt 1 thứ đụng vào mmap ngay
-                // lúc HWBreakHook đang kích hoạt.
+                // (xem ar_extractOneEntryIfNeeded) - vừa nhanh vừa bớt 1 thứ đụng vào mmap.
                 g_deltaActive.store(true, std::memory_order_relaxed);
                 DeltaVFS_debugLog("ar_ensureFirstRunChecked: marker khớp - đã giải nén sẵn, VFS active ngay");
             }
@@ -781,7 +779,7 @@ inline void DeltaVFS_runFirstRunExtraction(void (^completion)(BOOL success)) {
 }
 
 // ============================================================================
-//  PHẦN 2: ĐỊNH TUYẾN TRAFFIC (VFS HOOK CẤP THẤP)
+//  PHẦN 2: TÍNH TOÁN PATH REDIRECT (không còn tự động chặn gì - xem PHẦN 3 phía dưới để dùng)
 // ============================================================================
 #define ABHOTUPDATES_MARKER "/ABHotUpdates/"
 
@@ -810,7 +808,7 @@ inline const char* redirectAllTrafficPath(const char *path) {
 
     const char *abPath = redirectABHotUpdatesPath(path);
     if (abPath) {
-        bool abExists = (orig_access && orig_access(abPath, F_OK) == 0);
+        bool abExists = (access(abPath, F_OK) == 0);
         if (abExists) {
             g_abHotUpdatesHitCount.fetch_add(1, std::memory_order_relaxed);
             return abPath;
@@ -922,185 +920,38 @@ inline const char* redirectAllTrafficPath(const char *path) {
     return path;
 }
 
-// Cơ chế hook open() thay thế bằng hardware breakpoint (né dấu vết fishhook để lại trên GOT) -
-// THỬ NGHIỆM. Đặt include ở đây (không phải đầu file) vì HWBreakHook.h gọi thẳng
-// redirectAllTrafficPath() và DeltaVFS_debugLog*() vừa định nghĩa ở trên - xem chi tiết/rủi ro
-// trong chính file đó. Constructor bên dưới gọi HWBreakHook_tryInstallForOpen(); nếu trả về
-// true thì "open" bị loại khỏi danh sách fishhook (không hook 2 lần cho cùng 1 hàm).
-#import "HWBreakHook.h"
-
-static int (*orig_open)(const char *, int, ...);
-inline int hooked_open(const char *path, int oflag, ...) {
-    mode_t mode = 0;
-    if (oflag & O_CREAT) {
-        va_list args;
-        va_start(args, oflag);
-        mode = (mode_t)va_arg(args, int);
-        va_end(args);
-    }
-    const char *redirected = redirectAllTrafficPath(path);
-    return orig_open(redirected, oflag, mode);
-}
-
-// openat() is a separate libc entry point from open() (dirfd + possibly-relative path) - some
-// libraries/newer code use it instead of open() for the exact same effect, and it was NOT being
-// hooked at all, so a bundle-relative path opened this way slipped straight through to the real
-// file. Only redirect when path is absolute (POSIX: openat() ignores dirfd for absolute paths,
-// same as open() - our redirect logic only ever matches absolute bundle paths anyway); for a
-// relative path we'd need to resolve dirfd's own path first (fcntl F_GETPATH) to know what it's
-// relative to, which isn't worth the complexity/risk for paths we don't expect to care about.
-static int (*orig_openat)(int, const char *, int, ...);
-inline int hooked_openat(int dirfd, const char *path, int oflag, ...) {
-    mode_t mode = 0;
-    if (oflag & O_CREAT) {
-        va_list args;
-        va_start(args, oflag);
-        mode = (mode_t)va_arg(args, int);
-        va_end(args);
-    }
-    const char *redirected = (path && path[0] == '/') ? redirectAllTrafficPath(path) : path;
-    return orig_openat(dirfd, redirected, oflag, mode);
-}
-
-static FILE *(*orig_fopen)(const char *, const char *);
-inline FILE *hooked_fopen(const char *filename, const char *mode) {
-    const char *redirected = redirectAllTrafficPath(filename);
-    return orig_fopen(redirected, mode);
-}
-
-inline int hooked_access(const char *path, int mode) {
-    const char *redirected = redirectAllTrafficPath(path);
-    return orig_access(redirected, mode);
-}
-
-static int (*orig_stat)(const char *, struct stat *);
-inline int hooked_stat(const char *path, struct stat *buf) {
-    const char *redirected = redirectAllTrafficPath(path);
-    return orig_stat(redirected, buf);
-}
-
-static int (*orig_lstat)(const char *, struct stat *);
-inline int hooked_lstat(const char *path, struct stat *buf) {
-    const char *redirected = redirectAllTrafficPath(path);
-    return orig_lstat(redirected, buf);
-}
-
-
 // ============================================================================
-//  PHẦN 3: METHOD SWIZZLING FOR NSBUNDLE (BẺ HƯỚNG BỘ NHỚ RAM TRÊN API CAO CẤP)
+//  PHẦN 3: API DÙNG TRỰC TIẾP (kiểu Monite - KHÔNG hook gì cả)
+//
+//  Đối chiếu Monite.dylib (xem MoniteAnalysis/, đã decompile qua Ghidra xác nhận) cho thấy họ
+//  KHÔNG hook open()/fopen()/NSBundle gì cả - code của họ tự tính path Documents rồi gọi thẳng
+//  open() ở đúng chỗ cần đọc file đã patch. Đổi theo đúng kiến trúc đó, theo yêu cầu: bỏ hẳn
+//  fishhook + NSBundle method swizzling + HWBreakHook (3 lớp hook cũ, xem lịch sử git) - giữ lại
+//  TOÀN BỘ phần zip/giải nén/allowlist ở trên (PHẦN 1) và redirectAllTrafficPath() (PHẦN 2, logic
+//  tính toán path không đổi) làm nền, chỉ đổi CÁCH GỌI: không còn tự động chặn mọi open() trong
+//  process nữa - chỗ nào trong dylib cần đọc 1 file đã patch phải TỰ gọi 1 trong các hàm dưới đây
+//  thay vì gọi thẳng open()/fopen().
+//
+//  ĐÁNH ĐỔI ĐÃ XÁC NHẬN VỚI USER TRƯỚC KHI ĐỔI: game/Unity KHÔNG tự biết gọi các hàm này, nên
+//  bất kỳ file nào UNITY TỰ ĐỌC (texture, Data/Raw/..., asset bundle...) sẽ KHÔNG còn được
+//  redirect tự động nữa - chỉ những chỗ CHÍNH dylib này tự viết code gọi (Menu.mm, feature riêng)
+//  mới dùng được. Nếu sau này cần lại khả năng redirect cho Unity, phải quay lại kiểu hook (xem
+//  git history commit trước bản này).
 // ============================================================================
-typedef NSDictionary* (*ORIG_infoDictionary)(id, SEL);
-static ORIG_infoDictionary orig_nsbundle_infoDictionary = NULL;
-
-// Shared by the -[NSBundle infoDictionary] swizzle below AND the CFBundleGet...() C-API hooks
-// further down - CFBundleGetValueForInfoDictionaryKey/CFBundleGetInfoDictionary read Info.plist
-// through CoreFoundation's OWN internal bundle cache, a COMPLETELY SEPARATE path from the
-// Objective-C method we swizzle. Native/C++ code (common in Unity plugins) calling the CF API
-// directly would silently read the real, unmodified Info.plist otherwise - confirmed as a real
-// gap, not hypothetical, same class of bug as the openat() one above.
-inline NSDictionary *deltaFakeInfoPlistDictionary() {
-    static NSDictionary *fakeDict = nil;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        // Dựng đường dẫn tuyệt đối tới file Info.plist sạch nằm trong g_moddedPrefixC (Delta/
-        // ở Documents/<hash> - KHÔNG còn nằm trong bundle nữa, xem ar_ensureFirstRunChecked).
-        NSString *deltaPlistPath = g_moddedPrefixLen > 0
-            ? [[NSString stringWithUTF8String:g_moddedPrefixC] stringByAppendingString:@"Info.plist"]
-            : nil;
-        fakeDict = [[NSDictionary alloc] initWithContentsOfFile:deltaPlistPath];
-    });
-    return fakeDict; // nil if Delta/Info.plist is missing/unreadable - callers fall back to orig
+inline int DeltaVFS_open(const char *path, int flags, int mode) {
+    const char *redirected = redirectAllTrafficPath(path);
+    return open(redirected ? redirected : path, flags, mode);
 }
 
-static NSDictionary* hooked_nsbundle_infoDictionary(id self, SEL _cmd) {
-    if (self == [NSBundle mainBundle]) {
-        NSDictionary *fakeDict = deltaFakeInfoPlistDictionary();
-        return fakeDict ?: orig_nsbundle_infoDictionary(self, _cmd);
-    }
-    return orig_nsbundle_infoDictionary(self, _cmd);
+inline FILE *DeltaVFS_fopen(const char *path, const char *mode) {
+    const char *redirected = redirectAllTrafficPath(path);
+    return fopen(redirected ? redirected : path, mode);
 }
 
-typedef id (*ORIG_objectForKey)(id, SEL, NSString*);
-static ORIG_objectForKey orig_nsbundle_objectForKey = NULL;
-
-static id hooked_nsbundle_objectForInfoDictionaryKey(id self, SEL _cmd, NSString *key) {
-    if (self == [NSBundle mainBundle]) {
-        // Đồng bộ trả về dữ liệu lấy trực tiếp từ Hàm Hook infoDictionary ở trên
-        NSDictionary *fakeDict = hooked_nsbundle_infoDictionary(self, @selector(infoDictionary));
-        return [fakeDict objectForKey:key];
-    }
-    return orig_nsbundle_objectForKey(self, _cmd, key);
+inline int DeltaVFS_access(const char *path, int mode) {
+    const char *redirected = redirectAllTrafficPath(path);
+    return access(redirected ? redirected : path, mode);
 }
-
-// Swizzle -[NSBundle pathForResource:ofType:] - lớp phòng thủ THÊM ở tầng Cocoa, không thay thế
-// fishhook cấp libc (open/fopen/...) ở trên. Lý do thêm: đối chiếu Monite.dylib (đối thủ, xem
-// MoniteAnalysis/) cho thấy họ redirect chủ yếu qua đúng API Cocoa này (selector list +
-// objc_msgSend luôn đứng ngay trước lệnh open/fopen của họ) thay vì hook libc toàn cục - nghĩa là
-// có code (thường là plugin/thư viện bên thứ 3, không phải chính Unity engine) gọi file qua
-// -[NSBundle pathForResource:ofType:] mà KHÔNG bao giờ tự gọi open()/fopen() trực tiếp, nó dùng
-// thẳng NSString path trả về (VD: đưa cho AVAsset, NSData, ImageIO...) - những trường hợp đó lọt
-// qua fishhook hoàn toàn vì bản thân path string đã "đúng" (trỏ vào bundle gốc) trước khi bất kỳ
-// hàm I/O cấp thấp nào được gọi.
-typedef NSString* (*ORIG_pathForResourceOfType)(id, SEL, NSString*, NSString*);
-static ORIG_pathForResourceOfType orig_nsbundle_pathForResourceOfType = NULL;
-
-static NSString* hooked_nsbundle_pathForResourceOfType(id self, SEL _cmd, NSString *name, NSString *ext) {
-    NSString *realPath = orig_nsbundle_pathForResourceOfType(self, _cmd, name, ext);
-    if (self != [NSBundle mainBundle] || !realPath) return realPath;
-    const char *redirected = redirectAllTrafficPath([realPath UTF8String]);
-    if (!redirected || strcmp(redirected, [realPath UTF8String]) == 0) return realPath;
-    return [NSString stringWithUTF8String:redirected];
-}
-
-// ===== CFBundle C-API - separate entry points from the ObjC swizzle above, see comment on
-// deltaFakeInfoPlistDictionary(). Hooked via fishhook (like open/openat/etc), not method swizzling,
-// since these are plain C functions exported by CoreFoundation. =====
-typedef CFDictionaryRef (*ORIG_CFBundleGetInfoDictionary)(CFBundleRef);
-static ORIG_CFBundleGetInfoDictionary orig_CFBundleGetInfoDictionary = NULL;
-inline CFDictionaryRef hooked_CFBundleGetInfoDictionary(CFBundleRef bundle) {
-    if (bundle == CFBundleGetMainBundle()) {
-        NSDictionary *fakeDict = deltaFakeInfoPlistDictionary();
-        if (fakeDict) return (__bridge CFDictionaryRef)fakeDict;
-    }
-    return orig_CFBundleGetInfoDictionary(bundle);
-}
-
-typedef CFTypeRef (*ORIG_CFBundleGetValueForInfoDictionaryKey)(CFBundleRef, CFStringRef);
-static ORIG_CFBundleGetValueForInfoDictionaryKey orig_CFBundleGetValueForInfoDictionaryKey = NULL;
-inline CFTypeRef hooked_CFBundleGetValueForInfoDictionaryKey(CFBundleRef bundle, CFStringRef key) {
-    if (bundle == CFBundleGetMainBundle()) {
-        NSDictionary *fakeDict = deltaFakeInfoPlistDictionary();
-        id value = fakeDict ? [fakeDict objectForKey:(__bridge NSString *)key] : nil;
-        if (value) return (__bridge CFTypeRef)value;
-    }
-    return orig_CFBundleGetValueForInfoDictionaryKey(bundle, key);
-}
-
-static void initNSBundleMethodSwizzling() {
-    Class nsBundleClass = [NSBundle class];
-    
-    // 1. Swizzle -[NSBundle infoDictionary]
-    Method origMethod1 = class_getInstanceMethod(nsBundleClass, @selector(infoDictionary));
-    if (origMethod1) {
-        orig_nsbundle_infoDictionary = (ORIG_infoDictionary)method_getImplementation(origMethod1);
-        method_setImplementation(origMethod1, (IMP)hooked_nsbundle_infoDictionary);
-    }
-    
-    // 2. Swizzle -[NSBundle objectForInfoDictionaryKey:]
-    Method origMethod2 = class_getInstanceMethod(nsBundleClass, @selector(objectForInfoDictionaryKey:));
-    if (origMethod2) {
-        orig_nsbundle_objectForKey = (ORIG_objectForKey)method_getImplementation(origMethod2);
-        method_setImplementation(origMethod2, (IMP)hooked_nsbundle_objectForInfoDictionaryKey);
-    }
-
-    // 3. Swizzle -[NSBundle pathForResource:ofType:] - xem comment ở định nghĩa hook phía trên
-    Method origMethod3 = class_getInstanceMethod(nsBundleClass, @selector(pathForResource:ofType:));
-    if (origMethod3) {
-        orig_nsbundle_pathForResourceOfType = (ORIG_pathForResourceOfType)method_getImplementation(origMethod3);
-        method_setImplementation(origMethod3, (IMP)hooked_nsbundle_pathForResourceOfType);
-    }
-}
-
 
 // ============================================================================
 //  CONSTRUCTOR KÍCH HOẠT HỆ THỐNG
@@ -1108,59 +959,9 @@ static void initNSBundleMethodSwizzling() {
 __attribute__((constructor))
 static void initDeltaAllTrafficVFS() {
     @autoreleasepool {
-        // 1. KIỂM TRA CÓ CẦN GIẢI NÉN LẦN ĐẦU KHÔNG (bulk, xem PHẦN 1) - nhanh, không giải nén
-        // gì ở đây cả. Idempotent, an toàn gọi từ nhiều nơi/nhiều thứ tự (constructor lẫn
+        // Chỉ còn kiểm tra/giải nén Delta.zip (PHẦN 1) - không còn hook nào để cài nữa (xem
+        // PHẦN 3 phía trên). Idempotent, an toàn gọi từ nhiều nơi/nhiều thứ tự (constructor lẫn
         // Menu.mm's +load).
         ar_ensureFirstRunChecked();
-
-        // 2. KÍCH HOẠT HOOK CẤP CAO TRÊN RAM (NSBundle Swizzling)
-        initNSBundleMethodSwizzling();
     }
-
-    bool needsFirstRun = g_deltaNeedsFirstRun.load(std::memory_order_relaxed);
-
-    // 3. KÀI ĐẶT HOOK CẤP THẤP (VFS I/O via Fishhook)
-    orig_open   = (int   (*)(const char *, int, ...))     dlsym((void *)RTLD_DEFAULT, "open");
-    orig_openat = (int   (*)(int, const char *, int, ...))dlsym((void *)RTLD_DEFAULT, "openat");
-    orig_fopen  = (FILE *(*)(const char *, const char *)) dlsym((void *)RTLD_DEFAULT, "fopen");
-    orig_access = (int   (*)(const char *, int))          dlsym((void *)RTLD_DEFAULT, "access");
-    orig_stat   = (int   (*)(const char *, struct stat *))dlsym((void *)RTLD_DEFAULT, "stat");
-    orig_lstat  = (int   (*)(const char *, struct stat *))dlsym((void *)RTLD_DEFAULT, "lstat");
-    orig_CFBundleGetInfoDictionary          = (ORIG_CFBundleGetInfoDictionary)dlsym((void *)RTLD_DEFAULT, "CFBundleGetInfoDictionary");
-    orig_CFBundleGetValueForInfoDictionaryKey = (ORIG_CFBundleGetValueForInfoDictionaryKey)dlsym((void *)RTLD_DEFAULT, "CFBundleGetValueForInfoDictionaryKey");
-
-    // CHẨN ĐOÁN TẠM: ép TẮT hẳn HWBreakHook, quay lại fishhook thường cho open() giống bản cũ (chưa
-    // từng bị lỗi "hotfix: SaveFailed") - để xác nhận HWBreakHook có phải nguyên nhân hay không.
-    // Đổi lại thành "needsFirstRun ? false : HWBreakHook_tryInstallForOpen();" khi hết cần test.
-    #define HWBREAK_DIAGNOSTIC_FORCE_DISABLE 1
-#if HWBREAK_DIAGNOSTIC_FORCE_DISABLE
-    (void)needsFirstRun;
-    bool hwBreakOpenActive = false;
-#else
-    // THỬ NGHIỆM: cố dùng hardware breakpoint (né dấu vết fishhook để lại trên GOT) cho riêng
-    // open() trước - xem HWBreakHook.h. Có tự kiểm tra + fallback an toàn: nếu KHÔNG hoạt
-    // động đúng trong 500ms, hàm trả false và "open" vẫn được thêm vào fishhook như bình
-    // thường bên dưới (không có khoảng trống không hook được).
-    // CHỈ thử trên process "bình thường" (đã giải nén sẵn từ trước) - process "lần đầu" đang
-    // chuẩn bị popup + giải nén bulk trên background thread rồi tự thoát (xem Menu.mm), không có
-    // lý do gì để mạo hiểm kích hoạt breakpoint đúng lúc I/O nặng nhất, và process này sẽ không
-    // bao giờ chạy tới lúc game thật sự đọc file cả.
-    bool hwBreakOpenActive = needsFirstRun ? false : HWBreakHook_tryInstallForOpen();
-#endif
-
-    struct rebinding rebindings[8];
-    int n = 0;
-    if (!hwBreakOpenActive) {
-        rebindings[n].name = "open";   rebindings[n].replacement = (void *)hooked_open;   rebindings[n].replaced = (void **)&orig_open;   n++;
-    }
-    rebindings[n].name = "openat"; rebindings[n].replacement = (void *)hooked_openat; rebindings[n].replaced = (void **)&orig_openat; n++;
-    rebindings[n].name = "fopen";  rebindings[n].replacement = (void *)hooked_fopen;  rebindings[n].replaced = (void **)&orig_fopen;  n++;
-    rebindings[n].name = "access"; rebindings[n].replacement = (void *)hooked_access; rebindings[n].replaced = (void **)&orig_access; n++;
-    rebindings[n].name = "stat";   rebindings[n].replacement = (void *)hooked_stat;   rebindings[n].replaced = (void **)&orig_stat;   n++;
-    rebindings[n].name = "lstat";  rebindings[n].replacement = (void *)hooked_lstat;  rebindings[n].replaced = (void **)&orig_lstat;  n++;
-    rebindings[n].name = "CFBundleGetInfoDictionary";           rebindings[n].replacement = (void *)hooked_CFBundleGetInfoDictionary;           rebindings[n].replaced = (void **)&orig_CFBundleGetInfoDictionary;           n++;
-    rebindings[n].name = "CFBundleGetValueForInfoDictionaryKey"; rebindings[n].replacement = (void *)hooked_CFBundleGetValueForInfoDictionaryKey; rebindings[n].replaced = (void **)&orig_CFBundleGetValueForInfoDictionaryKey; n++;
-
-    int rebindRet = rebind_symbols(rebindings, n);
-    g_deltaHooksOK.store(rebindRet == 0 ? 0x3F : 0, std::memory_order_relaxed);
 }
