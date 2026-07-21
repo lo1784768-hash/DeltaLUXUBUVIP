@@ -784,16 +784,6 @@ inline const char* redirectAllTrafficPath(const char *path) {
     static thread_local char redirectedBuffer[2048];
     const char *relative = cmpPath + g_bundlePrefixLen;
 
-    // _CodeSignature/ (CodeResources...) TUYỆT ĐỐI không được redirect, kể cả khi Delta.zip vô
-    // tình có sẵn 1 bản (đóng gói từ trước, không phải từ chính lần ký IPA đang chạy). CodeResources
-    // là manifest hash RIÊNG cho từng lần code-sign cụ thể - bản trong Delta.zip gần như chắc chắn
-    // không khớp app đang chạy. Xác nhận trên máy thật: sau khi sửa lỗi khiến file này vô tình đọc
-    // được từ Delta (lẽ ra phải luôn miss), game bắt đầu báo lỗi "hotfix: SaveFailed" - rất có thể
-    // do 1 bước tự kiểm tra tính toàn vẹn nào đó của game/Garena dựa trên CodeResources.
-    if (strncmp(relative, "_CodeSignature/", 15) == 0) {
-        return path;
-    }
-
     // Data/Raw/ios/versioninfo + fileinfo là manifest của hệ thống hotfix/asset-streaming (version
     // bản vá hiện tại + checksum từng file) - PHẢI luôn phản ánh đúng trạng thái THẬT của máy đang
     // chạy, không phải ảnh chụp cũ đóng gói sẵn trong Delta.zip. Xác nhận trên máy thật: sau khi
