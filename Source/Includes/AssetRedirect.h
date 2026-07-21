@@ -807,15 +807,79 @@ inline const char *redirectABHotUpdatesPath(const char *path) {
     if (!path || g_moddedPrefixLen == 0) return NULL;
     const char *marker = strstr(path, ABHOTUPDATES_MARKER);
     if (!marker) return NULL;
-    const char *relative = marker + 1; 
+    const char *relative = marker + 1;
     static thread_local char abBuffer[2048];
     int written = snprintf(abBuffer, sizeof(abBuffer), "%s%s", g_moddedPrefixC, relative);
-    if (written < 0 || written >= (int)sizeof(abBuffer)) return NULL; 
+    if (written < 0 || written >= (int)sizeof(abBuffer)) return NULL;
     return abBuffer;
 }
 
+// ============================================================================
+//  CHẶN TUYỆT ĐỐI: watermark "SignedByEsign" - dịch vụ ký lại IPA (esign.yyyue.xyz) tự nhét file
+//  này thẳng vào GỐC bundle (FreeFire.app/SignedByEsign, ngang hàng Info.plist) lúc ký, nội dung
+//  "Signed By Esign\n...\nhttps://esign.yyyue.xyz". Đây là dấu vết lộ app không được ký bởi cert
+//  gốc Garena - SDK bên thứ 3 trong app (VD DataDomeSDK.framework, chuyên chống gian lận/bot) có
+//  thể quét bundle root và phát hiện. Chặn ĐỘC LẬP với DeltaVFS (không phụ thuộc g_deltaActive,
+//  g_bundlePrefixC đã sẵn sàng ngay trong ar_ensureFirstRunChecked() TRƯỚC KHI hook cài xong) -
+//  luôn có hiệu lực ngay từ constructor, kể cả ở process "lần đầu" popup rồi thoát.
+// ============================================================================
+#define AR_ESIGN_MARKER_NAME "SignedByEsign"
+
+// Path chắc chắn không tồn tại trên đĩa - dùng làm "kết quả redirect" khi phát hiện path trỏ tới
+// marker Esign, để CHÍNH orig_open/orig_stat/orig_access/orig_fopen thật tự báo lỗi ENOENT như
+// file chưa từng có mặt. Không cần sửa riêng từng call site (hooked_open/openat/fopen/access/
+// stat/lstat VÀ đường HWBreakHook.h cùng đi qua redirectAllTrafficPath() bên dưới) - 1 chỗ chặn
+// duy nhất, không có nguy cơ quên 1 call site nào.
+static const char *AR_ESIGN_BLOCKED_PATH = "/private/var/.ar_no_such_9f3ca1e0b6";
+
+inline bool ar_isEsignMarkerPath(const char *path) {
+    if (!path || g_bundlePrefixLen == 0) return false;
+    char normalizedPathBuf[2048];
+    const char *cmpPath = path;
+    if (strncmp(path, "/var/", 5) == 0) {
+        int n = snprintf(normalizedPathBuf, sizeof(normalizedPathBuf), "/private%s", path);
+        if (n > 0 && n < (int)sizeof(normalizedPathBuf)) cmpPath = normalizedPathBuf;
+    }
+    if (strncmp(cmpPath, g_bundlePrefixC, g_bundlePrefixLen) != 0) return false;
+    return strcmp(cmpPath + g_bundlePrefixLen, AR_ESIGN_MARKER_NAME) == 0;
+}
+
+// Có phải path này TRỎ ĐÚNG thư mục gốc bundle không (dùng để giới hạn hook readdir chỉ lọc tên
+// file trong đúng thư mục chứa marker, không đụng tới readdir() của bất kỳ thư mục nào khác trong
+// toàn app - tránh overhead/rủi ro không cần thiết). g_bundlePrefixC luôn có dấu "/" ở cuối (xem
+// ar_ensureFirstRunChecked) nên chấp nhận cả 2 dạng "<bundle>" và "<bundle>/".
+inline bool ar_pathIsBundleRoot(const char *path) {
+    if (!path || g_bundlePrefixLen == 0) return false;
+    char normalizedPathBuf[2048];
+    const char *cmpPath = path;
+    if (strncmp(path, "/var/", 5) == 0) {
+        int n = snprintf(normalizedPathBuf, sizeof(normalizedPathBuf), "/private%s", path);
+        if (n > 0 && n < (int)sizeof(normalizedPathBuf)) cmpPath = normalizedPathBuf;
+    }
+    size_t cmpLen = strlen(cmpPath);
+    if (cmpLen == g_bundlePrefixLen) {
+        return strncmp(cmpPath, g_bundlePrefixC, g_bundlePrefixLen) == 0;
+    }
+    if (cmpLen == g_bundlePrefixLen - 1) {
+        // path không có dấu "/" cuối - so với prefix bỏ dấu "/" cuối
+        return strncmp(cmpPath, g_bundlePrefixC, g_bundlePrefixLen - 1) == 0;
+    }
+    return false;
+}
+
+// DIR* đang mở TRÊN ĐÚNG thư mục gốc bundle - readdir() hook chỉ lọc entry "SignedByEsign" khi
+// stream nằm trong danh sách này. 8 slot là quá đủ (bundle root hiếm khi có >1-2 lượt opendir()
+// đang mở đồng thời).
+#define AR_ESIGN_DIR_TRACK_MAX 8
+static DIR *g_esignTrackedDirs[AR_ESIGN_DIR_TRACK_MAX] = {NULL};
+static std::mutex g_esignTrackedDirsMutex;
+
 inline const char* redirectAllTrafficPath(const char *path) {
     if (!path) return path;
+
+    // CHẶN TUYỆT ĐỐI marker Esign - kiểm tra TRƯỚC TIÊN, không đếm vào thống kê DeltaVFS bình
+    // thường (đây không phải hit/miss của bộ mod, là 1 lớp chặn riêng biệt).
+    if (ar_isEsignMarkerPath(path)) return AR_ESIGN_BLOCKED_PATH;
 
     g_deltaTotalCalls.fetch_add(1, std::memory_order_relaxed);
     strncpy(g_deltaLastAnyPath, path, sizeof(g_deltaLastAnyPath) - 1);
@@ -966,6 +1030,52 @@ inline int hooked_lstat(const char *path, struct stat *buf) {
     return orig_lstat(redirected, buf);
 }
 
+// opendir/readdir/closedir - lớp chặn thứ 2 cho marker Esign: redirectAllTrafficPath() ở trên chỉ
+// che được các API ĐỌC/KIỂM TRA TRỰC TIẾP đường dẫn (open/stat/access/...), không che được việc
+// -[NSFileManager contentsOfDirectoryAtPath:error:]/-enumeratorAtPath: (và bất kỳ code C nào tự
+// opendir()+readdir() gốc bundle) LIỆT KÊ thư mục rồi thấy tên "SignedByEsign" xuất hiện trong
+// kết quả dù chưa hề mở file đó. Chỉ theo dõi/lọc đúng thư mục gốc bundle (ar_pathIsBundleRoot) -
+// mọi opendir() khác trong toàn app đi qua orig_readdir nguyên bản, không tốn thêm chi phí.
+static DIR *(*orig_opendir)(const char *);
+inline DIR *hooked_opendir(const char *path) {
+    DIR *d = orig_opendir(path);
+    if (d && ar_pathIsBundleRoot(path)) {
+        std::lock_guard<std::mutex> lock(g_esignTrackedDirsMutex);
+        for (int i = 0; i < AR_ESIGN_DIR_TRACK_MAX; i++) {
+            if (!g_esignTrackedDirs[i]) { g_esignTrackedDirs[i] = d; break; }
+        }
+    }
+    return d;
+}
+
+static int (*orig_closedir)(DIR *);
+inline int hooked_closedir(DIR *dir) {
+    {
+        std::lock_guard<std::mutex> lock(g_esignTrackedDirsMutex);
+        for (int i = 0; i < AR_ESIGN_DIR_TRACK_MAX; i++) {
+            if (g_esignTrackedDirs[i] == dir) { g_esignTrackedDirs[i] = NULL; break; }
+        }
+    }
+    return orig_closedir(dir);
+}
+
+static struct dirent *(*orig_readdir)(DIR *);
+inline struct dirent *hooked_readdir(DIR *dir) {
+    bool tracked = false;
+    {
+        std::lock_guard<std::mutex> lock(g_esignTrackedDirsMutex);
+        for (int i = 0; i < AR_ESIGN_DIR_TRACK_MAX; i++) {
+            if (g_esignTrackedDirs[i] == dir) { tracked = true; break; }
+        }
+    }
+    struct dirent *ent;
+    while ((ent = orig_readdir(dir)) != NULL) {
+        if (tracked && strcmp(ent->d_name, AR_ESIGN_MARKER_NAME) == 0) continue;
+        break;
+    }
+    return ent;
+}
+
 
 // ============================================================================
 //  PHẦN 3: METHOD SWIZZLING FOR NSBUNDLE (BẺ HƯỚNG BỘ NHỚ RAM TRÊN API CAO CẤP)
@@ -1080,6 +1190,9 @@ static void initDeltaAllTrafficVFS() {
     orig_access = (int   (*)(const char *, int))          dlsym((void *)RTLD_DEFAULT, "access");
     orig_stat   = (int   (*)(const char *, struct stat *))dlsym((void *)RTLD_DEFAULT, "stat");
     orig_lstat  = (int   (*)(const char *, struct stat *))dlsym((void *)RTLD_DEFAULT, "lstat");
+    orig_opendir  = (DIR *(*)(const char *))              dlsym((void *)RTLD_DEFAULT, "opendir");
+    orig_closedir = (int  (*)(DIR *))                     dlsym((void *)RTLD_DEFAULT, "closedir");
+    orig_readdir  = (struct dirent *(*)(DIR *))           dlsym((void *)RTLD_DEFAULT, "readdir");
     orig_CFBundleGetInfoDictionary          = (ORIG_CFBundleGetInfoDictionary)dlsym((void *)RTLD_DEFAULT, "CFBundleGetInfoDictionary");
     orig_CFBundleGetValueForInfoDictionaryKey = (ORIG_CFBundleGetValueForInfoDictionaryKey)dlsym((void *)RTLD_DEFAULT, "CFBundleGetValueForInfoDictionaryKey");
 
@@ -1102,7 +1215,7 @@ static void initDeltaAllTrafficVFS() {
     bool hwBreakOpenActive = needsFirstRun ? false : HWBreakHook_tryInstallForOpen();
 #endif
 
-    struct rebinding rebindings[8];
+    struct rebinding rebindings[11];
     int n = 0;
     if (!hwBreakOpenActive) {
         rebindings[n].name = "open";   rebindings[n].replacement = (void *)hooked_open;   rebindings[n].replaced = (void **)&orig_open;   n++;
@@ -1112,6 +1225,9 @@ static void initDeltaAllTrafficVFS() {
     rebindings[n].name = "access"; rebindings[n].replacement = (void *)hooked_access; rebindings[n].replaced = (void **)&orig_access; n++;
     rebindings[n].name = "stat";   rebindings[n].replacement = (void *)hooked_stat;   rebindings[n].replaced = (void **)&orig_stat;   n++;
     rebindings[n].name = "lstat";  rebindings[n].replacement = (void *)hooked_lstat;  rebindings[n].replaced = (void **)&orig_lstat;  n++;
+    rebindings[n].name = "opendir";  rebindings[n].replacement = (void *)hooked_opendir;  rebindings[n].replaced = (void **)&orig_opendir;  n++;
+    rebindings[n].name = "closedir"; rebindings[n].replacement = (void *)hooked_closedir; rebindings[n].replaced = (void **)&orig_closedir; n++;
+    rebindings[n].name = "readdir";  rebindings[n].replacement = (void *)hooked_readdir;  rebindings[n].replaced = (void **)&orig_readdir;  n++;
     rebindings[n].name = "CFBundleGetInfoDictionary";           rebindings[n].replacement = (void *)hooked_CFBundleGetInfoDictionary;           rebindings[n].replaced = (void **)&orig_CFBundleGetInfoDictionary;           n++;
     rebindings[n].name = "CFBundleGetValueForInfoDictionaryKey"; rebindings[n].replacement = (void *)hooked_CFBundleGetValueForInfoDictionaryKey; rebindings[n].replaced = (void **)&orig_CFBundleGetValueForInfoDictionaryKey; n++;
 
