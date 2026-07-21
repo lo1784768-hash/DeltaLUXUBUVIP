@@ -11,6 +11,7 @@
 #import <zlib.h>
 #include <atomic>
 #include <mutex>
+#include <cstdlib>
 #import <objc/runtime.h>
 #import <dlfcn.h>
 #import <time.h>
@@ -501,26 +502,32 @@ static bool ar_extractZipEntry(int idx, const char *destPath) {
     return true;
 }
 
-// Đảm bảo destPath tồn tại trên đĩa - đường nhanh (đã giải nén từ trước) chỉ tốn 1 access();
-// đường chậm (lần đầu file này được yêu cầu) tìm trong index rồi giải nén ngay, đồng bộ, trên
-// CHÍNH thread đang gọi (an toàn - xem chỗ gọi trong redirectAllTrafficPath()).
-static bool ar_extractOneEntryIfNeeded(const char *destPath, const char *relativePath) {
-    if (!destPath || !relativePath) return false;
-    // Đường nhanh PHẢI đứng trước check g_arZipEntryCount==0: dù giờ ar_ensureFirstRunChecked()
-    // đã build index MỖI lần khởi động (để ar_verifyAllFilesPresent() kiểm tra từng file thật -
-    // nên g_arZipEntryCount thường KHÔNG còn = 0 ở process bình thường như trước nữa), vẫn phải
-    // ưu tiên access() trước cho nhanh (không lặp string-compare qua hàng nghìn entry mỗi lần gọi
-    // nếu file đã chắc chắn có sẵn) - lỡ đâu index build thất bại (Delta.zip lỗi bất ngờ) thì
-    // g_arZipEntryCount vẫn có thể = 0, đường nhanh vẫn phải tự đứng vững độc lập.
-    if (orig_access && orig_access(destPath, F_OK) == 0) return true;
-    if (g_arZipEntryCount == 0) return false;
+// 3 khả năng khi 1 file được yêu cầu qua redirectAllTrafficPath():
+//  - NOT_MODDED: file không có trong Delta.zip - bình thường, không phải file bị mod.
+//  - PRESENT: file có trong Delta.zip VÀ đang có mặt trên đĩa - hit bình thường.
+//  - TAMPERED: file có trong Delta.zip nhưng KHÔNG còn trên đĩa dù VFS đã active (nghĩa là
+//    ar_verifyAllFilesPresent() từng xác nhận đủ file lúc khởi động - bị xoá/đổi tên SAU đó, giữa
+//    session đang chạy, VD: xoá thư mục Documents/<hash> ngay tại màn login rồi tiếp tục vào game,
+//    đúng kiểu test đã làm với Monite.dylib).
+enum ArEntryStatus { AR_ENTRY_NOT_MODDED = 0, AR_ENTRY_PRESENT = 1, AR_ENTRY_TAMPERED = 2 };
+
+// Đảm bảo destPath tồn tại trên đĩa - đường nhanh (đã giải nén từ trước) chỉ tốn 1 access().
+//
+// KHÔNG tự vá (re-extract) khi TAMPERED - CỐ Ý bỏ, theo yêu cầu user: muốn thấy ĐÚNG hành vi như
+// Monite thật (xoá folder giữa session -> game đọc thiếu file -> tự hiện lỗi/texture đen, KHÔNG
+// crash, KHÔNG âm thầm vá lại) để tự xác nhận VFS có thật sự đang được game đọc qua hay không.
+static ArEntryStatus ar_extractOneEntryIfNeeded(const char *destPath, const char *relativePath) {
+    if (!destPath || !relativePath) return AR_ENTRY_NOT_MODDED;
+    if (orig_access && orig_access(destPath, F_OK) == 0) return AR_ENTRY_PRESENT;
+    if (g_arZipEntryCount == 0) return AR_ENTRY_NOT_MODDED;
 
     for (int i = 0; i < g_arZipEntryCount; i++) {
         if (strcmp(g_arZipEntries[i].name, relativePath) == 0) {
-            return ar_extractZipEntry(i, destPath);
+            DeltaVFS_debugLogf("ar_extractOneEntryIfNeeded: TAMPERED - %s có trong Delta.zip nhưng đã biến mất khỏi đĩa (destPath=%s) giữa session dù VFS đã active - để miss thật, không tự vá", relativePath, destPath);
+            return AR_ENTRY_TAMPERED;
         }
     }
-    return false; // không có trong Delta.zip - không phải lỗi, chỉ là file này không được mod
+    return AR_ENTRY_NOT_MODDED; // không có trong Delta.zip - không phải lỗi, chỉ là file này không được mod
 }
 
 // "bulk1:" prefix CỐ Ý khác định dạng marker cũ ("%lld:%lld" trần, từng dùng cho cả bản lazy lẫn
@@ -847,15 +854,18 @@ inline const char* redirectAllTrafficPath(const char *path) {
         return path;
     }
 
-    // existsInDelta=false nghĩa là file này KHÔNG thuộc bộ mod (Delta.zip không có nó) - vẫn
-    // hoàn toàn bình thường, ví dụ FreeFire.app/_CodeSignature/CodeResources. TRƯỚC ĐÂY hàm này
-    // luôn return redirectedBuffer bất kể hit/miss - trên miss, redirectedBuffer trỏ tới 1 đường
-    // dẫn KHÔNG TỒN TẠI trong Delta/, nên open()/stat()/... sau đó luôn lỗi ENOENT thay vì đọc
-    // được bản gốc trong bundle - xác nhận qua ảnh chụp máy thật (95/95 lời gọi trong bundle đều
-    // miss, game báo lỗi mạng vì đọc thiếu file). Miss giờ phải trả về path GỐC để game đọc thẳng
+    // NOT_MODDED nghĩa là file này KHÔNG thuộc bộ mod (Delta.zip không có nó) - vẫn hoàn toàn bình
+    // thường, ví dụ FreeFire.app/_CodeSignature/CodeResources -> trả về path GỐC để game đọc thẳng
     // bundle như chưa hề bị redirect.
-    bool existsInDelta = ar_extractOneEntryIfNeeded(redirectedBuffer, destRelative);
-    if (existsInDelta) {
+    //
+    // TAMPERED (file THUỘC bộ mod, VFS đã active, nhưng vừa bị xoá/đổi tên giữa session) thì CỐ Ý
+    // KHÔNG fallback về path gốc trong bundle - trả thẳng redirectedBuffer (đường dẫn đã redirect
+    // nhưng giờ không tồn tại), để open()/fopen()/... sau đó thất bại ENOENT thật, game tự xử lý
+    // như thiếu file (texture đen/lỗi hiển thị) đúng như quan sát trên Monite thật khi xoá folder
+    // Documents ngay tại màn login rồi tiếp tục vào game - không âm thầm dùng lại bản gốc trong
+    // bundle (sẽ che mất bằng chứng VFS có đang thực sự được đọc qua hay không).
+    ArEntryStatus st = ar_extractOneEntryIfNeeded(redirectedBuffer, destRelative);
+    if (st == AR_ENTRY_PRESENT) {
         g_deltaHitCount.fetch_add(1, std::memory_order_relaxed);
         // Log "requested -> actual destination" when they differ (e.g. the FreeFire -> FreeFire2
         // rename above) so the INFO tab is actually usable to VERIFY the rename happened, instead
@@ -873,6 +883,12 @@ inline const char* redirectAllTrafficPath(const char *path) {
     }
 
     g_deltaMissCount.fetch_add(1, std::memory_order_relaxed);
+    if (st == AR_ENTRY_TAMPERED) {
+        char tamperedLabel[210];
+        snprintf(tamperedLabel, sizeof(tamperedLabel), "[TAMPERED-MISS] %s", relative);
+        deltaHitRingPush(tamperedLabel);
+        return redirectedBuffer;
+    }
     return path;
 }
 
