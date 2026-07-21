@@ -11,8 +11,6 @@
 #import <zlib.h>
 #include <atomic>
 #include <mutex>
-#include <set>
-#include <string>
 #import <objc/runtime.h>
 #import <dlfcn.h>
 #import <time.h>
@@ -28,18 +26,6 @@
 // nếu ai đó duyệt Documents qua Files app (user bật File Sharing để tự xem log/debug).
 #define DELTA_DEST_DIR_NAME "a3f8c91e2b47d6089d2a71c5f8e93b06"
 static char g_deltaZipPathC[1152] = {0};
-
-// Danh sách file được PHÉP redirect - khai báo CHỦ ĐỘNG, không còn kiểu "redirect hết mọi thứ nằm
-// trong Delta.zip trừ 1 blocklist thủ công" như trước. Delta.zip đóng gói NGUYÊN app bundle (không
-// phải diff), nên "có mặt trong zip" không đủ để coi là an toàn - từng có 1 bản _CodeSignature/
-// CodeResources cũ vô tình nằm sẵn trong zip gây lỗi "hotfix: SaveFailed" trên máy thật. File này
-// (1 dòng = 1 relative path, cùng định dạng destRelative mà redirectAllTrafficPath() dùng để khớp
-// entry trong Delta.zip, VD "FreeFire2" không phải "FreeFire") phải được đóng gói SẴN bên trong
-// chính Delta.zip dưới tên dưới đây - đây là nơi người đóng gói Delta.zip khai báo rõ ràng "tôi cố
-// ý patch đúng những file này", VFS sẽ không bao giờ redirect bất kỳ path nào khác, kể cả khi nó
-// tình cờ có mặt trong zip.
-#define DELTA_MANIFEST_ENTRY_NAME "patchlist.txt"
-static std::set<std::string> g_deltaAllowedPaths;
 
 // Quản lý tiền tố đường dẫn gốc của App Bundle và thư mục Delta trong Cache
 static char g_bundlePrefixC[1024] = {0};
@@ -515,15 +501,6 @@ static bool ar_extractZipEntry(int idx, const char *destPath) {
     return true;
 }
 
-// Tìm entry trong index theo tên - dùng chung bởi ar_extractOneEntryIfNeeded (asset thường) và
-// DeltaVFS_runFirstRunExtraction (extract riêng file manifest patchlist.txt).
-static int ar_findZipEntryIndex(const char *name) {
-    for (int i = 0; i < g_arZipEntryCount; i++) {
-        if (strcmp(g_arZipEntries[i].name, name) == 0) return i;
-    }
-    return -1;
-}
-
 // Đảm bảo destPath tồn tại trên đĩa - đường nhanh (đã giải nén từ trước) chỉ tốn 1 access();
 // đường chậm (lần đầu file này được yêu cầu) tìm trong index rồi giải nén ngay, đồng bộ, trên
 // CHÍNH thread đang gọi (an toàn - xem chỗ gọi trong redirectAllTrafficPath()).
@@ -537,9 +514,12 @@ static bool ar_extractOneEntryIfNeeded(const char *destPath, const char *relativ
     if (orig_access && orig_access(destPath, F_OK) == 0) return true;
     if (g_arZipEntryCount == 0) return false;
 
-    int idx = ar_findZipEntryIndex(relativePath);
-    if (idx < 0) return false; // không có trong Delta.zip - không phải lỗi, chỉ là file này không được mod
-    return ar_extractZipEntry(idx, destPath);
+    for (int i = 0; i < g_arZipEntryCount; i++) {
+        if (strcmp(g_arZipEntries[i].name, relativePath) == 0) {
+            return ar_extractZipEntry(i, destPath);
+        }
+    }
+    return false; // không có trong Delta.zip - không phải lỗi, chỉ là file này không được mod
 }
 
 // "bulk1:" prefix CỐ Ý khác định dạng marker cũ ("%lld:%lld" trần, từng dùng cho cả bản lazy lẫn
@@ -576,34 +556,6 @@ static bool ar_writeMarker(const char *markerPath, const struct stat *zipSt) {
     }
     DeltaVFS_debugLogf("ar_writeMarker: OK wrote marker to %s", markerPath);
     return true;
-}
-
-// Nạp lại allowlist từ bản patchlist.txt đã được extract sẵn ra đĩa (g_moddedPrefixC + ".patchlist")
-// - gọi mỗi lần app khởi động (ar_ensureFirstRunChecked), KHÔNG cần đụng lại Delta.zip, nên vẫn rẻ
-// ở process "bình thường" (marker khớp, không build zip index). Nếu file chưa tồn tại (chưa từng
-// extract lần nào, hoặc Delta.zip thiếu DELTA_MANIFEST_ENTRY_NAME) thì allowlist rỗng - VFS sẽ
-// KHÔNG redirect file nào cả thay vì đoán mò, an toàn hơn là lỡ redirect nhầm.
-static void ar_loadManifestFromDisk() {
-    g_deltaAllowedPaths.clear();
-    if (g_moddedPrefixLen == 0) return;
-    char manifestPath[1200];
-    snprintf(manifestPath, sizeof(manifestPath), "%s.patchlist", g_moddedPrefixC);
-    FILE *f = fopen(manifestPath, "rb");
-    if (!f) {
-        DeltaVFS_debugLogf("ar_loadManifestFromDisk: không mở được %s (errno=%d) - allowlist rỗng, chưa redirect gì cả", manifestPath, errno);
-        return;
-    }
-    char line[512];
-    unsigned int count = 0;
-    while (fgets(line, sizeof(line), f)) {
-        size_t len = strlen(line);
-        while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r')) line[--len] = '\0';
-        if (len == 0) continue;
-        g_deltaAllowedPaths.insert(std::string(line));
-        count++;
-    }
-    fclose(f);
-    DeltaVFS_debugLogf("ar_loadManifestFromDisk: nạp %u path được phép redirect từ %s", count, manifestPath);
 }
 
 // ============================================================================
@@ -644,10 +596,6 @@ inline void ar_ensureFirstRunChecked() {
             }
         }
     }
-
-    // Nạp allowlist ngay khi có g_moddedPrefixC - kể cả process "bình thường" (marker khớp, không
-    // đụng lại Delta.zip) cũng cần allowlist mới mỗi lần khởi động vì nó chỉ sống trong RAM.
-    ar_loadManifestFromDisk();
 
     DeltaVFS_debugLogf("ar_ensureFirstRunChecked: bundle=%s zip=%s", g_bundlePrefixC, g_deltaZipPathC);
 
@@ -736,20 +684,6 @@ inline void DeltaVFS_runFirstRunExtraction(void (^completion)(BOOL success)) {
         unsigned int filesWritten = 0;
         bool allOK = indexed;
         if (indexed) {
-            // Trích riêng patchlist.txt ra đĩa TRƯỚC vòng lặp giải nén chính bên dưới - đây là
-            // allowlist quyết định file nào thật sự được redirect (xem ar_loadManifestFromDisk),
-            // phải luôn có mặt bất kể vòng lặp bên dưới có ghi thiếu file asset nào đó hay không.
-            int manifestIdx = ar_findZipEntryIndex(DELTA_MANIFEST_ENTRY_NAME);
-            if (manifestIdx >= 0) {
-                char manifestDest[1200];
-                snprintf(manifestDest, sizeof(manifestDest), "%s.patchlist", g_moddedPrefixC);
-                bool manifestOK = ar_extractZipEntry(manifestIdx, manifestDest);
-                DeltaVFS_debugLogf("runFirstRunExtraction: extract '%s' -> %s ok=%d", DELTA_MANIFEST_ENTRY_NAME, manifestDest, manifestOK);
-                ar_loadManifestFromDisk();
-            } else {
-                DeltaVFS_debugLogf("runFirstRunExtraction: Delta.zip KHÔNG có '%s' - allowlist sẽ rỗng, VFS sẽ không redirect file nào cả", DELTA_MANIFEST_ENTRY_NAME);
-            }
-
             DeltaVFS_debugLogf("runFirstRunExtraction: bắt đầu giải nén %d entries", g_arZipEntryCount);
             static thread_local char destPath[2048];
             for (int i = 0; i < g_arZipEntryCount; i++) {
@@ -850,6 +784,16 @@ inline const char* redirectAllTrafficPath(const char *path) {
     static thread_local char redirectedBuffer[2048];
     const char *relative = cmpPath + g_bundlePrefixLen;
 
+    // _CodeSignature/ (CodeResources...) TUYỆT ĐỐI không được redirect, kể cả khi Delta.zip vô
+    // tình có sẵn 1 bản (đóng gói từ trước, không phải từ chính lần ký IPA đang chạy). CodeResources
+    // là manifest hash RIÊNG cho từng lần code-sign cụ thể - bản trong Delta.zip gần như chắc chắn
+    // không khớp app đang chạy. Xác nhận trên máy thật: sau khi sửa lỗi khiến file này vô tình đọc
+    // được từ Delta (lẽ ra phải luôn miss), game bắt đầu báo lỗi "hotfix: SaveFailed" - rất có thể
+    // do 1 bước tự kiểm tra tính toàn vẹn nào đó của game/Garena dựa trên CodeResources.
+    if (strncmp(relative, "_CodeSignature/", 15) == 0) {
+        return path;
+    }
+
     // Data/Raw/ios/versioninfo + fileinfo là manifest của hệ thống hotfix/asset-streaming (version
     // bản vá hiện tại + checksum từng file) - PHẢI luôn phản ánh đúng trạng thái THẬT của máy đang
     // chạy, không phải ảnh chụp cũ đóng gói sẵn trong Delta.zip. Xác nhận trên máy thật: sau khi
@@ -878,15 +822,6 @@ inline const char* redirectAllTrafficPath(const char *path) {
     // binary back off disk (e.g. a self-integrity/tamper check), it lands on the clean copy
     // rather than a same-named file that could collide with something else's expectations.
     const char *destRelative = (strcmp(relative, "FreeFire") == 0) ? "FreeFire2" : relative;
-
-    // Chỉ redirect nếu path này nằm trong allowlist CHỦ ĐỘNG khai báo (patchlist.txt đóng gói sẵn
-    // trong Delta.zip, xem ar_loadManifestFromDisk) - không còn suy ra qua "có mặt trong Delta.zip"
-    // như trước nữa, vì Delta.zip đóng gói NGUYÊN app bundle (không phải diff) nên gần như mọi path
-    // đều "có mặt". 2 blocklist thủ công phía trên (versioninfo/fileinfo, Frameworks/) vẫn giữ lại
-    // làm lớp phòng thủ thứ 2 phòng khi patchlist.txt lỡ khai nhầm - không phải lớp chính nữa.
-    if (g_deltaAllowedPaths.find(destRelative) == g_deltaAllowedPaths.end()) {
-        return path;
-    }
 
     int written = snprintf(redirectedBuffer, sizeof(redirectedBuffer), "%s%s", g_moddedPrefixC, destRelative);
     if (written < 0 || written >= (int)sizeof(redirectedBuffer)) {
@@ -1032,26 +967,6 @@ static id hooked_nsbundle_objectForInfoDictionaryKey(id self, SEL _cmd, NSString
     return orig_nsbundle_objectForKey(self, _cmd, key);
 }
 
-// Swizzle -[NSBundle pathForResource:ofType:] - lớp phòng thủ THÊM ở tầng Cocoa, không thay thế
-// fishhook cấp libc (open/fopen/...) ở trên. Lý do thêm: đối chiếu Monite.dylib (đối thủ, xem
-// MoniteAnalysis/) cho thấy họ redirect chủ yếu qua đúng API Cocoa này (selector list +
-// objc_msgSend luôn đứng ngay trước lệnh open/fopen của họ) thay vì hook libc toàn cục - nghĩa là
-// có code (thường là plugin/thư viện bên thứ 3, không phải chính Unity engine) gọi file qua
-// -[NSBundle pathForResource:ofType:] mà KHÔNG bao giờ tự gọi open()/fopen() trực tiếp, nó dùng
-// thẳng NSString path trả về (VD: đưa cho AVAsset, NSData, ImageIO...) - những trường hợp đó lọt
-// qua fishhook hoàn toàn vì bản thân path string đã "đúng" (trỏ vào bundle gốc) trước khi bất kỳ
-// hàm I/O cấp thấp nào được gọi.
-typedef NSString* (*ORIG_pathForResourceOfType)(id, SEL, NSString*, NSString*);
-static ORIG_pathForResourceOfType orig_nsbundle_pathForResourceOfType = NULL;
-
-static NSString* hooked_nsbundle_pathForResourceOfType(id self, SEL _cmd, NSString *name, NSString *ext) {
-    NSString *realPath = orig_nsbundle_pathForResourceOfType(self, _cmd, name, ext);
-    if (self != [NSBundle mainBundle] || !realPath) return realPath;
-    const char *redirected = redirectAllTrafficPath([realPath UTF8String]);
-    if (!redirected || strcmp(redirected, [realPath UTF8String]) == 0) return realPath;
-    return [NSString stringWithUTF8String:redirected];
-}
-
 // ===== CFBundle C-API - separate entry points from the ObjC swizzle above, see comment on
 // deltaFakeInfoPlistDictionary(). Hooked via fishhook (like open/openat/etc), not method swizzling,
 // since these are plain C functions exported by CoreFoundation. =====
@@ -1091,13 +1006,6 @@ static void initNSBundleMethodSwizzling() {
     if (origMethod2) {
         orig_nsbundle_objectForKey = (ORIG_objectForKey)method_getImplementation(origMethod2);
         method_setImplementation(origMethod2, (IMP)hooked_nsbundle_objectForInfoDictionaryKey);
-    }
-
-    // 3. Swizzle -[NSBundle pathForResource:ofType:] - xem comment ở định nghĩa hook phía trên
-    Method origMethod3 = class_getInstanceMethod(nsBundleClass, @selector(pathForResource:ofType:));
-    if (origMethod3) {
-        orig_nsbundle_pathForResourceOfType = (ORIG_pathForResourceOfType)method_getImplementation(origMethod3);
-        method_setImplementation(origMethod3, (IMP)hooked_nsbundle_pathForResourceOfType);
     }
 }
 
