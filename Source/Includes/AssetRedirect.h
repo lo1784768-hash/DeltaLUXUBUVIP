@@ -1213,12 +1213,11 @@ static void initDeltaAllTrafficVFS() {
     orig_CFBundleGetInfoDictionary          = (ORIG_CFBundleGetInfoDictionary)dlsym((void *)RTLD_DEFAULT, "CFBundleGetInfoDictionary");
     orig_CFBundleGetValueForInfoDictionaryKey = (ORIG_CFBundleGetValueForInfoDictionaryKey)dlsym((void *)RTLD_DEFAULT, "CFBundleGetValueForInfoDictionaryKey");
 
-    // Đã BẬT LẠI HWBreakHook (0 = không ép tắt) để test bản v4 - trampoline giờ tự dùng
-    // "open$NOCANCEL" nếu dlsym được (né hẳn việc gọi lại đúng địa chỉ đang bị breakpoint, xem
-    // HWBreakHook.h), không cần tắt/bật debug register trong đường nóng nữa như bản v3 từng làm.
-    // Đổi lại thành 1 nếu cần cô lập lại nghi vấn "hotfix: SaveFailed" hoặc bất kỳ lỗi lạ nào khác
-    // xuất hiện trong lúc test - quay ngay về fishhook thường cho open(), không mất gì.
-    #define HWBREAK_DIAGNOSTIC_FORCE_DISABLE 0
+    // ÉP TẮT LẠI (1) để làm phép thử đối chứng: dù đã vá race thread mới (pthread_create hook,
+    // xem HWBreakHook.h) và heartbeat luôn khoẻ mạnh, lỗi "hotfix: SaveFailed" vẫn còn - cần xác
+    // nhận fishhook thường (bản chưa từng lỗi trước đây) có CÒN sạch lỗi này hay không, để biết
+    // HWBreakHook có thật sự là thủ phạm hay chỉ trùng hợp. Đổi lại thành 0 khi hết cần đối chứng.
+    #define HWBREAK_DIAGNOSTIC_FORCE_DISABLE 1
 #if HWBREAK_DIAGNOSTIC_FORCE_DISABLE
     (void)needsFirstRun;
     bool hwBreakOpenActive = false;
