@@ -506,11 +506,12 @@ static bool ar_extractZipEntry(int idx, const char *destPath) {
 // CHÍNH thread đang gọi (an toàn - xem chỗ gọi trong redirectAllTrafficPath()).
 static bool ar_extractOneEntryIfNeeded(const char *destPath, const char *relativePath) {
     if (!destPath || !relativePath) return false;
-    // Đường nhanh PHẢI đứng trước check g_arZipEntryCount==0: ở process bình thường (marker
-    // khớp), ar_ensureFirstRunChecked() CỐ Ý không build index nữa (đã bung sẵn từ trước, xem
-    // PHẦN 1) nên g_arZipEntryCount luôn = 0 - nếu check đó đứng trước thì hàm này LUÔN return
-    // false ngay cả khi file đã thật sự nằm sẵn trên đĩa, gây miss 100% dù Delta/ đầy đủ file
-    // (xác nhận qua ảnh chụp máy thật: folder có file nhưng INFO tab báo miss hết).
+    // Đường nhanh PHẢI đứng trước check g_arZipEntryCount==0: dù giờ ar_ensureFirstRunChecked()
+    // đã build index MỖI lần khởi động (để ar_verifyAllFilesPresent() kiểm tra từng file thật -
+    // nên g_arZipEntryCount thường KHÔNG còn = 0 ở process bình thường như trước nữa), vẫn phải
+    // ưu tiên access() trước cho nhanh (không lặp string-compare qua hàng nghìn entry mỗi lần gọi
+    // nếu file đã chắc chắn có sẵn) - lỡ đâu index build thất bại (Delta.zip lỗi bất ngờ) thì
+    // g_arZipEntryCount vẫn có thể = 0, đường nhanh vẫn phải tự đứng vững độc lập.
     if (orig_access && orig_access(destPath, F_OK) == 0) return true;
     if (g_arZipEntryCount == 0) return false;
 
@@ -555,6 +556,40 @@ static bool ar_writeMarker(const char *markerPath, const struct stat *zipSt) {
         return false;
     }
     DeltaVFS_debugLogf("ar_writeMarker: OK wrote marker to %s", markerPath);
+    return true;
+}
+
+// Kiểm tra TỪNG file trong Delta.zip có thực sự tồn tại trên đĩa (Documents/<hash>/...) hay không -
+// KHÔNG chỉ tin marker mtime/size của zip như ar_needExtract() ở trên. Lý do thêm hàm này: đối
+// chiếu hành vi THẬT của Monite trên máy (xoá/đổi tên 1 file/folder ĐÃ giải nén, KHÔNG đụng gì
+// tới file zip nguồn) - app của họ vẫn phát hiện ra và tự hiện lại popup "Please Wait" để giải
+// nén lại, chứng tỏ họ kiểm tra kỹ hơn 1 marker đơn thuần. Marker của mình trước đây chỉ so
+// mtime/size của CHÍNH Delta.zip - đổi tên 1 file lẻ bên trong Delta/ không đụng gì tới Delta.zip
+// nên marker vẫn khớp, ar_needExtract() vẫn trả false (tưởng đã ổn) - không tự phát hiện/sửa được
+// kiểu tampering đó. Hàm này lấp đúng lỗ hổng này.
+//
+// Chi phí: build index (đọc central directory, KHÔNG giải nén gì) rồi access() từng entry - vài
+// nghìn syscall access() rất nhanh (micro-giây/lần), chấp nhận được vì chỉ chạy ĐÚNG 1 LẦN lúc
+// khởi động (ar_ensureFirstRunChecked, gọi 1 lần nhờ g_deltaFirstRunCheckDone), không lặp lại
+// trong lúc chơi - đúng mô hình "kiểm tra kỹ 1 lần lúc đầu, tin tưởng tuyệt đối sau đó" đã xác
+// nhận qua hành vi thật của Monite.
+static bool ar_verifyAllFilesPresent(const char *zipPath) {
+    if (!ar_buildZipIndex(zipPath)) {
+        DeltaVFS_debugLog("ar_verifyAllFilesPresent: build index thất bại - coi như cần giải nén lại");
+        return false;
+    }
+    static thread_local char destPath[2048];
+    for (int i = 0; i < g_arZipEntryCount; i++) {
+        const char *relative = g_arZipEntries[i].name;
+        const char *destRelative = (strcmp(relative, "FreeFire") == 0) ? "FreeFire2" : relative;
+        int written = snprintf(destPath, sizeof(destPath), "%s%s", g_moddedPrefixC, destRelative);
+        if (written < 0 || written >= (int)sizeof(destPath)) continue;
+        if (access(destPath, F_OK) != 0) {
+            DeltaVFS_debugLogf("ar_verifyAllFilesPresent: THIẾU %s (đường dẫn %s) - cần giải nén lại", relative, destPath);
+            return false;
+        }
+    }
+    DeltaVFS_debugLogf("ar_verifyAllFilesPresent: OK, đủ cả %d file", g_arZipEntryCount);
     return true;
 }
 
@@ -640,13 +675,22 @@ inline void ar_ensureFirstRunChecked() {
                 DeltaVFS_debugLog("ar_ensureFirstRunChecked: Delta.zip thay đổi/chưa từng chạy - cần giải nén lần đầu (process này sẽ popup rồi thoát)");
                 g_deltaExtractRan.store(true, std::memory_order_relaxed);
                 g_deltaNeedsFirstRun.store(true, std::memory_order_relaxed);
-            } else {
-                // Đã giải nén đầy đủ từ lần trước (marker khớp) - process "bình thường". Không
-                // cần build index/mmap cả Delta.zip nữa, chỉ cần existence-check thẳng trên đĩa
-                // (xem ar_extractOneEntryIfNeeded) - vừa nhanh vừa bớt 1 thứ đụng vào mmap ngay
-                // lúc HWBreakHook đang kích hoạt.
+            } else if (ar_verifyAllFilesPresent(g_deltaZipPathC)) {
+                // Marker khớp VÀ từng file thực sự còn nguyên trên đĩa (xem ar_verifyAllFilesPresent
+                // - đối chiếu hành vi thật của Monite: chỉ tin marker thôi không đủ, ai đó xoá/đổi
+                // tên 1 file lẻ trong Delta/ thì marker vẫn khớp nhưng thực tế đã thiếu). Index vừa
+                // build được GIỮ LẠI (không tốn công build lại) - ar_extractOneEntryIfNeeded() từ
+                // giờ có thêm khả năng TỰ VÁ nếu 1 file lẻ nào đó biến mất giữa lúc đang chơi, không
+                // chỉ existence-check đơn thuần như trước.
                 g_deltaActive.store(true, std::memory_order_relaxed);
-                DeltaVFS_debugLog("ar_ensureFirstRunChecked: marker khớp - đã giải nén sẵn, VFS active ngay");
+                DeltaVFS_debugLog("ar_ensureFirstRunChecked: marker khớp + đủ file - VFS active ngay");
+            } else {
+                // Marker khớp NHƯNG thiếu ít nhất 1 file thật (bị xoá/đổi tên...) - coi như cần
+                // giải nén lại từ đầu, ĐÚNG hành vi Monite thể hiện qua popup "Please Wait" khi
+                // user cố tình đổi tên/xoá file trong Delta/ (không đụng gì tới Delta.zip nguồn).
+                DeltaVFS_debugLog("ar_ensureFirstRunChecked: marker khớp nhưng THIẾU file thật - coi như cần giải nén lần đầu (process này sẽ popup rồi thoát)");
+                g_deltaExtractRan.store(true, std::memory_order_relaxed);
+                g_deltaNeedsFirstRun.store(true, std::memory_order_relaxed);
             }
         } else {
             DeltaVFS_debugLogf("ar_ensureFirstRunChecked: Delta.zip NOT FOUND at %s (stat errno=%d) - VFS stays inactive, nothing redirected", g_deltaZipPathC, errno);
