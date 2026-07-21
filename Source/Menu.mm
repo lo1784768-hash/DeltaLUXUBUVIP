@@ -1398,7 +1398,7 @@ game_sdk_t *game_sdk = new game_sdk_t();
     [UIView animateWithDuration:0.25 animations:^{
         weakSelf.toastLabel.alpha = 1.0f;
     } completion:^(BOOL finished) {
-        [UIView animateWithDuration:0.25 delay:1.5 options:0 animations:^{
+        [UIView animateWithDuration:0.25 delay:7.0 options:0 animations:^{
             weakSelf.toastLabel.alpha = 0.0f;
         } completion:^(BOOL finished2) {
             [weakSelf.toastLabel removeFromSuperview];
