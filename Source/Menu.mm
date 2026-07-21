@@ -1200,11 +1200,11 @@ static UIView *ar_makeFakeAlertBox(UIView *parent, NSString *title, NSString *me
     const char *dirC = DeltaVFS_deltaDir();
     NSString *dir = (dirC && dirC[0]) ? [NSString stringWithUTF8String:dirC] : @"(chưa xác định)";
 
-    // v5: KHÔNG còn hook nào cả (fishhook/HWBreakHook/NSBundle swizzling đã bỏ hết, xem
-    // AssetRedirect.h) - đổi sang kiểu Monite, code phải TỰ gọi DeltaVFS_open/fopen/access thay
-    // vì bị chặn tự động. DeltaVFS_hooksOK() giờ luôn trả 0 - không còn ý nghĩa "thất bại", chỉ
-    // còn dòng chế độ cố định dưới đây thay cho dòng "Fishhook: ..." cũ.
-    NSString *hookLine = isEnglishMode ? @"Redirect mode: manual (Monite-style, no hook)" : @"Chế độ redirect: thủ công (kiểu Monite, không hook)";
+    // Trạng thái cài hook bằng fishhook (rebind symbol import)
+    unsigned int m = DeltaVFS_hooksOK();
+    NSString *hookLine = (m != 0)
+        ? (isEnglishMode ? @"Fishhook: installed ✓" : @"Fishhook: đã cài ✓")
+        : (isEnglishMode ? @"Fishhook: FAILED ✗" : @"Fishhook: THẤT BẠI ✗");
 
     NSString *extractLine;
     if (!DeltaVFS_zipFound()) {
@@ -1215,11 +1215,12 @@ static UIView *ar_makeFakeAlertBox(UIView *parent, NSString *title, NSString *me
         extractLine = isEnglishMode ? @"Unzip: skipped (already extracted)" : @"Giải nén: bỏ qua (đã bung trước đó)";
     }
 
-    // Chẩn đoán 3 tầng: chưa có code nào gọi DeltaVFS_open/fopen/access -> gọi nhưng ngoài bundle
-    // -> gọi trong bundle nhưng thiếu file trong Delta. Không còn tầng "hook chết" (không hook nữa).
+    // Chẩn đoán 3 tầng: hook chết -> game không đọc bundle -> đọc bundle nhưng thiếu file trong Delta
     NSString *verdict;
-    if (totalCalls == 0) {
-        verdict = isEnglishMode ? @"⚠️ No code calls DeltaVFS_open/fopen/access yet" : @"⚠️ Chưa có code nào gọi DeltaVFS_open/fopen/access";
+    if (m == 0) {
+        verdict = isEnglishMode ? @"❌ HOOKS DEAD - fishhook failed" : @"❌ HOOK CHẾT - fishhook thất bại";
+    } else if (totalCalls == 0) {
+        verdict = isEnglishMode ? @"❌ Hooked but 0 file calls (fishhook not biting?)" : @"❌ Đã cài nhưng 0 lời gọi (fishhook chưa ăn?)";
     } else if (bundleCalls == 0) {
         verdict = isEnglishMode ? @"⚠️ Game reads OUTSIDE .app (not the bundle)" : @"⚠️ Game đọc NGOÀI .app (không phải trong bundle)";
     } else if (hits > 0) {
