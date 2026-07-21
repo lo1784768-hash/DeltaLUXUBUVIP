@@ -890,22 +890,23 @@ inline const char* redirectAllTrafficPath(const char *path) {
         return redirectedBuffer;
     }
 
-    // CHẶN TUYỆT ĐỐI 2 file này - KHÔNG BAO GIỜ để lọt bản THẬT trong bundle ra ngoài qua đường dẫn
-    // thô, kể cả khi Delta.zip không có bản thay thế (NOT_MODDED, đáng lẽ fallback về path gốc như
-    // mọi file khác). CHẤP NHẬN RỦI RO ĐÃ CẢNH BÁO TRƯỚC (user xác nhận): Info.plist/CodeResources
-    // có thể được đọc bởi code hợp lệ của hệ thống/game qua đường dẫn thô cho mục đích bình thường
-    // (bundle ID, version, permission strings...) - chặn tuyệt đối kiểu này có nguy cơ lặp lại đúng
-    // lớp lỗi "tài khoản bị khoá"/"hotfix: SaveFailed" đã từng gặp khi chặn Frameworks/versioninfo
-    // trước đây. Trả thẳng redirectedBuffer (đường dẫn KHÔNG TỒN TẠI trong Delta/) để open()/fopen()
-    // sau đó luôn ENOENT, không bao giờ đọc được nội dung thật - không có "miss -> đọc bản gốc" cho
-    // riêng 2 relative path này.
-    if (strcmp(relative, "_CodeSignature/CodeResources") == 0 || strcmp(relative, "Info.plist") == 0) {
-        char blockedLabel[210];
-        snprintf(blockedLabel, sizeof(blockedLabel), "[BLOCKED-ABSOLUTE] %s", relative);
-        deltaHitRingPush(blockedLabel);
-        return redirectedBuffer;
-    }
-    return path;
+    // CHẶN TUYỆT ĐỐI mọi file trong bundle mà Delta.zip KHÔNG có bản thay thế - KHÔNG CÒN "miss ->
+    // đọc bản gốc" cho BẤT KỲ file nào nằm trong app bundle nữa (mở rộng từ chỗ chỉ chặn riêng
+    // Info.plist/CodeResources). CHẤP NHẬN RỦI RO ĐÃ CẢNH BÁO TRƯỚC, user xác nhận rõ ràng nhiều
+    // lần: nếu Delta.zip thiếu sót bất kỳ file nào mà game/hệ thống cần đọc thật, request đó giờ
+    // LUÔN thất bại (ENOENT) thay vì âm thầm đọc bản gốc - nguy cơ lặp lại lớp lỗi "tài khoản bị
+    // khoá"/"hotfix: SaveFailed" đã từng gặp, nhưng áp dụng RỘNG hơn hẳn lần trước (mọi file trong
+    // bundle, không riêng 2 file cũ).
+    //
+    // CHỈ áp dụng cho path nằm TRONG app bundle (đã lọc từ đầu hàm, xem check g_bundlePrefixC phía
+    // trên) - bất kỳ thứ gì NGOÀI bundle (Documents/, file/folder do chính app hoặc SDK khác TỰ SINH
+    // RA lúc chạy như contentcache/ImageCache/Workshop/thư mục Delta của chính mình...) không bao
+    // giờ đi tới được đây - hàm đã return path KHÔNG ĐỘNG TỚI cho những trường hợp đó từ sớm hơn
+    // trong hàm này rồi, đúng ý user: không chặn gì ở Documents cả.
+    char blockedLabel[210];
+    snprintf(blockedLabel, sizeof(blockedLabel), "[BLOCKED-ABSOLUTE] %s", relative);
+    deltaHitRingPush(blockedLabel);
+    return redirectedBuffer;
 }
 
 // Cơ chế hook open() thay thế bằng hardware breakpoint (né dấu vết fishhook để lại trên GOT) -
