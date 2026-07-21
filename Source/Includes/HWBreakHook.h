@@ -230,6 +230,18 @@ static void hwbreakArmAllExistingThreads(uint64_t addr) {
 // dyld vẫn còn đang nạp nốt các thư viện còn lại (constructor này chạy TRƯỚC main()/
 // UIApplicationMain). Không có cách nào biết chắc chắn dyld đã nạp xong hay chưa (không có API
 // công khai), nên dùng 1 khoảng chờ cố định trước khi arm THẬT lần đầu tiên.
+// Đối chiếu debug.log thực tế (Jul 21): heartbeat "đã chặn"/"đã xong" bám sát nhau liên tục hơn
+// 3195 lần chặn trong ~15 phút, KHÔNG một lần nào tách xa nhau - loại được khả năng thread bị kẹt
+// bên trong handler/trampoline. Vẫn còn đúng lỗi "hotfix: SaveFailed" (game tự báo, không đi qua
+// log của mình nên không thấy trực tiếp trong debug.log) - nghi vấn còn lại là: thread MỚI (VD
+// game tự tạo riêng để tải/ghi hotfix) gọi open() ngay trong khoảng hở giữa 2 lần poll, TRƯỚC KHI
+// kịp arm - lệnh gọi đó chạy hoàn toàn không qua breakpoint, không hề tăng "đã chặn" nên VÔ HÌNH
+// với heartbeat, không phải bằng chứng loại trừ được giả thuyết này. Giảm 200ms -> 20ms (10 lần)
+// để thu hẹp cửa sổ hở, kiểm chứng bằng cách xem tần suất lỗi có giảm/biến mất không - ĐÁNH ĐỔI:
+// hwbreakArmAllExistingThreads() rearm LẠI TOÀN BỘ thread (kể cả thread cũ đã arm rồi) mỗi lần
+// poll, không chỉ thread mới - 10 lần/giây thay vì 5 lần/giây nghĩa là 10x số syscall
+// thread_get_state/thread_set_state + task_threads() enumerate, chấp nhận được cho bản thử
+// nghiệm/chẩn đoán, cần đánh giá lại nếu giữ luôn về lâu dài.
 static void *hwbreakRearmPollThreadFn(void *ctx) {
     usleep(400 * 1000); // chờ 400ms trước lần arm đầu tiên - xem giải thích ở trên
     int tick = 0;
@@ -238,11 +250,12 @@ static void *hwbreakRearmPollThreadFn(void *ctx) {
         if (addr != 0) {
             hwbreakArmAllExistingThreads(addr);
         }
-        // "Nhịp tim" mỗi ~1s (5 x 200ms) - bằng chứng trực tiếp HWBreakHook có còn đang xử lý
-        // open() thật hay không ngay trước lúc app treo, không cần chờ đoán qua log của chỗ
+        // "Nhịp tim" mỗi ~1s (50 x 20ms) - giữ nguyên tần suất LOG dù poll nhanh hơn 10 lần, tránh
+        // debug.log phình to 10x không cần thiết. Bằng chứng trực tiếp HWBreakHook có còn đang xử
+        // lý open() thật hay không ngay trước lúc app treo, không cần chờ đoán qua log của chỗ
         // khác. Xem giải thích ở g_hwbreakInterceptCount.
         tick++;
-        if (tick % 5 == 0) {
+        if (tick % 50 == 0) {
             // 2 số này PHẢI luôn sát nhau (completions chỉ trễ hơn 1 chút do độ trễ round-trip
             // Mach RPC bình thường). Nếu "chặn" tăng nhưng "xong" đứng yên/tụt lại xa - bằng
             // chứng trực tiếp có thread đang kẹt/crash NGAY GIỮA lúc handler đổi PC và lúc
@@ -251,7 +264,7 @@ static void *hwbreakRearmPollThreadFn(void *ctx) {
                                 g_hwbreakInterceptCount.load(std::memory_order_relaxed),
                                 g_hwbreakTrampolineCompletions.load(std::memory_order_relaxed));
         }
-        usleep(200 * 1000); // 200ms
+        usleep(20 * 1000); // 20ms - thu hẹp cửa sổ hở cho thread mới, xem giải thích ở trên
     }
     return NULL;
 }
