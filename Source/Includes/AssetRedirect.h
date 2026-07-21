@@ -937,43 +937,20 @@ inline const char* redirectAllTrafficPath(const char *path) {
 //  redirect tự động nữa - chỉ những chỗ CHÍNH dylib này tự viết code gọi (Menu.mm, feature riêng)
 //  mới dùng được. Nếu sau này cần lại khả năng redirect cho Unity, phải quay lại kiểu hook (xem
 //  git history commit trước bản này).
-//
-//  deltaComputeMonitePath() TÍNH PATH THẲNG, KHÔNG QUA g_deltaAllowedPaths/ar_extractOneEntryIfNeeded
-//  - khác hẳn redirectAllTrafficPath() (vẫn giữ nguyên phía trên, PHẦN 2, cho ABHotUpdates dùng).
-//  ĐÂY LÀ CHỦ Ý CỦA USER, không phải thiếu sót: đối chiếu Ghidra decompile Monite.dylib
-//  (FUN_000c14c8/_patch, xem MoniteAnalysis/), code họ KHÔNG kiểm tra allowlist lẫn "file có tồn
-//  tại trong Documents không" trước khi gọi open() - cứ giả định file luôn có sẵn. User xác nhận
-//  muốn giống Y HỆT hành vi đó, kể cả phần rủi ro: đã quan sát trên máy thật (xoá monite.zip ->
-//  game văng sau ~30s-1p) rằng Monite cũng crash nếu thiếu file, và muốn code này khi thiếu
-//  Delta.zip/file chưa giải nén CŨNG crash giống vậy thay vì tự âm thầm rơi về path gốc - lý do:
-//  hành vi "im lặng dùng bản gốc" (redirectAllTrafficPath()) che mất lỗi thiếu file, khó phát
-//  hiện lúc dev/test hơn là crash ngay và rõ ràng. KHÔNG có allowlist ở đây cũng an toàn tương tự
-//  Monite: hàm này chỉ được gọi ở NHỮNG CHỖ dylib tự chủ động viết ra (đã biết chắc muốn đọc file
-//  nào), không phải 1 hook chặn path bất kỳ từ đâu tới - không có nguy cơ vô tình redirect nhầm
-//  _CodeSignature/SC_Info như hồi còn hook toàn cục.
-inline const char *deltaComputeMonitePath(const char *path) {
-    if (!path || g_bundlePrefixLen == 0 || g_moddedPrefixLen == 0) return path;
-    if (strncmp(path, g_bundlePrefixC, g_bundlePrefixLen) != 0) return path;
-    const char *relative = path + g_bundlePrefixLen;
-    // Giữ đúng quy tắc đổi tên đặc biệt cho binary chính như redirectAllTrafficPath() - xem
-    // giải thích ở đó (FreeFire -> FreeFire2, bản sạch chống tự-kiểm-tra).
-    const char *destRelative = (strcmp(relative, "FreeFire") == 0) ? "FreeFire2" : relative;
-    static thread_local char buf[2048];
-    int written = snprintf(buf, sizeof(buf), "%s%s", g_moddedPrefixC, destRelative);
-    if (written < 0 || written >= (int)sizeof(buf)) return path;
-    return buf;
-}
-
+// ============================================================================
 inline int DeltaVFS_open(const char *path, int flags, int mode) {
-    return open(deltaComputeMonitePath(path), flags, mode);
+    const char *redirected = redirectAllTrafficPath(path);
+    return open(redirected ? redirected : path, flags, mode);
 }
 
 inline FILE *DeltaVFS_fopen(const char *path, const char *mode) {
-    return fopen(deltaComputeMonitePath(path), mode);
+    const char *redirected = redirectAllTrafficPath(path);
+    return fopen(redirected ? redirected : path, mode);
 }
 
 inline int DeltaVFS_access(const char *path, int mode) {
-    return access(deltaComputeMonitePath(path), mode);
+    const char *redirected = redirectAllTrafficPath(path);
+    return access(redirected ? redirected : path, mode);
 }
 
 // ============================================================================
