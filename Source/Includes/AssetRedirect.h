@@ -1106,4 +1106,17 @@ static void initDeltaAllTrafficVFS() {
 
     int rebindRet = rebind_symbols(rebindings, n);
     g_deltaHooksOK.store(rebindRet == 0 ? 0x3F : 0, std::memory_order_relaxed);
+
+    // Checkpoint CUỐI CÙNG của constructor - dòng log này LUÔN LÀ 1 TRONG NHỮNG DÒNG ĐẦU TIÊN của
+    // debug.log mỗi lần app mở, vì __attribute__((constructor)) chạy trước main()/UIApplicationMain,
+    // trước khi bất kỳ code nào của game (Unity, AppDelegate...) có cơ hội chạy. Tại đây
+    // redirectAllTrafficPath() đã sẵn sàng phục vụ 100% - flag g_deltaActive VÀ toàn bộ hook (fishhook
+    // rebind_symbols cho open/openat/fopen/access/stat/lstat/CFBundle*) đều đã được set/cài XONG
+    // TRƯỚC KHI dòng này chạy, đồng bộ, cùng 1 lần gọi hàm, không có khoảng hở cho code khác chen vào
+    // giữa. Log rõ cả 2 điều kiện cần để redirect thực sự có tác dụng: hook cài được (rebindRet==0)
+    // VÀ VFS active (g_deltaActive - chỉ true nếu Delta.zip có + đủ file, xem ar_ensureFirstRunChecked).
+    DeltaVFS_debugLogf("initDeltaAllTrafficVFS: HOÀN TẤT - rebindRet=%d hooksOK=%u active=%d zipFound=%d needsFirstRun=%d",
+        rebindRet, g_deltaHooksOK.load(std::memory_order_relaxed),
+        g_deltaActive.load(std::memory_order_relaxed),
+        g_deltaZipFound.load(std::memory_order_relaxed), needsFirstRun);
 }
