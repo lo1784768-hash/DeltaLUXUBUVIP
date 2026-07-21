@@ -78,6 +78,7 @@
 #import <mach/exception_types.h>
 #import <mach/thread_status.h>
 #import <mach/arm/thread_status.h>
+#import <mach/mach_time.h>
 #import <pthread.h>
 #import <dlfcn.h>
 #import <unistd.h>
@@ -161,6 +162,49 @@ static std::atomic<unsigned int> g_hwbreakPathBufNext{0};
 static inline char *hwbreakNextPathBuf() {
     unsigned int idx = g_hwbreakPathBufNext.fetch_add(1, std::memory_order_relaxed) % HWBREAK_PATHBUF_SLOTS;
     return g_hwbreakPathBufs[idx];
+}
+
+// ============================================================================
+//  ĐO ĐỘ TRỄ ROUND-TRIP THẬT - xác nhận/loại giả thuyết "chậm do IPC" trước khi quyết định có
+//  giữ HWBreakHook cho open() hay không (đã loại hết hang/race thread mới/cướp port của ai khác -
+//  xem lịch sử trao đổi). Đo từ lúc handler (chạy trên thread server, catch_mach_exception_
+//  raise_state) CHUẨN BỊ đổi PC, tới lúc trampoline (chạy lại trên CHÍNH thread vừa chạm
+//  breakpoint, sau khi kernel resume) chạy XONG - đúng khoảng round-trip đầy đủ: CPU trap -> kernel
+//  raise exception -> Mach IPC sang thread server -> handler xử lý -> IPC reply -> kernel resume
+//  thread gốc tại trampoline -> trampoline gọi open() thật -> return.
+//
+//  Không thể dùng thread-local để truyền timestamp từ handler sang trampoline - 2 bên chạy trên
+//  2 THREAD KHÁC NHAU (handler trên thread server, trampoline trên thread gốc vừa resume). Nhét
+//  timestamp vào thanh ghi x3 (không dùng cho open() - open() thật chỉ đọc x0-x2) trong state trả
+//  về từ handler - trampoline đọc lại qua tham số thứ 4 (AAPCS64: tham số 4 nằm ở x3).
+//
+//  Gộp thống kê theo "cửa sổ" ~1s (trùng nhịp heartbeat) thay vì log từng lần - tốc độ chặn có
+//  lúc 500-2000 lần/giây, log từng lần sẽ làm chậm hẳn chính thứ đang muốn đo (log ra debug.log
+//  cũng tốn I/O) và làm debug.log phình to vô ích.
+static std::atomic<unsigned long long> g_hwbreakLatencySumNs{0};
+static std::atomic<unsigned long long> g_hwbreakLatencyMaxNs{0};
+static std::atomic<unsigned long long> g_hwbreakLatencySamples{0};
+
+static mach_timebase_info_data_t g_hwbreakTimebase = {0, 0};
+
+static inline uint64_t hwbreakTicksToNs(uint64_t ticks) {
+    if (g_hwbreakTimebase.denom == 0) {
+        mach_timebase_info(&g_hwbreakTimebase); // numer/denom cố định suốt vòng đời process - đọc 1 lần là đủ
+    }
+    return ticks * g_hwbreakTimebase.numer / g_hwbreakTimebase.denom;
+}
+
+static inline void hwbreakRecordLatency(uint64_t startTicks) {
+    if (startTicks == 0) return; // self-test hoặc trường hợp không đo (không set x3)
+    uint64_t elapsedNs = hwbreakTicksToNs(mach_absolute_time() - startTicks);
+    g_hwbreakLatencySumNs.fetch_add(elapsedNs, std::memory_order_relaxed);
+    g_hwbreakLatencySamples.fetch_add(1, std::memory_order_relaxed);
+    // Cập nhật max kiểu compare-and-swap (không có std::atomic::fetch_max sẵn ở C++11/14 build này)
+    uint64_t prevMax = g_hwbreakLatencyMaxNs.load(std::memory_order_relaxed);
+    while (elapsedNs > prevMax &&
+           !g_hwbreakLatencyMaxNs.compare_exchange_weak(prevMax, elapsedNs, std::memory_order_relaxed)) {
+        // prevMax tự cập nhật giá trị mới nhất sau compare_exchange_weak thất bại - lặp lại so sánh
+    }
 }
 
 // ---- Đọc/ghi thanh ghi debug 1 thread - CHỈ dùng lúc arm/rearm (cài đặt breakpoint), KHÔNG
@@ -265,6 +309,18 @@ static void *hwbreakRearmPollThreadFn(void *ctx) {
             DeltaVFS_debugLogf("HWBreakHook heartbeat: đã chặn=%llu đã xong=%llu",
                                 g_hwbreakInterceptCount.load(std::memory_order_relaxed),
                                 g_hwbreakTrampolineCompletions.load(std::memory_order_relaxed));
+
+            // Thống kê độ trễ round-trip CỦA RIÊNG CỬA SỔ ~1s vừa qua (exchange về 0 ngay sau khi
+            // đọc - mẫu tiếp theo bắt đầu đếm lại từ đầu, tránh trung bình cộng dồn cả phiên làm
+            // loãng mất những đợt chậm bất thường gần đây). Xem giải thích đầy đủ ở
+            // hwbreakRecordLatency/g_hwbreakLatencySumNs.
+            unsigned long long sumNs = g_hwbreakLatencySumNs.exchange(0, std::memory_order_relaxed);
+            unsigned long long maxNs = g_hwbreakLatencyMaxNs.exchange(0, std::memory_order_relaxed);
+            unsigned long long samples = g_hwbreakLatencySamples.exchange(0, std::memory_order_relaxed);
+            if (samples > 0) {
+                DeltaVFS_debugLogf("HWBreakHook latency (1s gần nhất, %llu mẫu): trung bình=%.1fus max=%.1fus",
+                                    samples, (double)sumNs / (double)samples / 1000.0, (double)maxNs / 1000.0);
+            }
         }
         usleep(20 * 1000); // 20ms - thu hẹp cửa sổ hở cho thread mới, xem giải thích ở trên
     }
@@ -311,8 +367,11 @@ static std::atomic<uint64_t> g_hwbreakTrampolineAddr{0};
 // vẫn cần tắt/bật quanh mỗi lần gọi) - xem hwbreakOpenTrampoline bên dưới.
 static std::atomic<bool> g_hwbreakRealOpenNeedsBreakpointDance{true};
 
+// Tham số thứ 4 "startTicks" nằm ở x3 theo AAPCS64 - handler nhét timestamp lúc chuẩn bị đổi PC
+// (xem catch_mach_exception_raise_state) vào đúng thanh ghi này trong state trả về, vì x3 không
+// được open()/open$NOCANCEL dùng tới (chỉ đọc x0-x2) - mượn tạm hoàn toàn an toàn.
 __attribute__((noinline))
-static int hwbreakOpenTrampoline(const char *path, int flags, int mode) {
+static int hwbreakOpenTrampoline(const char *path, int flags, int mode, uint64_t startTicks) {
     // Log chi tiết CHỈ trong self-test (xem giải thích ở catch_mach_exception_raise_state) -
     // nếu HÀM NÀY không hề chạy (không thấy dòng "trampoline bắt đầu" trong debug.log dù handler
     // đã log "đã đổi PC xong") thì chứng tỏ chính việc CPU nhảy PC sang địa chỉ này mới là chỗ
@@ -366,6 +425,7 @@ static int hwbreakOpenTrampoline(const char *path, int flags, int mode) {
     }
 
     g_hwbreakTrampolineCompletions.fetch_add(1, std::memory_order_relaxed);
+    hwbreakRecordLatency(startTicks); // đo NGAY TRƯỚC KHI return - trọn vẹn round-trip thật
     return result;
 }
 
@@ -444,6 +504,9 @@ extern "C" kern_return_t catch_mach_exception_raise_state(
         // debug.log ghi thẳng write() syscall nên sống sót qua crash.
         DeltaVFS_debugLog("HWBreakHook: [self-test] handler reached, breakpoint chạm đúng địa chỉ open()");
         g_hwbreakSelfTestPassed.store(true, std::memory_order_relaxed);
+        // x3 (startTicks đọc bởi trampoline) đang giữ rác từ memcpy(old_state) ở trên - ép về 0 để
+        // hwbreakRecordLatency() bỏ qua, không lẫn 1 mẫu rác vào thống kê độ trễ thật.
+        outState->__x[3] = 0;
     } else {
         g_hwbreakInterceptCount.fetch_add(1, std::memory_order_relaxed);
         const char *origPath = (const char *)inState->__x[0];
@@ -454,6 +517,9 @@ extern "C" kern_return_t catch_mach_exception_raise_state(
             buf[2047] = '\0';
             outState->__x[0] = (uint64_t)buf;
         }
+        // Mốc BẮT ĐẦU đo round-trip - nhét vào x3 (xem giải thích ở hwbreakOpenTrampoline), đọc
+        // lại và trừ đi lúc trampoline chạy xong để ra đúng độ trễ CPU-trap -> IPC -> resume.
+        outState->__x[3] = mach_absolute_time();
     }
 
     // Dùng biến thể "_presigned_fptr" thay vì "_set_pc_fptr" thường - đã kiểm tra header thật
