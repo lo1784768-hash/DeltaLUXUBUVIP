@@ -24,12 +24,45 @@ jobs:
         run: |
           brew install ldid
 
-      # "Generate MIG exception server stubs" và "Dump real arm_thread_state64_set_pc_fptr
-      # signature" đã bỏ khỏi đây - cả 2 chỉ phục vụ HWBreakHook.h (Mach exception handler cho
-      # hardware breakpoint), mà HWBreakHook.h giờ không còn được import ở đâu trong build nữa
-      # (AssetRedirect.h chuyển sang gọi trực tiếp kiểu Monite, không hook - xem AssetRedirect.h
-      # PHẦN 3 và Makefile). Giữ 2 bước đó lại sẽ sinh ra Source/Includes/Generated/mach_excServer.c
-      # nhưng KHÔNG có gì biên dịch/dùng tới, tốn thời gian CI vô ích - không phải lỗi build.
+      - name: Generate MIG exception server stubs (mach_exc)
+        run: |
+          # /usr/include có thể không tồn tại trên macOS bản mới (chỉ có header qua SDK) - thử
+          # SDK macOS đang active trước (xcrun), rồi mới quét rộng trong Xcode.app làm phương án
+          # dự phòng (Xcode.app luôn có bản copy header của mọi SDK bên trong, dù /usr/include có
+          # được cài đặt hay không).
+          SDK_PATH=$(xcrun --sdk macosx --show-sdk-path 2>/dev/null)
+          MACH_EXC_DEFS="$SDK_PATH/usr/include/mach/mach_exc.defs"
+          if [ ! -f "$MACH_EXC_DEFS" ]; then
+            MACH_EXC_DEFS=$(find /usr/include/mach /Applications/Xcode*.app -name "mach_exc.defs" 2>/dev/null | head -1)
+          fi
+          if [ -z "$MACH_EXC_DEFS" ] || [ ! -f "$MACH_EXC_DEFS" ]; then
+            echo "mach_exc.defs not found on this runner!" >&2
+            exit 1
+          fi
+          echo "Using defs file: $MACH_EXC_DEFS"
+          mkdir -p Source/Includes/Generated
+          mig -header Source/Includes/Generated/mach_exc.h \
+              -user Source/Includes/Generated/mach_excUser.c \
+              -server Source/Includes/Generated/mach_excServer.c \
+              -sheader Source/Includes/Generated/mach_exc_server.h \
+              "$MACH_EXC_DEFS"
+          echo "Generated files:"
+          ls -la Source/Includes/Generated
+
+      - name: Dump real arm_thread_state64_set_pc_fptr signature from SDK
+        run: |
+          SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
+          HDR="$SDK_PATH/usr/include/mach/arm/_structs.h"
+          echo "Using header: $HDR"
+          if [ -f "$HDR" ]; then
+            grep -n -B2 -A 15 "arm_thread_state64_set_pc_fptr\|arm_thread_state64_get_pc_fptr" "$HDR" || echo "pattern not found in _structs.h"
+          else
+            echo "_structs.h not found at expected path, searching..."
+            find "$SDK_PATH/usr/include/mach" -name "*.h" -exec grep -l "arm_thread_state64_set_pc_fptr" {} \; | while read f; do
+              echo "=== $f ==="
+              grep -n -B2 -A 15 "arm_thread_state64_set_pc_fptr\|arm_thread_state64_get_pc_fptr" "$f"
+            done
+          fi
 
       - name: Build with Theos
         run: |
