@@ -345,76 +345,6 @@ game_sdk_t *game_sdk = new game_sdk_t();
     [DeltaMenu showUpdatingPopupThenRelaunch];
 }
 
-static UILabel *deltaDebugLogLabel;
-static NSTimer *deltaDebugLogTimer;
-
-// Tự vẽ 1 khung giống UIAlertController thật (bo góc, nền xám nhạt, tiêu đề đậm) làm subview
-// TRỰC TIẾP trong parent - KHÔNG dùng UIAlertController thật. Lý do (đã xác nhận qua ảnh chụp màn
-// hình thực tế trên máy): UIKit tự vẽ 1 lớp dimming/scrim phía sau alert thật khi present, che
-// mất hoàn toàn deltaDebugLogLabel dù label đã được add vào blockVC.view TRƯỚC khi present popup.
-// Vẽ tay thế này thì mọi thứ nằm chung 1 cấp view do chính mình kiểm soát, không có view/scrim hệ
-// thống nào chen vào giữa nữa nên chắc chắn thấy được cả khung lẫn log cùng lúc.
-static UIView *ar_makeFakeAlertBox(UIView *parent, NSString *title, NSString *message, BOOL showOKButton, void (^onOK)(void)) {
-    CGFloat boxWidth = MIN(320.0, kWidth - 48.0);
-    CGFloat innerWidth = boxWidth - 40.0; // padding 20pt mỗi bên
-
-    UIFont *titleFont = [UIFont boldSystemFontOfSize:17];
-    UIFont *msgFont = [UIFont systemFontOfSize:14];
-
-    CGRect titleRect = [title boundingRectWithSize:CGSizeMake(innerWidth, CGFLOAT_MAX)
-                                            options:NSStringDrawingUsesLineFragmentOrigin
-                                         attributes:@{NSFontAttributeName: titleFont}
-                                            context:nil];
-    CGRect msgRect = [message boundingRectWithSize:CGSizeMake(innerWidth, CGFLOAT_MAX)
-                                            options:NSStringDrawingUsesLineFragmentOrigin
-                                         attributes:@{NSFontAttributeName: msgFont}
-                                            context:nil];
-    CGFloat titleH = ceil(titleRect.size.height);
-    CGFloat msgH = ceil(msgRect.size.height);
-    CGFloat buttonH = showOKButton ? 44.0 : 0.0;
-    CGFloat boxHeight = 20 + titleH + 10 + msgH + 20 + buttonH;
-
-    UIView *box = [[UIView alloc] initWithFrame:CGRectMake((kWidth - boxWidth) * 0.5,
-                                                             (kHeight - boxHeight) * 0.42,
-                                                             boxWidth, boxHeight)];
-    box.backgroundColor = [UIColor colorWithWhite:0.82 alpha:1.0];
-    box.layer.cornerRadius = 18.0;
-    box.clipsToBounds = YES;
-
-    UILabel *titleLabel = [[UILabel alloc] initWithFrame:CGRectMake(20, 20, innerWidth, titleH)];
-    titleLabel.text = title;
-    titleLabel.font = titleFont;
-    titleLabel.textColor = [UIColor blackColor];
-    titleLabel.numberOfLines = 0;
-    [box addSubview:titleLabel];
-
-    UILabel *msgLabel = [[UILabel alloc] initWithFrame:CGRectMake(20, 20 + titleH + 10, innerWidth, msgH)];
-    msgLabel.text = message;
-    msgLabel.font = msgFont;
-    msgLabel.textColor = [UIColor colorWithWhite:0.15 alpha:1.0];
-    msgLabel.numberOfLines = 0;
-    [box addSubview:msgLabel];
-
-    if (showOKButton) {
-        UIView *sep = [[UIView alloc] initWithFrame:CGRectMake(0, boxHeight - buttonH, boxWidth, 0.5)];
-        sep.backgroundColor = [UIColor colorWithWhite:0.6 alpha:1.0];
-        [box addSubview:sep];
-
-        UIButton *okButton = [UIButton buttonWithType:UIButtonTypeSystem];
-        okButton.frame = CGRectMake(0, boxHeight - buttonH, boxWidth, buttonH);
-        [okButton setTitle:@"OK" forState:UIControlStateNormal];
-        okButton.titleLabel.font = [UIFont systemFontOfSize:17];
-        [okButton addAction:[UIAction actionWithHandler:^(__kindof UIAction *action) {
-            [box removeFromSuperview];
-            if (onOK) onOK();
-        }] forControlEvents:UIControlEventTouchUpInside];
-        [box addSubview:okButton];
-    }
-
-    [parent addSubview:box];
-    return box;
-}
-
 + (void)showUpdatingPopupThenRelaunch {
     // Set NGAY, đồng bộ, trước bất kỳ việc async/animation nào - timer an toàn 2s của
     // installAppDelegateLaunchGuard kiểm tra cờ này để biết còn cần fallback poll+block không.
@@ -434,12 +364,6 @@ static UIView *ar_makeFakeAlertBox(UIView *parent, NSString *title, NSString *me
     [blockWindow makeKeyAndVisible];
     mainWindow = blockWindow; // giữ strong ref để ARC không dọn nó đi
 
-    // KHÔNG hiện panel debug log ở đây nữa lúc đang giải nén bình thường (trước đây hiện ngay từ
-    // đầu) - font "Courier" cũ thiếu glyph dấu tiếng Việt nên chữ có dấu hiện ra méo/ký tự lạ (xác
-    // nhận qua ảnh chụp máy thật), với lại người chơi bình thường không cần thấy log kỹ thuật này.
-    // Panel chỉ được tạo (xem nhánh failure bên dưới, đã đổi sang font Menlo hỗ trợ đủ Unicode)
-    // khi THỰC SỰ có lỗi cần chụp màn hình gửi lại - đúng lúc cần, không phải lúc nào cũng hiện.
-
     // Nói rõ cho người chơi biết đang CỐ Ý tạm dừng game, đừng force-quit - không có dòng này vài
     // giây màn hình đứng im giống crash/bug, dễ khiến người dùng thoát giữa chừng, để lại Delta/
     // giải nén dở cho lần mở sau retry.
@@ -448,9 +372,14 @@ static UIView *ar_makeFakeAlertBox(UIView *parent, NSString *title, NSString *me
         ? @"We need to freeze the game while we prepare required files.\n\nPlease wait and do not close the game until this process finishes."
         : @"Game cần tạm dừng để chuẩn bị các file cần thiết.\n\nVui lòng chờ và không tắt game cho đến khi quá trình này hoàn tất.";
 
-    UIView *popupBox = ar_makeFakeAlertBox(blockVC.view, title, message, NO, nil);
+    // UIAlertController THẬT của Apple (không tự vẽ như trước) - không gắn action nào cả nên
+    // người dùng không bấm tắt được, đúng ý "chặn" trong lúc giải nén.
+    UIAlertController *waitAlert = [UIAlertController alertControllerWithTitle:title
+                                                                        message:message
+                                                                 preferredStyle:UIAlertControllerStyleAlert];
+    [blockVC presentViewController:waitAlert animated:YES completion:nil];
 
-    DeltaVFS_debugLog("Menu popup: đã hiện khung thông báo (tự vẽ), gọi DeltaVFS_runFirstRunExtraction");
+    DeltaVFS_debugLog("Menu popup: đã hiện UIAlertController thật, gọi DeltaVFS_runFirstRunExtraction");
     DeltaVFS_runFirstRunExtraction(^(BOOL success) {
         if (success) {
             DeltaVFS_debugLog("Menu popup: extraction succeeded, aborting in 0.6s");
@@ -463,31 +392,23 @@ static UIView *ar_makeFakeAlertBox(UIView *parent, NSString *title, NSString *me
 
         // Giải nén thất bại (0 file được ghi, hoặc marker không ghi được). KHÔNG crash ở đây -
         // marker chưa ghi thì relaunch nào cũng lại hiện đúng popup này mãi mà không cách nào
-        // biết vì sao. Hiện lỗi + log đầy đủ ngay trên màn hình thay vào đó, đọc/chụp được mà
-        // không cần Filza.
+        // biết vì sao. Đổi sang UIAlertController báo lỗi kèm đường dẫn debug.log thật (đã ghi đầy
+        // đủ ra đĩa từ trước qua DeltaVFS_debugLog, xem AssetRedirect.h) để đọc qua Files app -
+        // UIAlertController thật tự vẽ lớp scrim che mất mọi subview thêm phía sau nó nên không
+        // hiện log sống trên màn hình theo kiểu cũ được nữa.
         DeltaVFS_debugLog("Menu popup: extraction FAILED - staying on screen, not crashing");
-        [popupBox removeFromSuperview];
         NSString *errTitle = isEnglishMode ? @"Extraction failed" : @"Giải nén thất bại";
+        NSString *logPath = DeltaVFS_debugLogPath();
         NSString *errMsg = isEnglishMode
-            ? @"Something went wrong preparing files. The log below has the details - screenshot it and send it over."
-            : @"Có lỗi khi chuẩn bị file. Log bên dưới có chi tiết - chụp màn hình gửi lại giúp mình.";
-        ar_makeFakeAlertBox(blockVC.view, errTitle, errMsg, YES, nil);
-
-        // Panel debug log CHỈ tạo ở đây (lúc thật sự có lỗi cần chụp gửi lại) - đọc thẳng từ ring
-        // buffer trong RAM mà DeltaVFS_debugLog() cũng ghi vào (xem AssetRedirect.h). Dùng
-        // monospacedSystemFontOfSize thay vì "Courier" cũ - "Courier" thiếu glyph dấu tiếng Việt,
-        // font hệ thống này hỗ trợ đủ Unicode nên chữ có dấu hiện đúng, không còn méo/ký tự lạ.
-        deltaDebugLogLabel = [[UILabel alloc] initWithFrame:CGRectMake(16, 150, kWidth - 32, kHeight - 170)];
-        deltaDebugLogLabel.numberOfLines = 0;
-        deltaDebugLogLabel.font = [UIFont monospacedSystemFontOfSize:12 weight:UIFontWeightRegular];
-        deltaDebugLogLabel.textColor = [UIColor colorWithWhite:1.0 alpha:0.55];
-        deltaDebugLogLabel.textAlignment = NSTextAlignmentLeft;
-        deltaDebugLogLabel.text = DeltaVFS_debugLogSnapshot(30);
-        [blockVC.view addSubview:deltaDebugLogLabel];
-        deltaDebugLogTimer = [NSTimer scheduledTimerWithTimeInterval:0.25 repeats:YES block:^(NSTimer *timer) {
-            deltaDebugLogLabel.text = DeltaVFS_debugLogSnapshot(30);
+            ? [NSString stringWithFormat:@"Something went wrong preparing files. Open this file via the Files app and send it over:\n%@", logPath]
+            : [NSString stringWithFormat:@"Có lỗi khi chuẩn bị file. Mở file này qua Files app rồi gửi lại giúp mình:\n%@", logPath];
+        [waitAlert dismissViewControllerAnimated:YES completion:^{
+            UIAlertController *errAlert = [UIAlertController alertControllerWithTitle:errTitle
+                                                                                message:errMsg
+                                                                         preferredStyle:UIAlertControllerStyleAlert];
+            [errAlert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+            [blockVC presentViewController:errAlert animated:YES completion:nil];
         }];
-        [[NSRunLoop mainRunLoop] addTimer:deltaDebugLogTimer forMode:NSRunLoopCommonModes];
     });
 }
 
