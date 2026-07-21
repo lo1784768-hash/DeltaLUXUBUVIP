@@ -976,6 +976,74 @@ inline int DeltaVFS_access(const char *path, int mode) {
     return access(deltaComputeMonitePath(path), mode);
 }
 
+// Quét ĐỆ QUY toàn bộ thư mục Delta trong Documents/<hash>/, gọi DeltaVFS_open() cho MỌI file
+// tìm được ("đọc hết trong folder Delta ở Documents" theo yêu cầu) - vừa là cách "dùng thử" thật
+// sự cho DeltaVFS_open (hết cảnh báo "chưa có code nào gọi" trong INFO tab), vừa để tự kiểm tra
+// mọi file trong Delta/ thật sự ĐỌC ĐƯỢC (không chỉ tồn tại). Bỏ qua file nội bộ bắt đầu bằng "."
+// (.state, .patchlist, .write_test) - không phải asset thật.
+//
+// Dùng lại NGUYÊN các counter/ring có sẵn (g_deltaTotalCalls, g_deltaBundleCalls, g_deltaHitCount/
+// MissCount, deltaHitRingPush) - vì DeltaVFS_open() giờ đi qua deltaComputeMonitePath() (không
+// còn tự đếm như redirectAllTrafficPath() nữa, xem giải thích ở đó), nên phải tự đếm ở ĐÂY để
+// INFO tab (Menu.mm, không sửa gì) vẫn hiển thị đúng - không có counter riêng nào khác.
+static void ar_readAllDeltaFilesRecursive(const char *dirPath) {
+    DIR *d = opendir(dirPath);
+    if (!d) return;
+    struct dirent *ent;
+    char childPath[2048];
+    while ((ent = readdir(d)) != NULL) {
+        if (ent->d_name[0] == '.') continue; // "." "..", và mọi file nội bộ (.state, .patchlist...)
+        int written = snprintf(childPath, sizeof(childPath), "%s%s", dirPath, ent->d_name);
+        if (written < 0 || written >= (int)sizeof(childPath)) continue;
+
+        struct stat st;
+        if (lstat(childPath, &st) != 0) continue;
+
+        if (S_ISDIR(st.st_mode)) {
+            char subDir[2048];
+            int w2 = snprintf(subDir, sizeof(subDir), "%s/", childPath);
+            if (w2 > 0 && w2 < (int)sizeof(subDir)) ar_readAllDeltaFilesRecursive(subDir);
+            continue;
+        }
+        if (!S_ISREG(st.st_mode)) continue;
+
+        // childPath đang là path THẬT trong Documents/<hash>/... - dựng lại "path kiểu bundle"
+        // (g_bundlePrefixC + phần relative) để đưa vào DeltaVFS_open(), đúng input mà
+        // deltaComputeMonitePath() mong đợi (nó tự trừ g_bundlePrefixC rồi cộng lại
+        // g_moddedPrefixC) - vòng tính lại này CHỦ Ý dùng chính DeltaVFS_open(), không mở thẳng
+        // childPath, để thật sự "dùng thử" API công khai chứ không phải đường tắt.
+        const char *relative = childPath + g_moddedPrefixLen;
+        char bundleStylePath[2048];
+        int w3 = snprintf(bundleStylePath, sizeof(bundleStylePath), "%s%s", g_bundlePrefixC, relative);
+        if (w3 < 0 || w3 >= (int)sizeof(bundleStylePath)) continue;
+
+        g_deltaTotalCalls.fetch_add(1, std::memory_order_relaxed);
+        g_deltaBundleCalls.fetch_add(1, std::memory_order_relaxed);
+
+        int fd = DeltaVFS_open(bundleStylePath, O_RDONLY, 0);
+        if (fd >= 0) {
+            close(fd);
+            g_deltaHitCount.fetch_add(1, std::memory_order_relaxed);
+            strncpy(g_deltaLastHitPath, relative, sizeof(g_deltaLastHitPath) - 1);
+            g_deltaLastHitPath[sizeof(g_deltaLastHitPath) - 1] = '\0';
+            deltaHitRingPush(relative);
+        } else {
+            g_deltaMissCount.fetch_add(1, std::memory_order_relaxed);
+            DeltaVFS_debugLogf("ar_readAllDeltaFilesRecursive: DeltaVFS_open FAILED errno=%d path=%s", errno, relative);
+        }
+    }
+    closedir(d);
+}
+
+inline void DeltaVFS_readAllDeltaFiles() {
+    if (g_moddedPrefixLen == 0) return;
+    DeltaVFS_debugLog("DeltaVFS_readAllDeltaFiles: bắt đầu quét + đọc hết file trong Delta/");
+    ar_readAllDeltaFilesRecursive(g_moddedPrefixC);
+    DeltaVFS_debugLogf("DeltaVFS_readAllDeltaFiles: xong, hits=%llu misses=%llu",
+                        g_deltaHitCount.load(std::memory_order_relaxed),
+                        g_deltaMissCount.load(std::memory_order_relaxed));
+}
+
 // ============================================================================
 //  CONSTRUCTOR KÍCH HOẠT HỆ THỐNG
 // ============================================================================
@@ -986,5 +1054,12 @@ static void initDeltaAllTrafficVFS() {
         // PHẦN 3 phía trên). Idempotent, an toàn gọi từ nhiều nơi/nhiều thứ tự (constructor lẫn
         // Menu.mm's +load).
         ar_ensureFirstRunChecked();
+
+        // Đọc hết mọi file trong Delta/ ngay lúc khởi động - CHỈ khi đã giải nén sẵn từ trước
+        // (g_deltaActive), KHÔNG chạy ở process "lần đầu" (đang bận giải nén bulk trên background
+        // thread rồi tự thoát, xem DeltaVFS_runFirstRunExtraction) để tránh vừa giải nén vừa đọc.
+        if (g_deltaActive.load(std::memory_order_relaxed)) {
+            DeltaVFS_readAllDeltaFiles();
+        }
     }
 }
