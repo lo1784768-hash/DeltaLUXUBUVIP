@@ -854,16 +854,8 @@ inline const char* redirectAllTrafficPath(const char *path) {
         return path;
     }
 
-    // NOT_MODDED nghĩa là file này KHÔNG thuộc bộ mod (Delta.zip không có nó) - vẫn hoàn toàn bình
-    // thường, ví dụ FreeFire.app/_CodeSignature/CodeResources -> trả về path GỐC để game đọc thẳng
-    // bundle như chưa hề bị redirect.
-    //
-    // TAMPERED (file THUỘC bộ mod, VFS đã active, nhưng vừa bị xoá/đổi tên giữa session) thì CỐ Ý
-    // KHÔNG fallback về path gốc trong bundle - trả thẳng redirectedBuffer (đường dẫn đã redirect
-    // nhưng giờ không tồn tại), để open()/fopen()/... sau đó thất bại ENOENT thật, game tự xử lý
-    // như thiếu file (texture đen/lỗi hiển thị) đúng như quan sát trên Monite thật khi xoá folder
-    // Documents ngay tại màn login rồi tiếp tục vào game - không âm thầm dùng lại bản gốc trong
-    // bundle (sẽ che mất bằng chứng VFS có đang thực sự được đọc qua hay không).
+    // Luôn kiểm tra Delta TRƯỚC (CÓ thì redirect, KHÔNG/bị xoá giữa chừng thì chặn hẳn) - KHÔNG có
+    // nhánh nào ở dưới còn trả về `path` gốc của bundle nữa, xem chi tiết từng nhánh ngay dưới đây.
     ArEntryStatus st = ar_extractOneEntryIfNeeded(redirectedBuffer, destRelative);
     if (st == AR_ENTRY_PRESENT) {
         g_deltaHitCount.fetch_add(1, std::memory_order_relaxed);
