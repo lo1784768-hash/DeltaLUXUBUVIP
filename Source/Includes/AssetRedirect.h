@@ -1213,11 +1213,11 @@ static void initDeltaAllTrafficVFS() {
     orig_CFBundleGetInfoDictionary          = (ORIG_CFBundleGetInfoDictionary)dlsym((void *)RTLD_DEFAULT, "CFBundleGetInfoDictionary");
     orig_CFBundleGetValueForInfoDictionaryKey = (ORIG_CFBundleGetValueForInfoDictionaryKey)dlsym((void *)RTLD_DEFAULT, "CFBundleGetValueForInfoDictionaryKey");
 
-    // ÉP TẮT LẠI (1) để làm phép thử đối chứng: dù đã vá race thread mới (pthread_create hook,
-    // xem HWBreakHook.h) và heartbeat luôn khoẻ mạnh, lỗi "hotfix: SaveFailed" vẫn còn - cần xác
-    // nhận fishhook thường (bản chưa từng lỗi trước đây) có CÒN sạch lỗi này hay không, để biết
-    // HWBreakHook có thật sự là thủ phạm hay chỉ trùng hợp. Đổi lại thành 0 khi hết cần đối chứng.
-    #define HWBREAK_DIAGNOSTIC_FORCE_DISABLE 1
+    // Đối chứng đã XÁC NHẬN HWBreakHook là thủ phạm thật (fishhook sạch, HWBreakHook lỗi) - bật
+    // lại (0) để lấy log chẩn đoán MỚI: task_set_exception_ports đã đổi thành
+    // task_swap_exception_ports trong HWBreakHook.h, tự log ra nếu có port EXC_MASK_BREAKPOINT
+    // nào đã bị mình ghi đè mất (nghi vấn DataDomeSDK/FreeFire tự dùng breakpoint riêng).
+    #define HWBREAK_DIAGNOSTIC_FORCE_DISABLE 0
 #if HWBREAK_DIAGNOSTIC_FORCE_DISABLE
     (void)needsFirstRun;
     bool hwBreakOpenActive = false;

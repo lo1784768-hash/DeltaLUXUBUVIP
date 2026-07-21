@@ -639,16 +639,44 @@ inline bool HWBreakHook_tryInstallForOpen() {
     // về lý do đổi (đối chiếu Monite.dylib, và đây là cách duy nhất tương thích với thiết kế
     // trampoline: không có thread/task port thì cũng không cần, vì không còn gọi
     // thread_get_state/set_state trong đường xử lý exception nữa).
-    kr = task_set_exception_ports(mach_task_self(), EXC_MASK_BREAKPOINT, g_hwbreakExcPort,
-                                   (exception_behavior_t)(EXCEPTION_STATE | MACH_EXCEPTION_CODES),
-                                   ARM_THREAD_STATE64);
+    //
+    // DÙNG task_swap_exception_ports() (không phải task_set_exception_ports() cũ) - CHỨC NĂNG
+    // CÀI ĐẶT GIỐNG HỆT (vẫn ghi đè đúng như trước, hành vi app KHÔNG đổi), nhưng swap trả về
+    // luôn danh sách port CŨ đã đăng ký cho EXC_MASK_BREAKPOINT trước khi mình ghi đè - THUẦN
+    // CHẨN ĐOÁN: nghi vấn "hotfix: SaveFailed" (đã xác nhận CHỈ xảy ra khi HWBreakHook bật, không
+    // phải hang/race thread mới - xem lịch sử trao đổi) có thể do 1 thành phần khác trong process
+    // (VD DataDomeSDK.framework - SDK chống bot/gian lận có bundle sẵn trong FreeFire, loại SDK
+    // này hay tự dùng đúng kỹ thuật exception-port/hardware-breakpoint để tự bảo vệ, giống kiểu
+    // tìm thấy trong Monite.dylib) ĐÃ đăng ký sẵn 1 port cho breakpoint TRƯỚC mình - nếu có, mình
+    // đang VÔ TÌNH GHI ĐÈ mất port đó (task_set_exception_ports không hỏi, không giữ lại gì) -
+    // khi breakpoint CỦA HỌ chạm, handler của mình không nhận ra PC (không khớp g_hwbreakOpenAddr)
+    // nên trả lại state y nguyên, breakpoint của họ tự chạm lại NGAY LẬP TỨC vì không ai tắt nó -
+    // kẹt vô hạn trên đúng thread đó, hoàn toàn vô hình với heartbeat của mình (chỉ tăng khi PC
+    // khớp đúng open()). Bản này CHƯA implement forward/chain lại cho port cũ (việc đó phức tạp
+    // hơn nhiều) - chỉ log ra để XÁC NHẬN giả thuyết trước khi quyết định có đáng làm tiếp không.
+    exception_mask_t oldMasks[EXC_TYPES_COUNT];
+    mach_port_t oldPorts[EXC_TYPES_COUNT];
+    exception_behavior_t oldBehaviors[EXC_TYPES_COUNT];
+    thread_state_flavor_t oldFlavors[EXC_TYPES_COUNT];
+    mach_msg_type_number_t oldCount = EXC_TYPES_COUNT;
+    kr = task_swap_exception_ports(mach_task_self(), EXC_MASK_BREAKPOINT, g_hwbreakExcPort,
+                                    (exception_behavior_t)(EXCEPTION_STATE | MACH_EXCEPTION_CODES),
+                                    ARM_THREAD_STATE64,
+                                    oldMasks, &oldCount, oldPorts, oldBehaviors, oldFlavors);
     if (kr != KERN_SUCCESS) {
-        DeltaVFS_debugLogf("HWBreakHook: task_set_exception_ports thất bại kr=%d, huỷ", kr);
+        DeltaVFS_debugLogf("HWBreakHook: task_swap_exception_ports thất bại kr=%d, huỷ", kr);
         mach_port_deallocate(mach_task_self(), g_hwbreakExcPort);
         g_hwbreakExcPort = MACH_PORT_NULL;
         return false;
     }
-    DeltaVFS_debugLog("HWBreakHook: task_set_exception_ports OK (EXCEPTION_STATE|MACH_EXCEPTION_CODES)");
+    DeltaVFS_debugLogf("HWBreakHook: task_swap_exception_ports OK (EXCEPTION_STATE|MACH_EXCEPTION_CODES) - %u entry CŨ trước khi ghi đè", (unsigned int)oldCount);
+    if (oldCount == 0) {
+        DeltaVFS_debugLog("HWBreakHook: KHÔNG có ai đăng ký EXC_MASK_BREAKPOINT trước mình - loại được giả thuyết ghi đè port của thành phần khác");
+    }
+    for (mach_msg_type_number_t i = 0; i < oldCount; i++) {
+        DeltaVFS_debugLogf("HWBreakHook: !!! PHÁT HIỆN port CŨ đã đăng ký trước - mask=0x%x port=0x%x behavior=0x%x flavor=%d - MÌNH VỪA GHI ĐÈ MẤT NÓ, nghi vấn hàng đầu cho lỗi hotfix: SaveFailed",
+            (unsigned int)oldMasks[i], (unsigned int)oldPorts[i], (unsigned int)oldBehaviors[i], (int)oldFlavors[i]);
+    }
 
     pthread_t serverThread;
     if (pthread_create(&serverThread, NULL, hwbreakServerThreadFn, NULL) != 0) {
