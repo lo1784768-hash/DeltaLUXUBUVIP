@@ -80,6 +80,7 @@
 #import <mach/arm/thread_status.h>
 #import <mach/mach_time.h>
 #import <pthread.h>
+#import <pthread/qos.h>
 #import <dlfcn.h>
 #import <unistd.h>
 #include <atomic>
@@ -562,6 +563,14 @@ extern "C" kern_return_t catch_mach_exception_raise_state_identity(
 }
 
 static void *hwbreakServerThreadFn(void *ctx) {
+    // Đo được độ trễ round-trip thật ~250-900us (100-300 lần chậm hơn fishhook) - thử TĂNG QoS
+    // thread này lên mức cao nhất (USER_INTERACTIVE) để xem OS có lập lịch cho nó chạy nhanh hơn
+    // không, thu hẹp phần "chờ tới lượt CPU sau khi kernel đã đánh thức" trong tổng độ trễ. Không
+    // đảm bảo giải quyết hết (phần cứng trap + IPC 2 chiều vẫn còn nguyên), chỉ thử xem có cải
+    // thiện được phần lập lịch hay không - đo lại bằng log latency đã có sẵn để biết kết quả thật.
+    int qosRc = pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+    DeltaVFS_debugLogf("HWBreakHook: đặt QoS USER_INTERACTIVE cho server thread rc=%d (0=OK, -1=lỗi errno=%d)", qosRc, qosRc == -1 ? errno : 0);
+
     // mach_msg_server() tự lo TOÀN BỘ vòng nhận/dispatch(mach_exc_server)/reply đúng giao thức
     // MIG chuẩn. Hàm này block vĩnh viễn (như vòng while(true) cũ), chỉ return nếu có lỗi Mach
     // nghiêm trọng không tự phục hồi được - không mong đợi xảy ra.
