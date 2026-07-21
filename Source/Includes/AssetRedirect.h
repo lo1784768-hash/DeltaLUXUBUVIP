@@ -115,6 +115,37 @@ inline NSString *DeltaVFS_hitPathsSnapshot(int maxLines) {
     return out;
 }
 
+// Ring riêng cho các file KHÔNG có trong Delta.zip (miss - đọc bản gốc trong bundle) - tách khỏi
+// ring HIT ở trên để không bị lấn át (miss luôn nhiều hơn hit rất nhiều, gộp chung sẽ trôi hết hit
+// ra khỏi 120 dòng gần nhất).
+#define DELTA_MISS_RING_LINES 120
+static char g_deltaMissRingLines[DELTA_MISS_RING_LINES][200];
+static int g_deltaMissRingHead = 0;
+static unsigned int g_deltaMissRingTotal = 0;
+static std::mutex g_deltaMissRingMutex;
+
+inline void deltaMissRingPush(const char *relativePath) {
+    std::lock_guard<std::mutex> lock(g_deltaMissRingMutex);
+    strncpy(g_deltaMissRingLines[g_deltaMissRingHead], relativePath, sizeof(g_deltaMissRingLines[0]) - 1);
+    g_deltaMissRingLines[g_deltaMissRingHead][sizeof(g_deltaMissRingLines[0]) - 1] = '\0';
+    g_deltaMissRingHead = (g_deltaMissRingHead + 1) % DELTA_MISS_RING_LINES;
+    g_deltaMissRingTotal++;
+}
+
+inline NSString *DeltaVFS_missPathsSnapshot(int maxLines) {
+    std::lock_guard<std::mutex> lock(g_deltaMissRingMutex);
+    int count = (int)((g_deltaMissRingTotal < DELTA_MISS_RING_LINES) ? g_deltaMissRingTotal : DELTA_MISS_RING_LINES);
+    int show = (maxLines < count) ? maxLines : count;
+    if (show <= 0) return @"(chưa có file nào miss)";
+    int start = ((g_deltaMissRingHead - show) % DELTA_MISS_RING_LINES + DELTA_MISS_RING_LINES) % DELTA_MISS_RING_LINES;
+    NSMutableString *out = [NSMutableString string];
+    for (int i = 0; i < show; i++) {
+        int idx = (start + i) % DELTA_MISS_RING_LINES;
+        [out appendFormat:@"%s\n", g_deltaMissRingLines[idx]];
+    }
+    return out;
+}
+
 inline void deltaLogEnsureOpen() {
     if (g_deltaLogFd >= 0) return;
     std::lock_guard<std::mutex> lock(g_deltaLogMutex);
@@ -316,7 +347,7 @@ static bool ar_inflateToFd(const uint8_t *src, size_t srcLen, int outFd) {
 // ============================================================================
 #define AR_ZIP_MAX_ENTRIES 4096
 struct ArZipEntry {
-    char name[512];        // đường dẫn tương đối bên trong zip, khớp với "relative"/"destRelative"
+    char name[512];        // đường dẫn tương đối bên trong zip, khớp với "relative"
                             // mà redirectAllTrafficPath() tính ra (KHÔNG có tiền tố FreeFire.app/)
     uint16_t method;        // 0 = lưu thẳng, 8 = deflate
     uint32_t compSize;
@@ -588,8 +619,7 @@ static bool ar_verifyAllFilesPresent(const char *zipPath) {
     static thread_local char destPath[2048];
     for (int i = 0; i < g_arZipEntryCount; i++) {
         const char *relative = g_arZipEntries[i].name;
-        const char *destRelative = (strcmp(relative, "FreeFire") == 0) ? "FreeFire2" : relative;
-        int written = snprintf(destPath, sizeof(destPath), "%s%s", g_moddedPrefixC, destRelative);
+        int written = snprintf(destPath, sizeof(destPath), "%s%s", g_moddedPrefixC, relative);
         if (written < 0 || written >= (int)sizeof(destPath)) continue;
         if (access(destPath, F_OK) != 0) {
             DeltaVFS_debugLogf("ar_verifyAllFilesPresent: THIẾU %s (đường dẫn %s) - cần giải nén lại", relative, destPath);
@@ -739,9 +769,7 @@ inline void DeltaVFS_runFirstRunExtraction(void (^completion)(BOOL success)) {
             static thread_local char destPath[2048];
             for (int i = 0; i < g_arZipEntryCount; i++) {
                 const char *relative = g_arZipEntries[i].name;
-                // Cùng quy tắc đổi tên đặc biệt cho binary chính như redirectAllTrafficPath().
-                const char *destRelative = (strcmp(relative, "FreeFire") == 0) ? "FreeFire2" : relative;
-                int written = snprintf(destPath, sizeof(destPath), "%s%s", g_moddedPrefixC, destRelative);
+                int written = snprintf(destPath, sizeof(destPath), "%s%s", g_moddedPrefixC, relative);
                 if (written < 0 || written >= (int)sizeof(destPath)) { allOK = false; continue; }
                 if (ar_extractZipEntry(i, destPath)) {
                     filesWritten++;
@@ -842,35 +870,21 @@ inline const char* redirectAllTrafficPath(const char *path) {
     // lúc lỗi đó hiện ra), và Data/Raw/ios/versioninfo+fileinfo từng gây "hotfix: SaveFailed".
     // Redirect TOÀN BỘ mọi thứ có mặt trong Delta.zip, không ngoại lệ.
 
-    // The game's own main executable ("FreeFire.app/FreeFire") is special-cased to a
-    // differently-named destination file ("FreeFire2") instead of the generic same-name mapping
-    // - a clean, unpatched copy ships under that name in Delta.zip, so if the game reads its own
-    // binary back off disk (e.g. a self-integrity/tamper check), it lands on the clean copy
-    // rather than a same-named file that could collide with something else's expectations.
-    const char *destRelative = (strcmp(relative, "FreeFire") == 0) ? "FreeFire2" : relative;
-
-    int written = snprintf(redirectedBuffer, sizeof(redirectedBuffer), "%s%s", g_moddedPrefixC, destRelative);
+    int written = snprintf(redirectedBuffer, sizeof(redirectedBuffer), "%s%s", g_moddedPrefixC, relative);
     if (written < 0 || written >= (int)sizeof(redirectedBuffer)) {
         return path;
     }
 
-    // Luôn kiểm tra Delta TRƯỚC (CÓ thì redirect, KHÔNG/bị xoá giữa chừng thì chặn hẳn) - KHÔNG có
-    // nhánh nào ở dưới còn trả về `path` gốc của bundle nữa, xem chi tiết từng nhánh ngay dưới đây.
-    ArEntryStatus st = ar_extractOneEntryIfNeeded(redirectedBuffer, destRelative);
+    // Luôn kiểm tra Delta TRƯỚC: CÓ thì redirect (hit); KHÔNG có thì trả về bản gốc trong bundle
+    // (miss - vẫn hoàn toàn bình thường, file này chỉ đơn giản không thuộc bộ mod); bị xoá/đổi tên
+    // giữa session dù trước đó VFS đã xác nhận đủ file (TAMPERED) thì vẫn chặn hẳn (không tự vá,
+    // không fallback bản gốc) - xem comment ở ar_extractOneEntryIfNeeded.
+    ArEntryStatus st = ar_extractOneEntryIfNeeded(redirectedBuffer, relative);
     if (st == AR_ENTRY_PRESENT) {
         g_deltaHitCount.fetch_add(1, std::memory_order_relaxed);
-        // Log "requested -> actual destination" when they differ (e.g. the FreeFire -> FreeFire2
-        // rename above) so the INFO tab is actually usable to VERIFY the rename happened, instead
-        // of always showing the originally-requested name and hiding whether a special case fired.
-        char hitLabel[210];
-        if (strcmp(relative, destRelative) != 0) {
-            snprintf(hitLabel, sizeof(hitLabel), "%s -> %s", relative, destRelative);
-        } else {
-            snprintf(hitLabel, sizeof(hitLabel), "%s", relative);
-        }
-        strncpy(g_deltaLastHitPath, hitLabel, sizeof(g_deltaLastHitPath) - 1);
+        strncpy(g_deltaLastHitPath, relative, sizeof(g_deltaLastHitPath) - 1);
         g_deltaLastHitPath[sizeof(g_deltaLastHitPath) - 1] = '\0';
-        deltaHitRingPush(hitLabel);
+        deltaHitRingPush(relative);
         return redirectedBuffer;
     }
 
@@ -882,23 +896,11 @@ inline const char* redirectAllTrafficPath(const char *path) {
         return redirectedBuffer;
     }
 
-    // CHẶN TUYỆT ĐỐI mọi file trong bundle mà Delta.zip KHÔNG có bản thay thế - KHÔNG CÒN "miss ->
-    // đọc bản gốc" cho BẤT KỲ file nào nằm trong app bundle nữa (mở rộng từ chỗ chỉ chặn riêng
-    // Info.plist/CodeResources). CHẤP NHẬN RỦI RO ĐÃ CẢNH BÁO TRƯỚC, user xác nhận rõ ràng nhiều
-    // lần: nếu Delta.zip thiếu sót bất kỳ file nào mà game/hệ thống cần đọc thật, request đó giờ
-    // LUÔN thất bại (ENOENT) thay vì âm thầm đọc bản gốc - nguy cơ lặp lại lớp lỗi "tài khoản bị
-    // khoá"/"hotfix: SaveFailed" đã từng gặp, nhưng áp dụng RỘNG hơn hẳn lần trước (mọi file trong
-    // bundle, không riêng 2 file cũ).
-    //
-    // CHỈ áp dụng cho path nằm TRONG app bundle (đã lọc từ đầu hàm, xem check g_bundlePrefixC phía
-    // trên) - bất kỳ thứ gì NGOÀI bundle (Documents/, file/folder do chính app hoặc SDK khác TỰ SINH
-    // RA lúc chạy như contentcache/ImageCache/Workshop/thư mục Delta của chính mình...) không bao
-    // giờ đi tới được đây - hàm đã return path KHÔNG ĐỘNG TỚI cho những trường hợp đó từ sớm hơn
-    // trong hàm này rồi, đúng ý user: không chặn gì ở Documents cả.
-    char blockedLabel[210];
-    snprintf(blockedLabel, sizeof(blockedLabel), "[BLOCKED-ABSOLUTE] %s", relative);
-    deltaHitRingPush(blockedLabel);
-    return redirectedBuffer;
+    // NOT_MODDED: file này không có trong Delta.zip - ghi vào ring MISS riêng để tab INFO thấy
+    // được đúng những file nào đang bị bỏ sót (không thuộc bộ mod), rồi trả về path gốc để game đọc
+    // thẳng bundle như chưa hề bị redirect.
+    deltaMissRingPush(relative);
+    return path;
 }
 
 // Cơ chế hook open() thay thế bằng hardware breakpoint (né dấu vết fishhook để lại trên GOT) -

@@ -155,6 +155,7 @@ static NSString *LOC(NSString *key) {
 @property (nonatomic, strong) UILabel *statusLabel;
 @property (nonatomic, strong) UITextView *deltaLogView;
 @property (nonatomic, strong) UITextView *redirectedFilesView;
+@property (nonatomic, strong) UITextView *missedFilesView;
 
 // Spy tab (dõi dylib B - gọi hàm nào, sửa bộ nhớ đâu, xem DylibSpy.h)
 @property (nonatomic, strong) UISwitch *spyStartSwitch;
@@ -1102,15 +1103,16 @@ game_sdk_t *game_sdk = new game_sdk_t();
     logHeader.text = @"DELTA VFS";
     [page addSubview:logHeader];
 
-    // Chia phần còn lại của trang làm 2 khung: DELTA VFS (thống kê hit/miss) và REDIRECTED FILES
-    // (danh sách path THẬT SỰ được phục vụ từ Delta/). EXTRACT LOG (log constructor/first-run
-    // popup) đã bị bỏ theo yêu cầu user - việc đó chỉ cần lúc debug crash-loop lúc đầu, giờ đã
-    // ổn định, nhường hẳn không gian cho REDIRECTED FILES to hơn, dễ đọc hơn để verify redirect.
+    // Chia phần còn lại của trang làm 3 khung: DELTA VFS (thống kê hit/miss), REDIRECTED FILES
+    // (path THẬT SỰ được phục vụ từ Delta/) và MISSED FILES (path KHÔNG có trong Delta.zip, đọc
+    // bản gốc) - EXTRACT LOG (log constructor/first-run popup) đã bị bỏ theo yêu cầu user từ trước.
     CGFloat logsTop = 96;
     CGFloat logsAvail = frame.size.height - logsTop - 4;
     CGFloat headerH = 14;
-    CGFloat mainLogH = logsAvail * 0.32f;
-    CGFloat redirectedH = logsAvail - mainLogH - headerH - 4;
+    CGFloat mainLogH = logsAvail * 0.24f;
+    CGFloat listsAvail = logsAvail - mainLogH - 2 * headerH - 8;
+    CGFloat redirectedH = listsAvail * 0.5f;
+    CGFloat missedH = listsAvail - redirectedH;
 
     _deltaLogView = [[UITextView alloc] initWithFrame:CGRectMake(4, logsTop, frame.size.width - 8, mainLogH)];
     _deltaLogView.backgroundColor = COLOR_CARD_BG;
@@ -1145,6 +1147,26 @@ game_sdk_t *game_sdk = new game_sdk_t();
     _redirectedFilesView.textContainerInset = UIEdgeInsetsMake(8, 8, 8, 8);
     [page addSubview:_redirectedFilesView];
 
+    CGFloat missedTop = redirectedTop + headerH + redirectedH + 4;
+    UILabel *missedHeader = [[UILabel alloc] initWithFrame:CGRectMake(6, missedTop, frame.size.width - 12, headerH)];
+    missedHeader.font = [UIFont systemFontOfSize:10 weight:UIFontWeightHeavy];
+    missedHeader.textColor = COLOR_TEXT_DIM;
+    missedHeader.text = @"MISSED FILES (không có trong Delta, đọc bản gốc)";
+    [page addSubview:missedHeader];
+
+    _missedFilesView = [[UITextView alloc] initWithFrame:CGRectMake(4, missedTop + headerH, frame.size.width - 8, missedH)];
+    _missedFilesView.backgroundColor = COLOR_CARD_BG;
+    _missedFilesView.layer.cornerRadius = 10.0f;
+    _missedFilesView.layer.borderWidth = 1.0f;
+    _missedFilesView.layer.borderColor = COLOR_CARD_BORDER.CGColor;
+    _missedFilesView.editable = NO;
+    _missedFilesView.selectable = YES;
+    _missedFilesView.scrollEnabled = YES;
+    _missedFilesView.textColor = COLOR_TEXT;
+    _missedFilesView.font = [UIFont fontWithName:@"Menlo" size:9.5f] ?: [UIFont systemFontOfSize:9.5f];
+    _missedFilesView.textContainerInset = UIEdgeInsetsMake(8, 8, 8, 8);
+    [page addSubview:_missedFilesView];
+
     return page;
 }
 
@@ -1154,6 +1176,9 @@ game_sdk_t *game_sdk = new game_sdk_t();
 
     if (_redirectedFilesView) {
         _redirectedFilesView.text = DeltaVFS_hitPathsSnapshot(120);
+    }
+    if (_missedFilesView) {
+        _missedFilesView.text = DeltaVFS_missPathsSnapshot(120);
     }
 
     unsigned long long hits = DeltaVFS_hits();
