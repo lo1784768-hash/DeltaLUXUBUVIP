@@ -52,19 +52,14 @@
 typedef void *(*ORIG_GetMatchClientInfo)();
 static ORIG_GetMatchClientInfo orig_GetMatchClientInfo = NULL;
 
+// ==== BẢN TEST PASSTHROUGH - KHÔNG sửa field nào cả, chỉ gọi hàm gốc rồi trả về y nguyên. Mục
+// đích: tách bạch xem crash Firebase Crashlytics (xem comment đầu file) là do chính việc Dobby
+// patch inline vào hàm này (bất kể hook body làm gì), hay do 2 dòng ghi exception_count/
+// scan_count trước đó. Nếu bản này VẪN crash chập chờn -> xác nhận lỗi nằm ở việc hook, không
+// liên quan gì field - phải bỏ hẳn hướng hook hàm này. ====
 static void *hooked_GetMatchClientInfo() {
     void *info = orig_GetMatchClientInfo();
-    if (!info) return info;
-
-    // Offset tính từ đầu object (đã gồm header klass+monitor 0x10 byte, đúng quy ước dump.cs) -
-    // xem tcp.MatchClientInfo trong dump.cs. CHỈ sửa 2 field số nguyên trần - đã bỏ hẳn việc
-    // đụng vào tpsdk_str/file_exception/lib_result/native_result (kiểu con trỏ) sau khi xác
-    // nhận crash thật trên máy (xem comment đầu file) - GIỮ NGUYÊN mọi field còn lại, kể cả
-    // gin_check_data (0x50).
-    *(uint32_t *)((char *)info + 0x30) = 0;   // exception_count = 0
-    *(uint32_t *)((char *)info + 0x34) = 0;   // scan_count = 0
-
-    DeltaVFS_debugLog("AntiReportSpoof: da dat exception_count/scan_count = 0 - GIU NGUYEN moi field con lai (tpsdk_str/file_exception/lib_result/native_result/gin_check_data)");
+    DeltaVFS_debugLog("AntiReportSpoof: passthrough - KHONG sua field nao ca (dang test xem crash co phai do Dobby patch khong)");
     return info;
 }
 
