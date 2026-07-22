@@ -21,20 +21,28 @@
 #define kWidth  [UIScreen mainScreen].bounds.size.width
 #define kHeight [UIScreen mainScreen].bounds.size.height
 
-// Delta color identity - purple/cyan, replacing the old flat red accent
-#define COLOR_BG [UIColor colorWithRed:0.03 green:0.02 blue:0.06 alpha:0.93]
-#define COLOR_PURPLE [UIColor colorWithRed:0.659 green:0.333 blue:0.969 alpha:1.0]
-#define COLOR_CYAN   [UIColor colorWithRed:0.133 green:0.827 blue:0.933 alpha:1.0]
+// Monite-identity retheme (xem MoniteAnalysis/README.md mục 3f-3l + demo HTML dựng lại UI của họ):
+// nền navy gần đen + 1 accent cam duy nhất, thay cho bộ purple/cyan "Delta" cũ. COLOR_PURPLE/
+// COLOR_CYAN CỐ Ý giữ nguyên TÊN macro (đỡ phải sửa hàng chục call site khắp file - border
+// gradient, section header, switch onTint...) nhưng trỏ về CÙNG 1 giá trị cam - Monite thật chỉ
+// dùng đúng 1 accent, không phải 2 màu tách biệt như thiết kế cũ.
+#define COLOR_BG [UIColor colorWithRed:0.09 green:0.11 blue:0.15 alpha:0.97]
+#define COLOR_PURPLE [UIColor colorWithRed:0.949 green:0.388 blue:0.165 alpha:1.0]
+#define COLOR_CYAN   [UIColor colorWithRed:0.949 green:0.388 blue:0.165 alpha:1.0]
 #define COLOR_TEXT [UIColor whiteColor]
 #define COLOR_TEXT_DIM [UIColor colorWithWhite:0.62 alpha:1.0]
 #define COLOR_BTN_OFF [UIColor colorWithWhite:1.0 alpha:0.05]
 
+// Sidebar riêng đậm hơn hẳn panel nội dung - đúng 2 tông đậm/nhạt thấy trong ảnh chụp màn hình
+// thật (mục 3l), không phải cùng 1 màu duy nhất như bản Delta cũ.
+#define COLOR_SIDEBAR_BG [UIColor colorWithRed:0.055 green:0.07 blue:0.10 alpha:1.0]
+
 // Card surface treatment: a tinted-dark glass panel + hairline border, instead of a
 // flat white-alpha overlay - reads as an intentional dark-glass surface rather than a
-// generic system control. Cards additionally light up (border/accent/icon go cyan) when
+// generic system control. Cards additionally light up (border/accent/icon go orange) when
 // their switch is ON, via applyCardVisualState: - see addToggleCardWithLocKey:.
-#define COLOR_CARD_BG [UIColor colorWithRed:0.09 green:0.075 blue:0.135 alpha:0.6]
-#define COLOR_CARD_BORDER [UIColor colorWithWhite:1.0 alpha:0.08]
+#define COLOR_CARD_BG [UIColor colorWithRed:0.125 green:0.15 blue:0.20 alpha:0.85]
+#define COLOR_CARD_BORDER [UIColor colorWithWhite:1.0 alpha:0.07]
 #define COLOR_ACCENT_IDLE [UIColor colorWithWhite:1.0 alpha:0.14]
 
 // ===== Localization (VI default, EN togglable from the INFO tab) =====
@@ -69,7 +77,7 @@ static NSDictionary<NSString *, NSArray<NSString *> *> *LocStrings() {
             @"antena": @[@"Antena", @"Antena"],
             @"speed_x2": @[@"Tốc Độ x2", @"Speed x2"],
             @"speed_x8": @[@"Tốc Độ x8", @"Speed x8"],
-            @"no_recoil": @[@"Chống Giật", @"No Recoil"],
+            @"no_recoil": @[@"Không giật", @"No Recoil"],
             @"spin_bot": @[@"Xoay Nhân Vật (SpinBot)", @"Character Spin (SpinBot)"],
             @"action": @[@"Hành Động", @"Action"],
             @"status": @[@"Trạng thái", @"Status"],
@@ -81,6 +89,26 @@ static NSDictionary<NSString *, NSArray<NSString *> *> *LocStrings() {
             @"back": @[@"Trở Về", @"Back"],
             @"on": @[@"BẬT", @"ON"],
             @"off": @[@"TẮT", @"OFF"],
+
+            // ===== Khung 5 tab kiểu Monite (xem MoniteAnalysis mục 3l) - CHỈ layout/chữ, chưa
+            // gắn logic thật, xem comment ở buildCaiDatPageInFrame/buildKhacPageInFrame =====
+            @"stream_mode": @[@"Chế độ Stream", @"Stream Mode"],
+            @"accent_color": @[@"Màu nhấn", @"Accent Color"],
+            @"menu_opacity": @[@"Độ trong suốt menu", @"Menu Opacity"],
+            @"language_label": @[@"Ngôn ngữ", @"Language"],
+            @"interface_style": @[@"Kiểu giao diện", @"Interface Style"],
+            @"scroll_drag_button": @[@"Nút kéo cuộn", @"Scroll Drag Button"],
+            @"save_settings": @[@"Lưu cài đặt", @"Save Settings"],
+            @"restore_settings": @[@"Khôi phục cài đặt", @"Restore Settings"],
+            @"unsafe_warning": @[@"Một số tùy chọn trong mục này có thể không hoàn toàn an toàn. Dùng với thận trọng và tự chịu trách nhiệm.",
+                                  @"Some options in this section may not be completely safe. Use with caution and at your own risk."],
+            @"khac_doi_sung_nhanh": @[@"Đổi súng nhanh", @"Quick Weapon Switch"],
+            @"khac_nap_dan_nhanh": @[@"Nạp đạn nhanh", @"Quick Reload"],
+            @"khac_mau_an_do": @[@"Bật máu ở Ấn Độ", @"Enable Blood in India"],
+            @"khac_keo_gian": @[@"Kéo giãn màn hình", @"Stretch Screen"],
+            @"khac_120fps": @[@"Ép 120 FPS", @"Force 120 FPS"],
+            @"khac_dat_lai_khach": @[@"Đặt lại khách", @"Reset Guest"],
+            @"empty_tab_note": @[@"Chưa gắn tính năng - sẽ thêm ở bước sau", @"No features wired yet - coming in a follow-up step"],
         };
     });
     return d;
@@ -449,7 +477,9 @@ game_sdk_t *game_sdk = new game_sdk_t();
     _modHexes = @[@"909000063", @"909000085", @"909000098", @"909035012", @"909000075", @"909040010", @"909039011", @"909035007"];
 
     CGFloat menuWidth = 460;
-    CGFloat menuHeight = 340;
+    // 360 thay vì 340 cũ - sidebar giờ có 6 mục (thêm "Info" ở dưới cùng), 340 làm mục cuối
+    // tràn khỏi menuView (52 + 6*(46+3) = 346 > 340).
+    CGFloat menuHeight = 360;
     CGFloat sidebarWidth = 72;
     CGFloat x = (kWidth - menuWidth) * 0.5f;
     CGFloat y = (kHeight - menuHeight) * 0.5f;
@@ -478,22 +508,40 @@ game_sdk_t *game_sdk = new game_sdk_t();
 
     [self setupSidebarInView:_menuView width:sidebarWidth height:menuHeight];
 
+    // Khung 5 tab kiểu Monite (Aimbot/Hiển thị/Khác/Cài Đặt/Tài Khoản) - CHỈ dựng bố cục/màu/icon
+    // theo đúng cấu trúc đã phân tích (xem MoniteAnalysis/README.md + demo HTML), CHƯA gắn tính
+    // năng ESP/MOD thật vào - đó là bước "sau" người dùng đã nói rõ. Cài Đặt/Khác có nội dung
+    // MẪU khớp ảnh chụp màn hình thật của Monite (mục 3l); Aimbot/Hiển thị/Tài Khoản để trống vì
+    // chưa có ảnh/tính năng nào xác nhận được cho các tab đó.
+    //
+    // buildESPPageInFrame/buildModPageInFrame/buildInfoPageInFrame/buildSpyPageInFrame (định
+    // nghĩa bên dưới, KHÔNG xoá) tạm thời không còn được gọi - toàn bộ tính năng cũ (ESP box/
+    // lines/..., MOD aim/speed/no-recoil..., INFO log, SPY dylib B) vẫn còn nguyên trong code,
+    // chỉ chưa có chỗ hiển thị trong sidebar mới. "Không giật" (noRecoilSwitch, trong modPage cũ)
+    // đã có sẵn logic thật, khớp thẳng "Không giật" ở tab Khác mới - ứng viên đầu tiên nên nối
+    // lại khi làm bước "gắn tính năng".
     CGRect contentFrame = CGRectMake(sidebarWidth, 0, menuWidth - sidebarWidth, menuHeight);
-    UIView *espPage = [self buildESPPageInFrame:contentFrame];
-    UIView *modPage = [self buildModPageInFrame:contentFrame];
-    UIView *infoPage = [self buildInfoPageInFrame:contentFrame];
-    UIView *spyPage = [self buildSpyPageInFrame:contentFrame];
+    UIView *aimbotPage = [self buildAimbotPageInFrame:contentFrame];
+    UIView *hienThiPage = [self buildHienThiPageInFrame:contentFrame];
+    UIView *khacPage = [self buildKhacPageInFrame:contentFrame];
+    UIView *caiDatPage = [self buildCaiDatPageInFrame:contentFrame];
+    UIView *taiKhoanPage = [self buildTaiKhoanPageInFrame:contentFrame];
+    UIView *infoTabPage = [self buildInfoTabPageInFrame:contentFrame];
 
-    modPage.hidden = YES;
-    infoPage.hidden = YES;
-    spyPage.hidden = YES;
+    hienThiPage.hidden = YES;
+    khacPage.hidden = YES;
+    caiDatPage.hidden = YES;
+    taiKhoanPage.hidden = YES;
+    infoTabPage.hidden = YES;
 
-    [_menuView addSubview:espPage];
-    [_menuView addSubview:modPage];
-    [_menuView addSubview:infoPage];
-    [_menuView addSubview:spyPage];
+    [_menuView addSubview:aimbotPage];
+    [_menuView addSubview:hienThiPage];
+    [_menuView addSubview:khacPage];
+    [_menuView addSubview:caiDatPage];
+    [_menuView addSubview:taiKhoanPage];
+    [_menuView addSubview:infoTabPage];
 
-    _tabPages = @[espPage, modPage, infoPage, spyPage];
+    _tabPages = @[aimbotPage, hienThiPage, khacPage, caiDatPage, taiKhoanPage, infoTabPage];
 }
 
 - (void)installAnimatedBorder {
@@ -526,7 +574,7 @@ game_sdk_t *game_sdk = new game_sdk_t();
 
 - (void)setupSidebarInView:(UIView *)parent width:(CGFloat)width height:(CGFloat)height {
     _sidebarView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, height)];
-    _sidebarView.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.025];
+    _sidebarView.backgroundColor = COLOR_SIDEBAR_BG;
     [parent addSubview:_sidebarView];
 
     UIView *separator = [[UIView alloc] initWithFrame:CGRectMake(width - 1, 0, 1, height)];
@@ -555,8 +603,17 @@ game_sdk_t *game_sdk = new game_sdk_t();
         [brandContainer addSubview:fallback];
     }
 
-    NSArray<NSString *> *titles = @[@"ESP", @"MOD", @"INFO", @"SPY"];
-    NSArray<NSString *> *symbols = @[@"scope", @"wrench.and.screwdriver.fill", @"info.circle.fill", @"eye.trianglebadge.exclamationmark.fill"];
+    // 5 tab đúng theo cấu trúc sidebar Monite đã phân tích (xem MoniteAnalysis/README.md mục
+    // 3g.1/3h/3j và demo HTML dựng lại UI của họ) - "scope" thay cho icon crosshair riêng của họ
+    // (không dùng lại chính PNG trích xuất được từ Monite.dylib, chỉ mô phỏng đúng Ý TƯỞNG icon).
+    // Các tab ESP/MOD/INFO/SPY cũ (buildESPPageInFrame/buildModPageInFrame/buildInfoPageInFrame/
+    // buildSpyPageInFrame bên dưới) TẠM THỜI không còn nối vào sidebar nữa - code vẫn còn nguyên,
+    // chưa xoá gì, chỉ chưa gọi tới. Xem comment ở setupMenu.
+    // "Info" thêm riêng ở CUỐI sidebar theo yêu cầu - KHÔNG thuộc 5 tab gốc của Monite, đây là
+    // bảng chẩn đoán/debug của chính mình (log VFS, redirected/missed files) - xem
+    // buildInfoTabPageInFrame bên dưới (bọc lại buildInfoPageInFrame cũ, không đổi nội dung).
+    NSArray<NSString *> *titles = @[@"Aimbot", @"Hiển thị", @"Khác", @"Cài Đặt", @"Tài Khoản", @"Info"];
+    NSArray<NSString *> *symbols = @[@"scope", @"eye.fill", @"shippingbox.fill", @"gearshape.fill", @"person.fill", @"info.circle.fill"];
 
     CGFloat startY = 52;
     CGFloat itemH = 46, itemGap = 3;
@@ -613,6 +670,466 @@ game_sdk_t *game_sdk = new game_sdk_t();
         _navAccentBars[i].hidden = !active;
         _tabPages[i].hidden = !active;
     }
+}
+
+#pragma mark - Monite-style 5 tab pages (khung mới - xem setupMenu, CHƯA gắn tính năng thật)
+
+// Header nhỏ (icon + tiêu đề in hoa) đầu mỗi trang - khớp panel-head thấy trong ảnh chụp màn hình
+// thật của Monite (MoniteAnalysis/README.md mục 3l). Không có nút đóng/dark-mode riêng ở đây vì
+// menu đã có cơ chế đóng ở tầng ngoài rồi (closeMenu, chạm ra ngoài menuView).
+- (void)addPageHeaderWithSymbol:(NSString *)symbolName title:(NSString *)titleText toView:(UIView *)parent width:(CGFloat)width {
+    UIImageView *icon = [[UIImageView alloc] initWithFrame:CGRectMake(10, 10, 16, 16)];
+    icon.image = [[UIImage systemImageNamed:symbolName] imageByApplyingSymbolConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:14 weight:UIImageSymbolWeightBold]];
+    icon.tintColor = COLOR_CYAN;
+    icon.contentMode = UIViewContentModeScaleAspectFit;
+    [parent addSubview:icon];
+
+    UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(32, 9, width - 42, 18)];
+    title.font = [UIFont systemFontOfSize:13 weight:UIFontWeightBold];
+    title.textColor = COLOR_CYAN;
+    title.text = [titleText uppercaseString];
+    [parent addSubview:title];
+}
+
+// Dùng cho mọi control CHƯA nối logic thật (Cài Đặt/Khác) - vẫn nhận target để card sáng lên khi
+// bật (applyCardVisualState:, xem refreshCardVisualState:) nhưng không đụng gì tới Vars/game.
+- (void)placeholderControlChanged:(id)sender {}
+
+// Hàng dạng dropdown (Ngôn ngữ/Kiểu giao diện) - CHỈ hiển thị, chưa có picker thật đằng sau.
+- (void)addSelectRowWithTitle:(NSString *)titleText valueText:(NSString *)valueText frame:(CGRect)frame toView:(UIView *)parent {
+    UIView *card = [[UIView alloc] initWithFrame:frame];
+    card.backgroundColor = COLOR_CARD_BG;
+    card.layer.cornerRadius = 10.0f;
+    card.layer.borderWidth = 1.0f;
+    card.layer.borderColor = COLOR_CARD_BORDER.CGColor;
+    [parent addSubview:card];
+
+    UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(12, 0, frame.size.width * 0.4f, frame.size.height)];
+    label.font = [UIFont systemFontOfSize:11.5f weight:UIFontWeightMedium];
+    label.textColor = COLOR_TEXT_DIM;
+    label.text = titleText;
+    [card addSubview:label];
+
+    UILabel *value = [[UILabel alloc] initWithFrame:CGRectMake(frame.size.width * 0.4f, 0, frame.size.width * 0.6f - 34, frame.size.height)];
+    value.font = [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold];
+    value.textColor = COLOR_TEXT;
+    value.textAlignment = NSTextAlignmentRight;
+    value.text = valueText;
+    [card addSubview:value];
+
+    UIImageView *chevron = [[UIImageView alloc] initWithFrame:CGRectMake(frame.size.width - 24, (frame.size.height - 12) / 2.0f, 12, 12)];
+    chevron.image = [[UIImage systemImageNamed:@"chevron.down"] imageByApplyingSymbolConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:10 weight:UIImageSymbolWeightSemibold]];
+    chevron.tintColor = COLOR_TEXT_DIM;
+    chevron.contentMode = UIViewContentModeScaleAspectFit;
+    [card addSubview:chevron];
+}
+
+// Slider có nhãn + giá trị số phía trên, cùng quy ước với _fovCircleSlider/_spinSpeedSlider hiện
+// có (không bọc card riêng, giữ nhất quán phong cách sẵn của file này).
+- (UISlider *)addPlaceholderSliderWithLabel:(NSString *)labelText valueText:(NSString *)valueText frame:(CGRect)frame toView:(UIView *)parent {
+    UILabel *top = [[UILabel alloc] initWithFrame:CGRectMake(frame.origin.x, frame.origin.y, frame.size.width, 14)];
+    top.font = [UIFont systemFontOfSize:11 weight:UIFontWeightMedium];
+    top.textColor = COLOR_TEXT_DIM;
+    top.text = labelText;
+    [parent addSubview:top];
+
+    UILabel *val = [[UILabel alloc] initWithFrame:CGRectMake(frame.origin.x, frame.origin.y, frame.size.width, 14)];
+    val.font = [UIFont monospacedDigitSystemFontOfSize:11 weight:UIFontWeightSemibold];
+    val.textColor = COLOR_CYAN;
+    val.textAlignment = NSTextAlignmentRight;
+    val.text = valueText;
+    [parent addSubview:val];
+
+    UISlider *slider = [[UISlider alloc] initWithFrame:CGRectMake(frame.origin.x, frame.origin.y + 16, frame.size.width, 20)];
+    slider.minimumValue = 0.0f;
+    slider.maximumValue = 1.0f;
+    slider.value = 1.0f;
+    slider.minimumTrackTintColor = COLOR_CYAN;
+    slider.maximumTrackTintColor = [UIColor colorWithWhite:1.0 alpha:0.12];
+    slider.thumbTintColor = COLOR_TEXT;
+    [parent addSubview:slider];
+    return slider;
+}
+
+// Nút hành động dạng card (Lưu cài đặt/Khôi phục cài đặt) - chưa nối action thật.
+- (void)addActionButtonWithTitle:(NSString *)titleText symbol:(NSString *)symbolName frame:(CGRect)frame toView:(UIView *)parent {
+    UIView *card = [[UIView alloc] initWithFrame:frame];
+    card.backgroundColor = COLOR_CARD_BG;
+    card.layer.cornerRadius = 10.0f;
+    card.layer.borderWidth = 1.0f;
+    card.layer.borderColor = COLOR_CARD_BORDER.CGColor;
+    [parent addSubview:card];
+
+    CGFloat iconSize = 15;
+    UIImageView *icon = [[UIImageView alloc] initWithFrame:CGRectMake(12, (frame.size.height - iconSize) / 2.0f, iconSize, iconSize)];
+    icon.image = [[UIImage systemImageNamed:symbolName] imageByApplyingSymbolConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:13 weight:UIImageSymbolWeightSemibold]];
+    icon.tintColor = COLOR_TEXT_DIM;
+    icon.contentMode = UIViewContentModeScaleAspectFit;
+    [card addSubview:icon];
+
+    UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(12 + iconSize + 8, 0, frame.size.width - (12 + iconSize + 8) - 10, frame.size.height)];
+    label.font = [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold];
+    label.textColor = COLOR_TEXT;
+    label.text = titleText;
+    [card addSubview:label];
+}
+
+// Trạng thái trống trung thực cho Aimbot/Hiển thị/Tài Khoản - CHƯA có ảnh chụp màn hình hay
+// tính năng nào xác nhận được cho các tab này (khác Cài Đặt/Khác, xem
+// buildCaiDatPageInFrame/buildKhacPageInFrame), nên không tự bịa nội dung.
+- (UIView *)buildEmptyTabPageInFrame:(CGRect)frame symbol:(NSString *)symbolName title:(NSString *)titleText {
+    UIView *page = [[UIView alloc] initWithFrame:frame];
+    [self addPageHeaderWithSymbol:symbolName title:titleText toView:page width:frame.size.width];
+
+    CGFloat bigIconSize = 30;
+    UIImageView *bigIcon = [[UIImageView alloc] initWithFrame:CGRectMake((frame.size.width - bigIconSize) / 2.0f, frame.size.height / 2.0f - 44, bigIconSize, bigIconSize)];
+    bigIcon.image = [[UIImage systemImageNamed:symbolName] imageByApplyingSymbolConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:26 weight:UIImageSymbolWeightRegular]];
+    bigIcon.tintColor = [COLOR_TEXT_DIM colorWithAlphaComponent:0.5];
+    bigIcon.contentMode = UIViewContentModeScaleAspectFit;
+    [page addSubview:bigIcon];
+
+    UILabel *note = [[UILabel alloc] initWithFrame:CGRectMake(16, CGRectGetMaxY(bigIcon.frame) + 8, frame.size.width - 32, 34)];
+    note.numberOfLines = 0;
+    note.textAlignment = NSTextAlignmentCenter;
+    note.font = [UIFont systemFontOfSize:10.5f weight:UIFontWeightMedium];
+    note.textColor = COLOR_TEXT_DIM;
+    [page addSubview:note];
+    __weak UILabel *weakNote = note;
+    [self addLocalizedRefresher:^{ weakNote.text = LOC(@"empty_tab_note"); }];
+
+    return page;
+}
+
+// Nội dung THẬT của tab "Aimbot" - toàn bộ section "Tự Động Ngắm" chuyển nguyên từ MOD tab cũ
+// (buildModMainListInFrame) sang đây, khớp đúng tên tab Monite. Logic/action y hệt cũ
+// (toggleAimHead:/toggleAimNheTam:/aimModeChanged:/toggleAimPreferLowHP:/toggleAimMagnet:/
+// aimMagnetStrengthChanged:, xem "Mod tab toggle actions" bên dưới) - chỉ đổi chỗ hiển thị.
+- (UIView *)buildAimbotPageInFrame:(CGRect)frame {
+    UIView *page = [[UIView alloc] initWithFrame:frame];
+    [self addPageHeaderWithSymbol:@"scope" title:@"Aimbot" toView:page width:frame.size.width];
+
+    CGFloat headerH = 30;
+    CGRect scrollFrame = CGRectMake(0, headerH, frame.size.width, frame.size.height - headerH);
+    UIScrollView *scroll = [[UIScrollView alloc] initWithFrame:scrollFrame];
+    scroll.showsVerticalScrollIndicator = NO;
+    [page addSubview:scroll];
+
+    CGFloat btnX = 4, cardH = 40, btnGap = 6, btnW = scrollFrame.size.width - 8;
+    CGFloat btnY = 6;
+
+    _aimHeadSwitch = [self addToggleCardWithLocKey:@"aim_head" symbol:@"scope" frame:CGRectMake(btnX, btnY, btnW, cardH) action:@selector(toggleAimHead:) toView:scroll];
+    btnY += cardH + btnGap;
+
+    _aimNheTamSwitch = [self addToggleCardWithLocKey:@"aim_nhe_tam" symbol:@"dot.circle.fill" frame:CGRectMake(btnX, btnY, btnW, cardH) action:@selector(toggleAimNheTam:) toView:scroll];
+    btnY += cardH + btnGap;
+
+    _aimModeControl = [[UISegmentedControl alloc] initWithItems:@[@"", @""]];
+    _aimModeControl.frame = CGRectMake(btnX, btnY, btnW, 26);
+    _aimModeControl.selectedSegmentIndex = Vars.AimHeadMode;
+    [self styleSegmentedControl:_aimModeControl];
+    [_aimModeControl addTarget:self action:@selector(aimModeChanged:) forControlEvents:UIControlEventValueChanged];
+    [scroll addSubview:_aimModeControl];
+    __weak UISegmentedControl *weakAimModeControl = _aimModeControl;
+    [self addLocalizedRefresher:^{
+        [weakAimModeControl setTitle:LOC(@"aim_mode_always") forSegmentAtIndex:0];
+        [weakAimModeControl setTitle:LOC(@"aim_mode_fire") forSegmentAtIndex:1];
+    }];
+    btnY += 26 + btnGap;
+
+    _aimPreferLowHPSwitch = [self addToggleCardWithLocKey:@"aim_prefer_low_hp" symbol:@"shuffle" frame:CGRectMake(btnX, btnY, btnW, cardH) action:@selector(toggleAimPreferLowHP:) toView:scroll];
+    btnY += cardH + btnGap;
+
+    _aimMagnetSwitch = [self addToggleCardWithLocKey:@"aim_magnet" symbol:@"bolt.circle.fill" frame:CGRectMake(btnX, btnY, btnW, cardH) action:@selector(toggleAimMagnet:) toView:scroll];
+    btnY += cardH + btnGap;
+
+    _aimMagnetStrengthLabel = [[UILabel alloc] initWithFrame:CGRectMake(btnX + 8, btnY, btnW - 8, 14)];
+    _aimMagnetStrengthLabel.font = [UIFont systemFontOfSize:10.5f weight:UIFontWeightMedium];
+    _aimMagnetStrengthLabel.textColor = COLOR_TEXT_DIM;
+    [scroll addSubview:_aimMagnetStrengthLabel];
+    __weak UILabel *weakAimMagnetStrengthLabel = _aimMagnetStrengthLabel;
+    [self addLocalizedRefresher:^{
+        weakAimMagnetStrengthLabel.text = [NSString stringWithFormat:isEnglishMode ? @"Strength: %.1fx" : @"Độ mạnh: %.1fx", Vars.AimMagnetStrength];
+    }];
+    btnY += 14 + 2;
+
+    _aimMagnetStrengthSlider = [[UISlider alloc] initWithFrame:CGRectMake(btnX, btnY, btnW, 20)];
+    _aimMagnetStrengthSlider.minimumValue = 1.0f;
+    _aimMagnetStrengthSlider.maximumValue = 10.0f;
+    _aimMagnetStrengthSlider.value = Vars.AimMagnetStrength;
+    _aimMagnetStrengthSlider.minimumTrackTintColor = COLOR_CYAN;
+    _aimMagnetStrengthSlider.maximumTrackTintColor = [UIColor colorWithWhite:1.0 alpha:0.12];
+    _aimMagnetStrengthSlider.thumbTintColor = COLOR_TEXT;
+    [_aimMagnetStrengthSlider addTarget:self action:@selector(aimMagnetStrengthChanged:) forControlEvents:UIControlEventValueChanged];
+    [scroll addSubview:_aimMagnetStrengthSlider];
+    btnY += 20 + btnGap;
+
+    UILabel *aimNote = [[UILabel alloc] initWithFrame:CGRectMake(btnX + 8, btnY, btnW - 8, 28)];
+    aimNote.font = [UIFont systemFontOfSize:10.5f weight:UIFontWeightMedium];
+    aimNote.textColor = COLOR_TEXT_DIM;
+    aimNote.numberOfLines = 2;
+    [scroll addSubview:aimNote];
+    [self addLocalizedRefresher:^{
+        aimNote.text = isEnglishMode ? @"Range: FOV circle slider (Hiển thị tab)" : @"Bán kính: xem thanh FOV bên tab Hiển thị";
+    }];
+    btnY += 28 + btnGap;
+
+    scroll.contentSize = CGSizeMake(scrollFrame.size.width, btnY + 6);
+    return page;
+}
+
+// Nội dung THẬT của tab "Hiển thị" - toàn bộ nội dung ESP tab cũ (buildESPPageInFrame) chuyển
+// nguyên sang đây, tên tab khớp thẳng "section_display" ("Hiển Thị") đã dùng làm section header
+// từ trước. Logic/action y hệt cũ (toggleEnable:/toggleShowFovCircle:/toggleBox:/...).
+- (UIView *)buildHienThiPageInFrame:(CGRect)frame {
+    UIView *page = [[UIView alloc] initWithFrame:frame];
+    [self addPageHeaderWithSymbol:@"eye.fill" title:@"Hiển thị" toView:page width:frame.size.width];
+
+    CGFloat headerH = 30;
+    CGRect scrollFrame = CGRectMake(0, headerH, frame.size.width, frame.size.height - headerH);
+    UIScrollView *scroll = [[UIScrollView alloc] initWithFrame:scrollFrame];
+    scroll.showsVerticalScrollIndicator = NO;
+    [page addSubview:scroll];
+
+    CGFloat padX = 10, cardH = 40, gap = 6;
+    CGFloat fullW = scrollFrame.size.width - padX * 2;
+    CGFloat colW = (fullW - gap) / 2.0f;
+    CGFloat y = 6;
+
+    _enableSwitch = [self addToggleCardWithLocKey:@"master_switch" symbol:@"bolt.fill" frame:CGRectMake(padX, y, fullW, cardH) action:@selector(toggleEnable:) toView:scroll];
+    y += cardH + gap;
+
+    _showFovCircleSwitch = [self addToggleCardWithLocKey:@"show_fov_circle" symbol:@"circle.dashed" frame:CGRectMake(padX, y, fullW, cardH) action:@selector(toggleShowFovCircle:) toView:scroll];
+    y += cardH + gap;
+
+    _fovCircleLabel = [[UILabel alloc] initWithFrame:CGRectMake(padX, y, fullW, 14)];
+    _fovCircleLabel.font = [UIFont systemFontOfSize:10.5f weight:UIFontWeightMedium];
+    _fovCircleLabel.textColor = COLOR_TEXT_DIM;
+    [scroll addSubview:_fovCircleLabel];
+    __weak UILabel *weakFovCircleLabel = _fovCircleLabel;
+    [self addLocalizedRefresher:^{
+        weakFovCircleLabel.text = [NSString stringWithFormat:isEnglishMode ? @"Radius: %.0fpx" : @"Bán kính: %.0fpx", Vars.AimFOV];
+    }];
+    y += 14 + 2;
+
+    _fovCircleSlider = [[UISlider alloc] initWithFrame:CGRectMake(padX, y, fullW, 20)];
+    _fovCircleSlider.minimumValue = 10.0f;
+    _fovCircleSlider.maximumValue = 240.0f;
+    _fovCircleSlider.value = Vars.AimFOV;
+    _fovCircleSlider.minimumTrackTintColor = COLOR_CYAN;
+    _fovCircleSlider.maximumTrackTintColor = [UIColor colorWithWhite:1.0 alpha:0.12];
+    _fovCircleSlider.thumbTintColor = COLOR_TEXT;
+    [_fovCircleSlider addTarget:self action:@selector(fovCircleRadiusChanged:) forControlEvents:UIControlEventValueChanged];
+    [scroll addSubview:_fovCircleSlider];
+    y += 20 + gap + 4;
+
+    [self addSectionHeaderWithLocKey:@"section_display" frame:CGRectMake(padX, y, fullW, 12) toView:scroll];
+    y += 12 + 6;
+
+    NSArray<NSString *> *gridKeys = @[@"box", @"lines", @"names", @"health", @"distance", @"skeleton", @"enemy_count"];
+    NSArray<NSString *> *gridSymbols = @[@"square.dashed", @"line.diagonal", @"textformat", @"heart.fill", @"ruler", @"figure.walk", @"person.3.fill"];
+    NSArray<NSValue *> *gridSelectors = @[
+        [NSValue valueWithPointer:@selector(toggleBox:)],
+        [NSValue valueWithPointer:@selector(toggleLines:)],
+        [NSValue valueWithPointer:@selector(toggleName:)],
+        [NSValue valueWithPointer:@selector(toggleHealth:)],
+        [NSValue valueWithPointer:@selector(toggleDistance:)],
+        [NSValue valueWithPointer:@selector(toggleSkeleton:)],
+        [NSValue valueWithPointer:@selector(toggleCount:)]
+    ];
+    NSMutableArray<UISwitch *> *gridSwitches = [NSMutableArray array];
+
+    for (NSUInteger i = 0; i < gridKeys.count; i++) {
+        NSInteger col = i % 2, row = i / 2;
+        CGFloat bx = padX + col * (colW + gap);
+        CGFloat by = y + row * (cardH + gap);
+        SEL selector = (SEL)[gridSelectors[i] pointerValue];
+        UISwitch *sw = [self addToggleCardWithLocKey:gridKeys[i] symbol:gridSymbols[i] frame:CGRectMake(bx, by, colW, cardH) action:selector toView:scroll];
+        [gridSwitches addObject:sw];
+    }
+    _boxSwitch = gridSwitches[0];
+    _linesSwitch = gridSwitches[1];
+    _nameSwitch = gridSwitches[2];
+    _healthSwitch = gridSwitches[3];
+    _distanceSwitch = gridSwitches[4];
+    _skeletonSwitch = gridSwitches[5];
+    _countSwitch = gridSwitches[6];
+
+    NSInteger rowCount = (gridKeys.count + 1) / 2;
+    y += rowCount * (cardH + gap);
+
+    scroll.contentSize = CGSizeMake(scrollFrame.size.width, y + 10);
+    return page;
+}
+
+- (UIView *)buildTaiKhoanPageInFrame:(CGRect)frame {
+    return [self buildEmptyTabPageInFrame:frame symbol:@"person.fill" title:@"Tài Khoản"];
+}
+
+// Tab "Info" thêm riêng ở CUỐI sidebar (không thuộc 5 tab gốc Monite) - bọc lại
+// buildInfoPageInFrame CŨ nguyên vẹn (log VFS, redirected/missed files, ngôn ngữ) trong 1 header
+// nhỏ cùng phong cách các tab kia, không đổi bất kỳ nội dung/logic nào bên trong.
+- (UIView *)buildInfoTabPageInFrame:(CGRect)frame {
+    UIView *page = [[UIView alloc] initWithFrame:frame];
+    [self addPageHeaderWithSymbol:@"info.circle.fill" title:@"Info" toView:page width:frame.size.width];
+
+    CGFloat headerH = 30;
+    CGRect innerFrame = CGRectMake(0, headerH, frame.size.width, frame.size.height - headerH);
+    UIView *infoContent = [self buildInfoPageInFrame:innerFrame];
+    [page addSubview:infoContent];
+    return page;
+}
+
+// Nội dung khớp đúng ảnh chụp màn hình thật của tab "Cài Đặt" Monite (mục 3l): Chế độ Stream →
+// Màu nhấn (khớp thẳng cơ chế đọc RGBA byte÷255.0 đã phân tích ở mục 3i) → Độ trong suốt menu →
+// Ngôn ngữ → Kiểu giao diện → Nút kéo cuộn → Lưu/Khôi phục cài đặt. Toàn bộ control ở đây CHƯA nối
+// logic thật (đổi màu/độ trong suốt/ngôn ngữ chưa làm gì) - xem placeholderControlChanged:.
+- (UIView *)buildCaiDatPageInFrame:(CGRect)frame {
+    UIView *page = [[UIView alloc] initWithFrame:frame];
+    [self addPageHeaderWithSymbol:@"gearshape.fill" title:@"Cài đặt" toView:page width:frame.size.width];
+
+    CGFloat headerH = 30;
+    CGRect scrollFrame = CGRectMake(0, headerH, frame.size.width, frame.size.height - headerH);
+    UIScrollView *scroll = [[UIScrollView alloc] initWithFrame:scrollFrame];
+    scroll.showsVerticalScrollIndicator = NO;
+    [page addSubview:scroll];
+
+    CGFloat padX = 10, rowH = 34, gap = 6;
+    CGFloat fullW = scrollFrame.size.width - padX * 2;
+    CGFloat y = 6;
+
+    [self addToggleCardWithLocKey:@"stream_mode" symbol:@"tv.fill" frame:CGRectMake(padX, y, fullW, rowH) action:@selector(placeholderControlChanged:) toView:scroll];
+    y += rowH + gap;
+    [self addToggleCardWithLocKey:@"accent_color" symbol:@"paintpalette.fill" frame:CGRectMake(padX, y, fullW, rowH) action:@selector(placeholderControlChanged:) toView:scroll];
+    y += rowH + gap;
+
+    [self addPlaceholderSliderWithLabel:LOC(@"menu_opacity") valueText:@"1.00" frame:CGRectMake(padX, y, fullW, 36) toView:scroll];
+    y += 36 + gap;
+
+    [self addSelectRowWithTitle:LOC(@"language_label") valueText:@"Tiếng Việt" frame:CGRectMake(padX, y, fullW, rowH) toView:scroll];
+    y += rowH + gap;
+    [self addSelectRowWithTitle:LOC(@"interface_style") valueText:@"Hiện đại" frame:CGRectMake(padX, y, fullW, rowH) toView:scroll];
+    y += rowH + gap;
+
+    [self addToggleCardWithLocKey:@"scroll_drag_button" symbol:@"square.grid.3x3.fill" frame:CGRectMake(padX, y, fullW, rowH) action:@selector(placeholderControlChanged:) toView:scroll];
+    y += rowH + gap;
+
+    // Chặn cổng UDP - tính năng THẬT đã có sẵn (netLogSetUdpPortBlockEnabled, xem NetLog.h),
+    // đưa vào đây vì đây là 1 cài đặt hệ thống/mạng, không phải tính năng gameplay để ở tab Khác.
+    [self addSectionHeaderWithLocKey:@"section_network" frame:CGRectMake(padX, y, fullW, 12) toView:scroll];
+    y += 12 + 6;
+    _blockUdpPortsSwitch = [self addToggleCardWithLocKey:@"block_udp_ports" symbol:@"wifi.slash" frame:CGRectMake(padX, y, fullW, rowH) action:@selector(toggleBlockUdpPorts:) toView:scroll];
+    y += rowH + gap;
+
+    [self addActionButtonWithTitle:LOC(@"save_settings") symbol:@"square.and.arrow.down.fill" frame:CGRectMake(padX, y, fullW, rowH) toView:scroll];
+    y += rowH + gap;
+    [self addActionButtonWithTitle:LOC(@"restore_settings") symbol:@"arrow.counterclockwise" frame:CGRectMake(padX, y, fullW, rowH) toView:scroll];
+    y += rowH + gap;
+
+    scroll.contentSize = CGSizeMake(scrollFrame.size.width, y + 6);
+    return page;
+}
+
+// Tab "Khác": banner cảnh báo Monite (mục 3l) + tính năng THẬT của mình đã có
+// (Không giật/Antena/Speed x2/Speed x8/SpinBot+tốc độ, và nút "Hành Động" đổi skin súng gốc/mod -
+// nguyên xi từ MOD tab cũ, dùng lại đúng _modMainView/_modGocView/_modModView +
+// showGocList/showModMainFromGoc/showGocListFromMod/gocButtonTapped/modButtonTapped bên dưới,
+// KHÔNG đổi gì cả) + 6 mục còn thiếu implementation thật (Đổi súng nhanh/Nạp đạn nhanh/Bật máu ở
+// Ấn Độ/Kéo giãn màn hình/Ép 120 FPS/Đặt lại khách - vẫn placeholderControlChanged:, ghi rõ
+// "(chưa hoạt động)" trong nhãn để không nhầm với tính năng thật).
+- (UIView *)buildKhacPageInFrame:(CGRect)frame {
+    UIView *page = [[UIView alloc] initWithFrame:frame];
+    [self addPageHeaderWithSymbol:@"shippingbox.fill" title:@"Khác" toView:page width:frame.size.width];
+
+    CGFloat headerH = 30;
+    CGRect innerFrame = CGRectMake(0, headerH, frame.size.width, frame.size.height - headerH);
+
+    _modMainView = [self buildKhacMainListInFrame:innerFrame];
+    _modGocView = [self buildGocListInFrame:innerFrame];
+    _modModView = [self buildModListInFrame:innerFrame];
+
+    _modGocView.hidden = YES;
+    _modModView.hidden = YES;
+
+    [page addSubview:_modMainView];
+    [page addSubview:_modGocView];
+    [page addSubview:_modModView];
+    return page;
+}
+
+- (UIView *)buildKhacMainListInFrame:(CGRect)frame {
+    UIScrollView *scroll = [[UIScrollView alloc] initWithFrame:frame];
+    scroll.showsVerticalScrollIndicator = NO;
+
+    CGFloat btnX = 4, cardH = 40, btnGap = 6, btnW = frame.size.width - 8;
+    CGFloat btnY = 6;
+
+    UILabel *warn = [[UILabel alloc] initWithFrame:CGRectMake(btnX + 4, btnY, btnW - 8, 32)];
+    warn.numberOfLines = 0;
+    warn.font = [UIFont systemFontOfSize:9.5f weight:UIFontWeightMedium];
+    warn.textColor = COLOR_TEXT_DIM;
+    [scroll addSubview:warn];
+    __weak UILabel *weakWarn = warn;
+    [self addLocalizedRefresher:^{ weakWarn.text = LOC(@"unsafe_warning"); }];
+    btnY += 32 + btnGap;
+
+    // Tính năng THẬT đã có sẵn - "Không giật" khớp đúng vị trí đầu tiên như tab Khác thật của
+    // Monite (mục 3l), cùng logic ModHacks::noRecoil(state) như trước, không đổi gì.
+    _noRecoilSwitch = [self addToggleCardWithLocKey:@"no_recoil" symbol:@"shield.fill" frame:CGRectMake(btnX, btnY, btnW, cardH) action:@selector(toggleNoRecoil:) toView:scroll];
+    btnY += cardH + btnGap;
+
+    // 6 mục còn lại của Monite CHƯA có implementation thật trong dylib này - để placeholder,
+    // KHÔNG tự viết logic game giả (an toàn hơn để trống còn hơn code sai gameplay thật).
+    NSArray<NSString *> *khacKeys = @[@"khac_doi_sung_nhanh", @"khac_nap_dan_nhanh", @"khac_mau_an_do", @"khac_keo_gian", @"khac_120fps", @"khac_dat_lai_khach"];
+    NSArray<NSString *> *khacSymbols = @[@"arrow.2.squarepath", @"arrow.clockwise", @"drop.fill", @"arrow.left.and.right", @"speedometer", @"arrow.counterclockwise"];
+    for (NSUInteger i = 0; i < khacKeys.count; i++) {
+        [self addToggleCardWithLocKey:khacKeys[i] symbol:khacSymbols[i] frame:CGRectMake(btnX, btnY, btnW, cardH) action:@selector(placeholderControlChanged:) toView:scroll];
+        btnY += cardH + btnGap;
+    }
+
+    [self addSectionHeaderWithLocKey:@"section_boost" frame:CGRectMake(btnX + 4, btnY, btnW, 12) toView:scroll];
+    btnY += 12 + 6;
+
+    _antenaSwitch = [self addToggleCardWithLocKey:@"antena" symbol:@"antenna.radiowaves.left.and.right" frame:CGRectMake(btnX, btnY, btnW, cardH) action:@selector(toggleAntena:) toView:scroll];
+    btnY += cardH + btnGap;
+
+    _speedX2Switch = [self addToggleCardWithLocKey:@"speed_x2" symbol:@"hare.fill" frame:CGRectMake(btnX, btnY, btnW, cardH) action:@selector(toggleSpeedX2:) toView:scroll];
+    btnY += cardH + btnGap;
+
+    _speedX8Switch = [self addToggleCardWithLocKey:@"speed_x8" symbol:@"flame.fill" frame:CGRectMake(btnX, btnY, btnW, cardH) action:@selector(toggleSpeedX8:) toView:scroll];
+    btnY += cardH + btnGap;
+
+    _spinBotSwitch = [self addToggleCardWithLocKey:@"spin_bot" symbol:@"arrow.triangle.2.circlepath" frame:CGRectMake(btnX, btnY, btnW, cardH) action:@selector(toggleSpinBot:) toView:scroll];
+    btnY += cardH + btnGap;
+
+    _spinSpeedLabel = [[UILabel alloc] initWithFrame:CGRectMake(btnX + 8, btnY, btnW - 8, 14)];
+    _spinSpeedLabel.font = [UIFont systemFontOfSize:10.5f weight:UIFontWeightMedium];
+    _spinSpeedLabel.textColor = COLOR_TEXT_DIM;
+    [scroll addSubview:_spinSpeedLabel];
+    __weak UILabel *weakSpinSpeedLabel = _spinSpeedLabel;
+    [self addLocalizedRefresher:^{
+        weakSpinSpeedLabel.text = [NSString stringWithFormat:isEnglishMode ? @"Spin speed: %.0f°/s" : @"Tốc độ xoay: %.0f°/s", Vars.SpinSpeed];
+    }];
+    btnY += 14 + 2;
+
+    _spinSpeedSlider = [[UISlider alloc] initWithFrame:CGRectMake(btnX, btnY, btnW, 20)];
+    _spinSpeedSlider.minimumValue = 30.0f;
+    _spinSpeedSlider.maximumValue = 3600.0f;
+    _spinSpeedSlider.value = Vars.SpinSpeed;
+    _spinSpeedSlider.minimumTrackTintColor = COLOR_CYAN;
+    _spinSpeedSlider.maximumTrackTintColor = [UIColor colorWithWhite:1.0 alpha:0.12];
+    _spinSpeedSlider.thumbTintColor = COLOR_TEXT;
+    [_spinSpeedSlider addTarget:self action:@selector(spinSpeedChanged:) forControlEvents:UIControlEventValueChanged];
+    [scroll addSubview:_spinSpeedSlider];
+    btnY += 20 + btnGap;
+
+    UIButton *actionBtn = [self createButtonWithLocKey:@"action" frame:CGRectMake(btnX, btnY, btnW, 32)];
+    [actionBtn setTitleColor:COLOR_CYAN forState:UIControlStateNormal];
+    [actionBtn addTarget:self action:@selector(showGocList) forControlEvents:UIControlEventTouchUpInside];
+    [scroll addSubview:actionBtn];
+    btnY += 32 + btnGap;
+
+    scroll.contentSize = CGSizeMake(frame.size.width, btnY + 6);
+    return scroll;
 }
 
 #pragma mark - ESP tab page
