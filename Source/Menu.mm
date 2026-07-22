@@ -125,8 +125,10 @@ static NSString *LOC(NSString *key) {
 //  "Chế độ Stream"/"Màu nhấn" ở tab Cài Đặt, vẫn dùng UISwitch tròn thật, xem
 //  addPillToggleCardWithLocKey: bên dưới). Đặt tên property/method giống hệt UISwitch
 //  (on/isOn/setOn:animated:) CỐ Ý - toàn bộ action handler cũ (toggleBox:/toggleAimHead:/...) chỉ
-//  cần đổi kiểu tham số sang UIControl* + ép (id) khi đọc/ghi .on, KHÔNG cần viết lại logic, vì
-//  Objective-C tìm property theo tên trên biểu thức kiểu id bất kể lớp thật là gì lúc runtime.
+//  cần đổi kiểu tham số sang UIControl* + đọc/ghi qua [(id)sender isOn]/[(id)sender setOn:...]
+//  (bracket message send, KHÔNG dùng cú pháp .on trên id - bản Clang của Theos không tự tìm
+//  property theo tên trên id như đã tưởng, xem lỗi build "property 'on' not found on type 'id'"),
+//  KHÔNG cần viết lại logic bên trong mỗi action handler.
 // ============================================================================
 @interface DeltaCheckbox : UIControl
 @property (nonatomic, getter=isOn) BOOL on;
@@ -1536,25 +1538,25 @@ game_sdk_t *game_sdk = new game_sdk_t();
 #pragma mark - Mod tab toggle actions
 
 - (void)toggleAimHead:(UIControl *)sender {
-    BOOL state = ((id)sender).on;
+    BOOL state = [(id)sender isOn];
     [self showToast:[NSString stringWithFormat:@"%@ %@", LOC(@"aim_head"), LOC(state ? @"on" : @"off")]];
     Vars.AimHead = state;
     // Mutually exclusive with Aim Nhe Tam - both write the same set_aim call every
     // frame, so having both on would just have them fight over height/target.
     if (state && Vars.AimNheTam) {
         Vars.AimNheTam = false;
-        ((id)_aimNheTamSwitch).on = NO;
+        [(id)_aimNheTamSwitch setOn:NO];
         [self applyCardVisualState:_aimNheTamSwitch];
     }
 }
 
 - (void)toggleAimNheTam:(UIControl *)sender {
-    BOOL state = ((id)sender).on;
+    BOOL state = [(id)sender isOn];
     [self showToast:[NSString stringWithFormat:@"%@ %@", LOC(@"aim_nhe_tam"), LOC(state ? @"on" : @"off")]];
     Vars.AimNheTam = state;
     if (state && Vars.AimHead) {
         Vars.AimHead = false;
-        ((id)_aimHeadSwitch).on = NO;
+        [(id)_aimHeadSwitch setOn:NO];
         [self applyCardVisualState:_aimHeadSwitch];
     }
 }
@@ -1564,11 +1566,11 @@ game_sdk_t *game_sdk = new game_sdk_t();
 }
 
 - (void)toggleAimPreferLowHP:(UIControl *)sender {
-    Vars.AimPreferLowHP = ((id)sender).on;
+    Vars.AimPreferLowHP = [(id)sender isOn];
 }
 
 - (void)toggleAimMagnet:(UIControl *)sender {
-    Vars.AimMagnet = ((id)sender).on;
+    Vars.AimMagnet = [(id)sender isOn];
 }
 
 - (void)aimMagnetStrengthChanged:(UISlider *)sender {
@@ -1577,7 +1579,7 @@ game_sdk_t *game_sdk = new game_sdk_t();
 }
 
 - (void)toggleShowFovCircle:(UIControl *)sender {
-    Vars.ShowFOVCircle = ((id)sender).on;
+    Vars.ShowFOVCircle = [(id)sender isOn];
 }
 
 - (void)fovCircleRadiusChanged:(UISlider *)sender {
@@ -1586,7 +1588,7 @@ game_sdk_t *game_sdk = new game_sdk_t();
 }
 
 - (void)toggleAntena:(UIControl *)sender {
-    BOOL state = ((id)sender).on;
+    BOOL state = [(id)sender isOn];
     [self showToast:[NSString stringWithFormat:@"%@ %@", LOC(@"antena"), LOC(state ? @"on" : @"off")]];
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         ModHacks::antena(state);
@@ -1594,7 +1596,7 @@ game_sdk_t *game_sdk = new game_sdk_t();
 }
 
 - (void)toggleSpeedX2:(UIControl *)sender {
-    BOOL state = ((id)sender).on;
+    BOOL state = [(id)sender isOn];
     [self showToast:[NSString stringWithFormat:@"%@ %@", LOC(@"speed_x2"), LOC(state ? @"on" : @"off")]];
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         ModHacks::speedX2(state);
@@ -1602,7 +1604,7 @@ game_sdk_t *game_sdk = new game_sdk_t();
 }
 
 - (void)toggleSpeedX8:(UIControl *)sender {
-    BOOL state = ((id)sender).on;
+    BOOL state = [(id)sender isOn];
     [self showToast:[NSString stringWithFormat:@"%@ %@", LOC(@"speed_x8"), LOC(state ? @"on" : @"off")]];
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         ModHacks::speedX8(state);
@@ -1610,7 +1612,7 @@ game_sdk_t *game_sdk = new game_sdk_t();
 }
 
 - (void)toggleNoRecoil:(UIControl *)sender {
-    BOOL state = ((id)sender).on;
+    BOOL state = [(id)sender isOn];
     [self showToast:[NSString stringWithFormat:@"%@ %@", LOC(@"no_recoil"), LOC(state ? @"on" : @"off")]];
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         ModHacks::noRecoil(state);
@@ -1618,13 +1620,13 @@ game_sdk_t *game_sdk = new game_sdk_t();
 }
 
 - (void)toggleSpinBot:(UIControl *)sender {
-    BOOL state = ((id)sender).on;
+    BOOL state = [(id)sender isOn];
     [self showToast:[NSString stringWithFormat:@"%@ %@", LOC(@"spin_bot"), LOC(state ? @"on" : @"off")]];
     Vars.SpinBot = state;
 }
 
 - (void)toggleBlockUdpPorts:(UIControl *)sender {
-    BOOL state = ((id)sender).on;
+    BOOL state = [(id)sender isOn];
     [self showToast:[NSString stringWithFormat:@"%@ %@", LOC(@"block_udp_ports"), LOC(state ? @"on" : @"off")]];
     netLogSetUdpPortBlockEnabled(state);
 }
@@ -1912,15 +1914,15 @@ game_sdk_t *game_sdk = new game_sdk_t();
 // chừng còn rủi ro hơn để nguyên). Nhỡ tay bật rồi tắt lại thì switch tự nhảy
 // ngay về ON, phản ánh đúng trạng thái thật (đã xin bật thì không rút lại được).
 - (void)toggleSpyStart:(UIControl *)sender {
-    if (((id)sender).on) {
+    if ([(id)sender isOn]) {
         DylibSpy_startMonitoring();
     } else {
-        ((id)sender).on = DylibSpy_monitoringRequested();
+        [(id)sender setOn:DylibSpy_monitoringRequested()];
     }
 }
 
 - (void)toggleSpyMemWatch:(UIControl *)sender {
-    DylibSpy_setMemWatchEnabled(((id)sender).on);
+    DylibSpy_setMemWatchEnabled([(id)sender isOn]);
 }
 
 // Cập nhật 2 khung log tab SPY - gọi định kỳ từ updateMenu (khi menu đang mở
@@ -2143,7 +2145,8 @@ static const NSInteger kCardIconTag = 9002;
 // no-op giữ cho các call site cũ không phải sửa, không còn hiệu ứng thật).
 // Checkbox vuông (DeltaCheckbox, xem khai báo đầu file) - kiểu công tắc THẬT SỰ Monite dùng cho
 // gần như mọi tính năng. Trả về UIControl* (không phải UISwitch*) - mọi action handler nhận nó
-// qua tham số (UIControl *)sender rồi đọc/ghi .on qua ép kiểu (id), xem "Mod tab toggle actions".
+// qua tham số (UIControl *)sender rồi đọc/ghi qua [(id)sender isOn]/[(id)sender setOn:...]
+// (bracket message send), xem "Mod tab toggle actions".
 - (UIControl *)addToggleCardWithLocKey:(NSString *)key symbol:(NSString *)symbolName frame:(CGRect)frame action:(SEL)action toView:(UIView *)parent {
     UIView *card = [[UIView alloc] initWithFrame:frame];
     card.backgroundColor = COLOR_CARD_BG;
@@ -2281,14 +2284,14 @@ static const NSInteger kCardIconTag = 9002;
 }
 
 #pragma mark - ESP Toggle Actions
-- (void)toggleEnable:(UIControl *)sender { Vars.Enable = ((id)sender).on; }
-- (void)toggleBox:(UIControl *)sender { Vars.Box = ((id)sender).on; }
-- (void)toggleLines:(UIControl *)sender { Vars.lines = ((id)sender).on; }
-- (void)toggleName:(UIControl *)sender { Vars.Name = ((id)sender).on; }
-- (void)toggleHealth:(UIControl *)sender { Vars.Health = ((id)sender).on; }
-- (void)toggleDistance:(UIControl *)sender { Vars.Distance = ((id)sender).on; }
-- (void)toggleSkeleton:(UIControl *)sender { Vars.skeleton = ((id)sender).on; }
-- (void)toggleCount:(UIControl *)sender { Vars.counts = ((id)sender).on; }
+- (void)toggleEnable:(UIControl *)sender { Vars.Enable = [(id)sender isOn]; }
+- (void)toggleBox:(UIControl *)sender { Vars.Box = [(id)sender isOn]; }
+- (void)toggleLines:(UIControl *)sender { Vars.lines = [(id)sender isOn]; }
+- (void)toggleName:(UIControl *)sender { Vars.Name = [(id)sender isOn]; }
+- (void)toggleHealth:(UIControl *)sender { Vars.Health = [(id)sender isOn]; }
+- (void)toggleDistance:(UIControl *)sender { Vars.Distance = [(id)sender isOn]; }
+- (void)toggleSkeleton:(UIControl *)sender { Vars.skeleton = [(id)sender isOn]; }
+- (void)toggleCount:(UIControl *)sender { Vars.counts = [(id)sender isOn]; }
 
 - (void)closeMenu { MenDeal = false; }
 
