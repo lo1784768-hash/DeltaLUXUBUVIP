@@ -2067,15 +2067,38 @@ game_sdk_t *game_sdk = new game_sdk_t();
 // Shared dark-glass styling for the few native controls (segmented controls, text
 // fields) that otherwise render with their light-theme system defaults and stick out
 // against the rest of the purple/cyan UI.
+// Ảnh 1x1 đặc màu - dùng để thay hẳn background/divider mặc định của UISegmentedControl bên
+// dưới, vì chỉ đổi backgroundColor/selectedSegmentTintColor KHÔNG đủ để bỏ dải phân cách + bóng
+// mờ hệ thống mà iOS vẫn tự vẽ - nhìn vẫn ra "control hệ thống", không phẳng như ảnh chụp thật.
+- (UIImage *)imageWithColor:(UIColor *)color {
+    CGRect rect = CGRectMake(0, 0, 1, 1);
+    UIGraphicsBeginImageContextWithOptions(rect.size, NO, 0);
+    CGContextRef ctx = UIGraphicsGetCurrentContext();
+    CGContextSetFillColorWithColor(ctx, color.CGColor);
+    CGContextFillRect(ctx, rect);
+    UIImage *img = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    return img;
+}
+
+// Viên thuốc cam đặc, không dải phân cách/bóng mờ hệ thống - đúng ảnh chụp màn hình thật của
+// Monite (mục 3l: "Luôn Bật"/"Khi Bắn/Ngắm"), khác hẳn UISegmentedControl mặc định của iOS.
 - (void)styleSegmentedControl:(UISegmentedControl *)control {
-    control.backgroundColor = COLOR_CARD_BG;
-    control.selectedSegmentTintColor = COLOR_CYAN;
-    control.layer.cornerRadius = 8.0f;
-    control.layer.borderWidth = 1.0f;
-    control.layer.borderColor = COLOR_CARD_BORDER.CGColor;
+    control.backgroundColor = [UIColor clearColor];
+    [control setBackgroundImage:[self imageWithColor:COLOR_CARD_BG] forState:UIControlStateNormal barMetrics:UIBarMetricsDefault];
+    [control setBackgroundImage:[self imageWithColor:COLOR_CYAN] forState:UIControlStateSelected barMetrics:UIBarMetricsDefault];
+    [control setBackgroundImage:[self imageWithColor:COLOR_CARD_BG] forState:UIControlStateHighlighted barMetrics:UIBarMetricsDefault];
+    UIImage *clearDivider = [self imageWithColor:[UIColor clearColor]];
+    [control setDividerImage:clearDivider forLeftSegmentState:UIControlStateNormal rightSegmentState:UIControlStateNormal barMetrics:UIBarMetricsDefault];
+    [control setDividerImage:clearDivider forLeftSegmentState:UIControlStateSelected rightSegmentState:UIControlStateNormal barMetrics:UIBarMetricsDefault];
+    [control setDividerImage:clearDivider forLeftSegmentState:UIControlStateNormal rightSegmentState:UIControlStateSelected barMetrics:UIBarMetricsDefault];
+
+    control.layer.cornerRadius = control.bounds.size.height > 0 ? control.bounds.size.height / 2.0f : 13.0f;
+    control.clipsToBounds = YES;
+
     UIFont *segFont = [UIFont systemFontOfSize:11 weight:UIFontWeightBold];
     [control setTitleTextAttributes:@{NSForegroundColorAttributeName: COLOR_TEXT_DIM, NSFontAttributeName: segFont} forState:UIControlStateNormal];
-    [control setTitleTextAttributes:@{NSForegroundColorAttributeName: [UIColor blackColor], NSFontAttributeName: segFont} forState:UIControlStateSelected];
+    [control setTitleTextAttributes:@{NSForegroundColorAttributeName: COLOR_TEXT, NSFontAttributeName: segFont} forState:UIControlStateSelected];
 }
 
 - (void)styleDarkTextField:(UITextField *)field {
