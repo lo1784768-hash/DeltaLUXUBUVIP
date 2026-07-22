@@ -24,8 +24,17 @@
 //  3. RVA 0x3D82760 lấy từ dump OB54 - nếu bản game hiện tại lệch version, Il2CppResolve sẽ tự
 //     tra theo tên trước (namespace COW, class UIModelCustomRoom, method GetMatchClientInfo,
 //     0 tham số), chỉ rơi về RVA cứng khi tra tên thất bại - xem Il2CppResolve.h.
+//
+//  DÙNG DOBBY, KHÔNG DÙNG MSHookFunction: đã test thật trên máy - MSHookFunction (Substrate)
+//  thất bại với CẢ 2 kiểu địa chỉ (tra theo tên lẫn RVA cứng) cho đúng hàm này, dù
+//  installAimMagnetHook() (ESP.h) vẫn dùng MSHookFunction bình thường cho 1 hàm KHÁC cũng nằm
+//  trong UnityFramework - khả năng cao do prologue của GetMatchClientInfo() có instruction PAC
+//  (arm64e) mà Substrate không parse được. SystemInfoSpoof.h (project này) đã tự ghi chú trước
+//  là nên dùng Dobby cho đúng trường hợp này, chỉ là chưa từng được thêm thật vào build - giờ
+//  đã copy libdobby.a/dobby.h từ FAKEMENU vào Source/Includes/Dobby/ và link qua Makefile.
 // ============================================================================
 #import "Il2CppResolve.h"
+#import "Dobby/dobby.h"
 
 typedef void *(*ORIG_GetMatchClientInfo)();
 static ORIG_GetMatchClientInfo orig_GetMatchClientInfo = NULL;
@@ -55,22 +64,15 @@ inline void installAntiReportSpoof() {
     void *target = Il2CppResolve::GetMethod("Assembly-CSharp.dll", "COW", "UIModelCustomRoom", "GetMatchClientInfo", 0);
     if (target) {
         DeltaVFS_debugLog("AntiReportSpoof: tra theo ten OK (COW.UIModelCustomRoom.GetMatchClientInfo)");
-        MSHookFunction(target, (void *)hooked_GetMatchClientInfo, (void **)&orig_GetMatchClientInfo);
-    }
-    // Nếu tra theo tên thất bại NGAY TỪ ĐẦU, hoặc tra được nhưng MSHookFunction cài hook thất
-    // bại (quan sát thấy thật trên máy - địa chỉ đọc từ MethodInfo::methodPointer qua reflection
-    // nhiều khả năng bị ký PAC trên arm64e, khác địa chỉ thô tính qua getRealOffset(RVA) - xem
-    // installAimMagnetHook() trong ESP.h, ĐÃ xác nhận hoạt động với đúng kiểu địa chỉ RVA thô
-    // này cho 1 hàm khác cũng nằm trong UnityFramework) - thử lại bằng RVA cứng.
-    if (!orig_GetMatchClientInfo) {
-        DeltaVFS_debugLogf("AntiReportSpoof: %s - thu lai bang RVA cu 0x3D82760",
-            target ? "MSHookFunction that bai voi dia chi tra theo ten" : "Il2CppResolve that bai");
-        target = (void *)getRealOffset(0x3D82760);
-        MSHookFunction(target, (void *)hooked_GetMatchClientInfo, (void **)&orig_GetMatchClientInfo);
-    }
-    if (!orig_GetMatchClientInfo) {
-        DeltaVFS_debugLog("AntiReportSpoof: MSHookFunction that bai ca 2 lan (ten lan RVA) - huy, khong sua gi ca");
     } else {
-        DeltaVFS_debugLog("AntiReportSpoof: cai hook thanh cong");
+        target = (void *)getRealOffset(0x3D82760);
+        DeltaVFS_debugLog("AntiReportSpoof: Il2CppResolve that bai, dung RVA cu 0x3D82760");
+    }
+
+    int ret = DobbyHook(target, (dobby_dummy_func_t)hooked_GetMatchClientInfo, (dobby_dummy_func_t *)&orig_GetMatchClientInfo);
+    if (ret != 0 || !orig_GetMatchClientInfo) {
+        DeltaVFS_debugLogf("AntiReportSpoof: DobbyHook that bai (ret=%d) - huy, khong sua gi ca", ret);
+    } else {
+        DeltaVFS_debugLog("AntiReportSpoof: DobbyHook cai thanh cong");
     }
 }

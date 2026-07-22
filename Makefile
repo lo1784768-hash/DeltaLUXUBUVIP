@@ -30,4 +30,11 @@ Source/Includes/Generated/mach_excServer.c:
 
 $(TWEAK_NAME)_LIBRARIES += substrate z
 
+# Dobby (Source/Includes/Dobby/) - dùng để inline-hook hàm nằm THẲNG trong UnityFramework/
+# GameAssembly (AntiReportSpoof.h) - MSHookFunction (Substrate) xác nhận KHÔNG hook được hàm đó
+# trên máy thật (test cả 2 kiểu địa chỉ: tra theo tên lẫn RVA cứng, cả 2 đều thất bại), nhiều khả
+# năng do prologue có instruction PAC (arm64e) mà Substrate không hiểu. libdobby.a là universal
+# archive có sẵn cả slice arm64 lẫn arm64e (đã kiểm tra bằng `file`), khớp ARCHS=arm64 ở trên.
+$(TWEAK_NAME)_LDFLAGS += Source/Includes/Dobby/libdobby.a
+
 include $(THEOS_MAKE_PATH)/tweak.mk
