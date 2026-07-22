@@ -62,8 +62,21 @@ static char g_deltaZipPathC[1152] = {0};
 static char g_bundlePrefixC[1024] = {0};
 static size_t g_bundlePrefixLen = 0;
 
+// CẤU TRÚC THƯ MỤC kiểu Monite (xem MoniteAnalysis/decoded_strings_final.txt: "temp_folder",
+// "contentcache") thay vì 1 thư mục phẳng duy nhất như bản cũ:
+//   g_moddedRootC        = Documents/<tên ngẫu nhiên>/            (thư mục gốc của mình)
+//   g_moddedPrefixC      = g_moddedRootC + "contentcache/"        (nội dung đã giải nén, VFS đọc từ đây)
+//   g_moddedTempFolderC  = g_moddedRootC + "temp_folder/"         (staging lúc giải nén, xem ar_extractZipEntry)
+// Tách riêng temp/content để 1 lần giải nén dở dang (crash giữa chừng) không để lại file rác lẫn
+// trong nội dung thật - chỉ cần dọn temp_folder, không đụng gì tới contentcache đang phục vụ.
+static char g_moddedRootC[1024] = {0};
+static size_t g_moddedRootLen = 0;
+
 static char g_moddedPrefixC[1024] = {0};
 static size_t g_moddedPrefixLen = 0;
+
+static char g_moddedTempFolderC[1024] = {0};
+static char g_moddedFolderNameC[64] = {0};
 
 // Documents/ THUẦN (không có tên thư mục mod nối thêm) - cần riêng để chặn ghi vào các thư mục
 // cache THẬT của game (contentcache/ImageCache/Workshop, xem ar_isUnderGameCacheFolder bên dưới),
@@ -91,15 +104,13 @@ static char g_deltaLastAnyPath[1024] = {0};
 
 // GIẢI NÉN HẾT 1 ĐỢT (bulk, giống Monite thật) TRÊN 1 PROCESS RIÊNG DÀNH CHO LẦN ĐẦU. Từng thử
 // kiểu lazy (giải nén từng file đúng lúc cần, VFS active ngay trong CÙNG process với game) nhưng
-// bỏ: nó buộc HWBreakHook (hardware breakpoint cho open(), xem HWBreakHook.h) phải sống sót qua
-// đúng lúc I/O dồn dập nhất của quá trình giải nén, và không bao giờ ổn định được sau nhiều vòng
-// debug. Quan sát Monite.dylib (đối thủ, dylib không chống bằng biện pháp tương tự) trên máy thật:
-// nó hiện popup "Please Wait", giải nén xong thì CRASH, người dùng tự mở lại app lần 2 mới chơi
-// được - tức là KHÔNG có custom hook nào cần sống sót qua giai đoạn giải nén cả, vì game (và
-// HWBreakHook) chỉ thực sự chạy ở process THỨ HAI, lúc mọi thứ đã nằm sẵn trên đĩa. Kiến trúc này
-// copy lại đúng ý đó - xem ar_ensureFirstRunChecked/DeltaVFS_runFirstRunExtraction bên dưới và
+// bỏ vì không ổn định qua nhiều vòng debug. Quan sát Monite.dylib (đối thủ) trên máy thật: nó hiện
+// popup "Please Wait", giải nén xong thì CRASH, người dùng tự mở lại app lần 2 mới chơi được - tức
+// là KHÔNG có gì cần sống sót qua giai đoạn giải nén cả, vì game chỉ thực sự chạy ở process THỨ
+// HAI, lúc mọi thứ đã nằm sẵn trên đĩa. Kiến trúc này copy lại đúng ý đó - xem
+// ar_ensureFirstRunChecked/DeltaVFS_runFirstRunExtraction bên dưới và
 // installAppDelegateLaunchGuard/showUpdatingPopupThenRelaunch trong Menu.mm.
-static char g_deltaMarkerPathC[1152] = {0};
+static char g_deltaStatePlistPathC[1152] = {0};
 static struct stat g_deltaZipStat;
 static std::atomic<bool> g_deltaNeedsFirstRun{false};
 
@@ -289,8 +300,8 @@ inline NSString *DeltaVFS_signatureSummary() {
 }
 
 // ============================================================================
-//  PHẦN 1: GIẢI NÉN DELTA.ZIP (LAZY - từng file một, đúng lúc cần, xem giải thích ở
-//  g_deltaMarkerPathC phía trên)
+//  PHẦN 1: GIẢI NÉN DELTA.ZIP (BULK, 1 process riêng cho lần đầu - xem giải thích ở
+//  g_deltaStatePlistPathC phía trên)
 // ============================================================================
 static inline uint16_t ar_rd16(const uint8_t *p) { return (uint16_t)(p[0] | (p[1] << 8)); }
 static inline uint32_t ar_rd32(const uint8_t *p) { return (uint32_t)(p[0] | (p[1] << 8) | (p[2] << 16) | ((uint32_t)p[3] << 24)); }
@@ -509,10 +520,12 @@ static bool ar_buildZipIndex(const char *zipPath) {
     return count > 0;
 }
 
-// Giải nén ĐÚNG 1 entry (theo index trong g_arZipEntries) ra destPath. Ghi vào file tạm rồi
-// rename() sang tên thật - tránh trường hợp 1 thread khác đọc phải file đang ghi dở nếu 2 thread
-// cùng lúc yêu cầu file này lần đầu (rename() là atomic trên cùng 1 filesystem).
-static bool ar_extractZipEntry(int idx, const char *destPath) {
+// Giải nén ĐÚNG 1 entry (theo index trong g_arZipEntries) ra destPath. Ghi vào file tạm trong
+// tempDirC (kiểu Monite: "temp_folder/" riêng, TÁCH khỏi contentcache/ đang phục vụ - xem
+// g_moddedTempFolderC) rồi rename() sang tên thật trong destPath - tránh trường hợp 1 thread khác
+// đọc phải file đang ghi dở, và đảm bảo 1 lần giải nén dở dang (crash giữa chừng) chỉ để lại rác
+// trong temp_folder/, không lẫn vào contentcache/ thật.
+static bool ar_extractZipEntry(int idx, const char *destPath, const char *tempDirC) {
     if (idx < 0 || idx >= g_arZipEntryCount || !g_arZipBase) return false;
     ArZipEntry &ent = g_arZipEntries[idx];
 
@@ -539,7 +552,7 @@ static bool ar_extractZipEntry(int idx, const char *destPath) {
     if (slash) { *slash = '\0'; ar_mkpath(parent); }
 
     char tmpPath[2200];
-    snprintf(tmpPath, sizeof(tmpPath), "%s.part%d.%lu", destPath, (int)getpid(),
+    snprintf(tmpPath, sizeof(tmpPath), "%s.delta_tmp_%d_%lu", tempDirC, (int)getpid(),
               g_arTmpCounter.fetch_add(1, std::memory_order_relaxed));
 
     int outFd = open(tmpPath, O_WRONLY | O_CREAT | O_TRUNC, 0644);
@@ -597,50 +610,79 @@ static ArEntryStatus ar_extractOneEntryIfNeeded(const char *destPath, const char
     return AR_ENTRY_NOT_MODDED; // không có trong Delta.zip - không phải lỗi, chỉ là file này không được mod
 }
 
-// "bulk1:" prefix CỐ Ý khác định dạng marker cũ ("%lld:%lld" trần, từng dùng cho cả bản lazy lẫn
-// bulk trước đây) - máy đã test qua bản lazy-extraction (session trước khi revert lại bulk) vẫn
-// còn marker cũ khớp mtime:size hiện tại nhưng Delta/ thực tế gần như trống (lazy chỉ giải nén
-// đúng vài file trước khi crash). Đổi định dạng để marker cũ LUÔN bị coi là stale, buộc giải nén
-// bulk đầy đủ lại từ đầu đúng 1 lần, thay vì tin nhầm "đã xong" và để redirect miss 100%.
-static bool ar_needExtract(const char *markerPath, const struct stat *zipSt) {
-    int fd = open(markerPath, O_RDONLY);
-    if (fd < 0) return true;
-    char buf[128];
-    ssize_t n = read(fd, buf, sizeof(buf) - 1);
-    close(fd);
-    if (n <= 0) return true;
-    buf[n] = '\0';
-    char expected[128];
-    snprintf(expected, sizeof(expected), "bulk1:%lld:%lld", (long long)zipSt->st_mtime, (long long)zipSt->st_size);
-    return strcmp(buf, expected) != 0;
-}
-// Returns false if the marker could not be written (e.g. bundle dir not writable).
-static bool ar_writeMarker(const char *markerPath, const struct stat *zipSt) {
-    int fd = open(markerPath, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (fd < 0) {
-        DeltaVFS_debugLogf("ar_writeMarker: ABORT open(marker) failed path=%s errno=%d", markerPath, errno);
-        return false;
+// TRẠNG THÁI kiểu Monite: plist với "status": "extracting"/"complete" (xem
+// MoniteAnalysis/decoded_strings_final.txt) thay vì 1 marker text phẳng. Lợi thế so với marker cũ
+// (chỉ có mtime:size) - phân biệt được 2 tình huống hoàn toàn khác nhau:
+//   - status vẫn còn "extracting" lúc app mở lại -> lần TRƯỚC đã CRASH GIỮA CHỪNG lúc đang giải
+//     nén (đúng hành vi Monite thật quan sát được: unzip xong rồi crash, mở lại app lần 2 mới vào
+//     được) -> ar_stateNeedsExtract() vẫn trả true đúng như marker cũ, NHƯNG giờ còn phân biệt
+//     được để set thêm cờ dọn dẹp (xem DELTA_PENDING_CLEANUP_DEFAULTS_KEY) thay vì chỉ im lặng
+//     giải nén lại.
+//   - status "complete" nhưng zip_marker không khớp Delta.zip hiện tại -> Delta.zip đã đổi, cần
+//     giải nén lại bình thường (giống hệt marker cũ).
+#define DELTA_STATE_KEY_STATUS   @"status"
+#define DELTA_STATE_KEY_FOLDER   @"folder"
+#define DELTA_STATE_KEY_ZIPMARK  @"zip_marker"
+#define DELTA_STATE_STATUS_EXTRACTING @"extracting"
+#define DELTA_STATE_STATUS_COMPLETE   @"complete"
+
+// Cờ "cần dọn dẹp lại từ đầu" kiểu Monite (tên key giả trang tương tự
+// DELTA_FOLDER_NAME_DEFAULTS_KEY ở trên) - lưu trong NSUserDefaults (không nằm trong Documents/,
+// không lộ qua Files app), được set khi ar_ensureFirstRunChecked() phát hiện status còn dang dở
+// "extracting" từ lần chạy trước, và được tiêu thụ/xoá ngay ở đầu DeltaVFS_runFirstRunExtraction().
+#define DELTA_PENDING_CLEANUP_DEFAULTS_KEY @"com.apple.cache.mrk"
+
+// Notification post lúc giải nén xong (kiểu MoniteUnzipCompletedNotification) - hiện KHÔNG có ai
+// observe (Menu.mm dùng completion block ở DeltaVFS_runFirstRunExtraction để relaunch, không cần
+// notification), chỉ post thêm cho khớp kiến trúc Monite/dễ gắn thêm observer sau này nếu cần.
+#define DELTA_EXTRACTION_COMPLETE_NOTIFICATION @"com.apple.assetcache.completed"
+
+// nil nếu chưa từng chạy (chưa có file) hoặc plist hỏng/đọc không ra dict.
+inline NSDictionary *ar_stateLoad(const char *plistPathC) {
+    @autoreleasepool {
+        NSString *path = [NSString stringWithUTF8String:plistPathC];
+        return [NSDictionary dictionaryWithContentsOfFile:path];
     }
-    char buf[128];
-    int w = snprintf(buf, sizeof(buf), "bulk1:%lld:%lld", (long long)zipSt->st_mtime, (long long)zipSt->st_size);
-    ssize_t written = write(fd, buf, w);
-    close(fd);
-    if (written != w) {
-        DeltaVFS_debugLogf("ar_writeMarker: ABORT write() incomplete wrote=%zd expected=%d errno=%d", written, w, errno);
-        return false;
-    }
-    DeltaVFS_debugLogf("ar_writeMarker: OK wrote marker to %s", markerPath);
-    return true;
 }
 
-// Kiểm tra TỪNG file trong Delta.zip có thực sự tồn tại trên đĩa (Documents/<hash>/...) hay không -
-// KHÔNG chỉ tin marker mtime/size của zip như ar_needExtract() ở trên. Lý do thêm hàm này: đối
-// chiếu hành vi THẬT của Monite trên máy (xoá/đổi tên 1 file/folder ĐÃ giải nén, KHÔNG đụng gì
-// tới file zip nguồn) - app của họ vẫn phát hiện ra và tự hiện lại popup "Please Wait" để giải
-// nén lại, chứng tỏ họ kiểm tra kỹ hơn 1 marker đơn thuần. Marker của mình trước đây chỉ so
-// mtime/size của CHÍNH Delta.zip - đổi tên 1 file lẻ bên trong Delta/ không đụng gì tới Delta.zip
-// nên marker vẫn khớp, ar_needExtract() vẫn trả false (tưởng đã ổn) - không tự phát hiện/sửa được
-// kiểu tampering đó. Hàm này lấp đúng lỗ hổng này.
+// folderNameC là tên thư mục ngẫu nhiên hiện tại (ar_getOrCreateModdedFolderName) - lưu lại trong
+// state chỉ để dễ đối chiếu lúc đọc log/debug qua Files app, VFS không dựa vào field này để hoạt động.
+inline bool ar_stateSave(const char *plistPathC, NSString *status, const char *folderNameC, const struct stat *zipSt) {
+    @autoreleasepool {
+        NSString *zipMarker = [NSString stringWithFormat:@"%lld:%lld", (long long)zipSt->st_mtime, (long long)zipSt->st_size];
+        NSDictionary *dict = @{
+            DELTA_STATE_KEY_STATUS:  status,
+            DELTA_STATE_KEY_FOLDER:  folderNameC ? [NSString stringWithUTF8String:folderNameC] : @"",
+            DELTA_STATE_KEY_ZIPMARK: zipMarker,
+        };
+        NSString *path = [NSString stringWithUTF8String:plistPathC];
+        BOOL ok = [dict writeToFile:path atomically:YES];
+        if (!ok) {
+            DeltaVFS_debugLogf("ar_stateSave: FAILED write plist path=%s status=%s", plistPathC, status.UTF8String);
+        } else {
+            DeltaVFS_debugLogf("ar_stateSave: OK path=%s status=%s", plistPathC, status.UTF8String);
+        }
+        return ok == YES;
+    }
+}
+
+// true nếu chưa từng giải nén, dở dang, hoặc Delta.zip đã đổi so với lần "complete" gần nhất.
+inline bool ar_stateNeedsExtract(NSDictionary *state, const struct stat *zipSt) {
+    if (!state) return true;
+    NSString *status = state[DELTA_STATE_KEY_STATUS];
+    if (![status isEqualToString:DELTA_STATE_STATUS_COMPLETE]) return true;
+    NSString *expected = [NSString stringWithFormat:@"%lld:%lld", (long long)zipSt->st_mtime, (long long)zipSt->st_size];
+    return ![state[DELTA_STATE_KEY_ZIPMARK] isEqualToString:expected];
+}
+
+// Kiểm tra TỪNG file trong Delta.zip có thực sự tồn tại trên đĩa (Documents/<hash>/contentcache/...)
+// hay không - KHÔNG chỉ tin zip_marker (mtime:size) trong state.plist như ar_stateNeedsExtract() ở
+// trên. Lý do thêm hàm này: đối chiếu hành vi THẬT của Monite trên máy (xoá/đổi tên 1 file/folder
+// ĐÃ giải nén, KHÔNG đụng gì tới file zip nguồn) - app của họ vẫn phát hiện ra và tự hiện lại popup
+// "Please Wait" để giải nén lại, chứng tỏ họ kiểm tra kỹ hơn 1 marker đơn thuần. zip_marker chỉ so
+// mtime/size của CHÍNH Delta.zip - đổi tên 1 file lẻ bên trong contentcache/ không đụng gì tới
+// Delta.zip nên zip_marker vẫn khớp, ar_stateNeedsExtract() vẫn trả false (tưởng đã ổn) - không tự
+// phát hiện/sửa được kiểu tampering đó. Hàm này lấp đúng lỗ hổng này.
 //
 // Chi phí: build index (đọc central directory, KHÔNG giải nén gì) rồi access() từng entry - vài
 // nghìn syscall access() rất nhanh (micro-giây/lần), chấp nhận được vì chỉ chạy ĐÚNG 1 LẦN lúc
@@ -698,9 +740,19 @@ inline void ar_ensureFirstRunChecked() {
                 strncpy(g_documentsPrefixC, [[documentsDir stringByAppendingString:@"/"] UTF8String], sizeof(g_documentsPrefixC) - 1);
                 g_documentsPrefixLen = strlen(g_documentsPrefixC);
                 NSString *folderName = ar_getOrCreateModdedFolderName();
-                NSString *moddedDataDir = [[documentsDir stringByAppendingPathComponent:folderName] stringByAppendingString:@"/"];
-                strncpy(g_moddedPrefixC, [moddedDataDir UTF8String], sizeof(g_moddedPrefixC) - 1);
+                strncpy(g_moddedFolderNameC, [folderName UTF8String], sizeof(g_moddedFolderNameC) - 1);
+
+                // 3 tầng thư mục kiểu Monite - xem giải thích ở khai báo g_moddedRootC phía trên.
+                NSString *moddedRootDir = [[documentsDir stringByAppendingPathComponent:folderName] stringByAppendingString:@"/"];
+                strncpy(g_moddedRootC, [moddedRootDir UTF8String], sizeof(g_moddedRootC) - 1);
+                g_moddedRootLen = strlen(g_moddedRootC);
+
+                NSString *contentCacheDir = [moddedRootDir stringByAppendingString:@"contentcache/"];
+                strncpy(g_moddedPrefixC, [contentCacheDir UTF8String], sizeof(g_moddedPrefixC) - 1);
                 g_moddedPrefixLen = strlen(g_moddedPrefixC);
+
+                NSString *tempFolderDir = [moddedRootDir stringByAppendingString:@"temp_folder/"];
+                strncpy(g_moddedTempFolderC, [tempFolderDir UTF8String], sizeof(g_moddedTempFolderC) - 1);
 
                 NSString *zipPath = [bundlePath stringByAppendingString:@"/" DELTA_ZIP_BUNDLE_NAME];
                 strncpy(g_deltaZipPathC, [zipPath UTF8String], sizeof(g_deltaZipPathC) - 1);
@@ -714,6 +766,7 @@ inline void ar_ensureFirstRunChecked() {
         if (stat(g_deltaZipPathC, &g_deltaZipStat) == 0) {
             g_deltaZipFound.store(true, std::memory_order_relaxed);
             DeltaVFS_debugLogf("ar_ensureFirstRunChecked: Delta.zip found, size=%lld mtime=%lld", (long long)g_deltaZipStat.st_size, (long long)g_deltaZipStat.st_mtime);
+            ar_mkpath(g_moddedRootC);
             ar_mkpath(g_moddedPrefixC);
             {
                 // Does Documents/hash actually let us create/write? Keep this canary check -
@@ -730,19 +783,31 @@ inline void ar_ensureFirstRunChecked() {
                     dirExists, canaryWritable, canaryWritable ? 0 : canaryErrno, canaryWritable ? "" : strerror(canaryErrno));
 
                 // Exclude from iCloud/iTunes backup - regenerable data (re-extracted from
-                // Delta.zip on demand), no reason to bloat the user's device backup.
+                // Delta.zip on demand), no reason to bloat the user's device backup. Loại trừ
+                // CẢ THƯ MỤC GỐC (root), không chỉ contentcache/, vì temp_folder/ cũng là dữ liệu
+                // tạm không cần backup.
                 if (dirExists) {
                     @autoreleasepool {
-                        NSURL *deltaURL = [NSURL fileURLWithPath:[NSString stringWithUTF8String:g_moddedPrefixC] isDirectory:YES];
+                        NSURL *rootURL = [NSURL fileURLWithPath:[NSString stringWithUTF8String:g_moddedRootC] isDirectory:YES];
                         NSError *excludeErr = nil;
-                        [deltaURL setResourceValue:@YES forKey:NSURLIsExcludedFromBackupKey error:&excludeErr];
+                        [rootURL setResourceValue:@YES forKey:NSURLIsExcludedFromBackupKey error:&excludeErr];
                     }
                 }
             }
 
-            snprintf(g_deltaMarkerPathC, sizeof(g_deltaMarkerPathC), "%s.state", g_moddedPrefixC);
+            snprintf(g_deltaStatePlistPathC, sizeof(g_deltaStatePlistPathC), "%s.state.plist", g_moddedRootC);
+            NSDictionary *priorState = ar_stateLoad(g_deltaStatePlistPathC);
 
-            if (ar_needExtract(g_deltaMarkerPathC, &g_deltaZipStat)) {
+            if ([priorState[DELTA_STATE_KEY_STATUS] isEqualToString:DELTA_STATE_STATUS_EXTRACTING]) {
+                // status vẫn "extracting" từ lần chạy trước -> lần đó đã CRASH GIỮA CHỪNG lúc đang
+                // giải nén (đúng hành vi Monite thật: unzip xong crash, mở lại app lần 2 mới vào
+                // được). Set cờ dọn dẹp kiểu Monite - DeltaVFS_runFirstRunExtraction() sẽ đọc và
+                // xoá cờ này lúc dọn temp_folder/contentcache trước khi giải nén lại từ đầu.
+                DeltaVFS_debugLog("ar_ensureFirstRunChecked: state 'extracting' dở dang từ lần trước (crash giữa chừng) - set cờ dọn dẹp");
+                [[NSUserDefaults standardUserDefaults] setBool:YES forKey:DELTA_PENDING_CLEANUP_DEFAULTS_KEY];
+            }
+
+            if (ar_stateNeedsExtract(priorState, &g_deltaZipStat)) {
                 // Delta.zip đổi (hoặc chưa từng chạy) so với lần trước - đây là process "lần đầu".
                 // KHÔNG giải nén gì ở đây (hàm này phải nhanh - gọi từ constructor, chặn dyld nếu
                 // chậm). Chỉ báo hiệu qua g_deltaNeedsFirstRun; Menu.mm sẽ hiện popup rồi gọi
@@ -752,19 +817,19 @@ inline void ar_ensureFirstRunChecked() {
                 g_deltaExtractRan.store(true, std::memory_order_relaxed);
                 g_deltaNeedsFirstRun.store(true, std::memory_order_relaxed);
             } else if (ar_verifyAllFilesPresent(g_deltaZipPathC)) {
-                // Marker khớp VÀ từng file thực sự còn nguyên trên đĩa (xem ar_verifyAllFilesPresent
-                // - đối chiếu hành vi thật của Monite: chỉ tin marker thôi không đủ, ai đó xoá/đổi
-                // tên 1 file lẻ trong Delta/ thì marker vẫn khớp nhưng thực tế đã thiếu). Index vừa
-                // build được GIỮ LẠI (không tốn công build lại) - ar_extractOneEntryIfNeeded() từ
-                // giờ có thêm khả năng TỰ VÁ nếu 1 file lẻ nào đó biến mất giữa lúc đang chơi, không
-                // chỉ existence-check đơn thuần như trước.
+                // state "complete" khớp VÀ từng file thực sự còn nguyên trên đĩa (xem
+                // ar_verifyAllFilesPresent - đối chiếu hành vi thật của Monite: chỉ tin state thôi
+                // không đủ, ai đó xoá/đổi tên 1 file lẻ trong contentcache/ thì state vẫn "complete"
+                // nhưng thực tế đã thiếu). Index vừa build được GIỮ LẠI (không tốn công build lại) -
+                // ar_extractOneEntryIfNeeded() từ giờ có thêm khả năng TỰ VÁ nếu 1 file lẻ nào đó
+                // biến mất giữa lúc đang chơi, không chỉ existence-check đơn thuần như trước.
                 g_deltaActive.store(true, std::memory_order_relaxed);
-                DeltaVFS_debugLog("ar_ensureFirstRunChecked: marker khớp + đủ file - VFS active ngay");
+                DeltaVFS_debugLog("ar_ensureFirstRunChecked: state complete + đủ file - VFS active ngay");
             } else {
-                // Marker khớp NHƯNG thiếu ít nhất 1 file thật (bị xoá/đổi tên...) - coi như cần
+                // state "complete" NHƯNG thiếu ít nhất 1 file thật (bị xoá/đổi tên...) - coi như cần
                 // giải nén lại từ đầu, ĐÚNG hành vi Monite thể hiện qua popup "Please Wait" khi
                 // user cố tình đổi tên/xoá file trong Delta/ (không đụng gì tới Delta.zip nguồn).
-                DeltaVFS_debugLog("ar_ensureFirstRunChecked: marker khớp nhưng THIẾU file thật - coi như cần giải nén lần đầu (process này sẽ popup rồi thoát)");
+                DeltaVFS_debugLog("ar_ensureFirstRunChecked: state complete nhưng THIẾU file thật - coi như cần giải nén lần đầu (process này sẽ popup rồi thoát)");
                 g_deltaExtractRan.store(true, std::memory_order_relaxed);
                 g_deltaNeedsFirstRun.store(true, std::memory_order_relaxed);
             }
@@ -786,17 +851,32 @@ inline bool DeltaVFS_needsFirstRunExtraction() {
 // Trong lúc này redirectAllTrafficPath() vẫn để nguyên path gốc (g_deltaActive còn false) - dù
 // thực tế game sẽ không bao giờ chạy tới đó trong process này (bị installAppDelegateLaunchGuard
 // chặn từ trước khi didFinishLaunching thật sự chạy).
-// completion(success) - success=false nếu không file nào được ghi hoặc marker không ghi được.
-// Caller (Menu.mm) TUYỆT ĐỐI KHÔNG được abort()/crash khi failure: marker chưa ghi thì relaunch
-// nào cũng lại detect "cần giải nén" rồi lặp vô hạn không cách nào biết vì sao (RAM log mất, log
-// trên đĩa cần Filza/Mac không có).
+// completion(success) - success=false nếu không file nào được ghi hoặc state "complete" không ghi
+// được. Caller (Menu.mm) TUYỆT ĐỐI KHÔNG được abort()/crash khi failure: state chưa ghi "complete"
+// thì relaunch nào cũng lại detect "cần giải nén" rồi lặp vô hạn không cách nào biết vì sao (RAM
+// log mất, log trên đĩa cần Filza/Mac không có).
 inline void DeltaVFS_runFirstRunExtraction(void (^completion)(BOOL success)) {
     DeltaVFS_debugLog("runFirstRunExtraction: dispatching to background queue");
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        // Delta.zip đổi so với lần trước (hoặc cài mới) - dọn sạch cache cũ 1 lần trước khi giải
-        // nén lại từ đầu, tránh lẫn file cũ/thiếu đồng bộ với bản Delta.zip hiện tại.
-        DeltaVFS_debugLog("runFirstRunExtraction: xoá cache cũ (nếu có) rồi tạo lại thư mục đích");
+        // Ghi status="extracting" NGAY LẬP TỨC, trước khi đụng tới bất kỳ file nào - nếu process
+        // này crash giữa chừng (đúng hành vi Monite thật quan sát được), lần chạy sau đọc state ra
+        // vẫn thấy "extracting" (không phải "complete" cũ hay hoàn toàn không có) nên biết chắc
+        // phải giải nén lại từ đầu (xem ar_stateNeedsExtract) thay vì tưởng nhầm đã xong.
+        ar_stateSave(g_deltaStatePlistPathC, DELTA_STATE_STATUS_EXTRACTING, g_moddedFolderNameC, &g_deltaZipStat);
+
+        bool pendingCleanup = [[NSUserDefaults standardUserDefaults] boolForKey:DELTA_PENDING_CLEANUP_DEFAULTS_KEY];
+        if (pendingCleanup) {
+            DeltaVFS_debugLog("runFirstRunExtraction: tiêu thụ cờ dọn dẹp (lần trước crash giữa chừng) - xoá cả temp_folder lẫn contentcache trước khi giải nén lại");
+            [[NSUserDefaults standardUserDefaults] removeObjectForKey:DELTA_PENDING_CLEANUP_DEFAULTS_KEY];
+        }
+
+        // Delta.zip đổi so với lần trước (hoặc cài mới, hoặc đang dọn dẹp sau crash) - dọn sạch cả
+        // temp_folder/ (rác giải nén dở dang) lẫn contentcache/ (nội dung cũ) rồi tạo lại từ đầu,
+        // tránh lẫn file cũ/thiếu đồng bộ với bản Delta.zip hiện tại.
+        DeltaVFS_debugLog("runFirstRunExtraction: xoá cache cũ (nếu có) rồi tạo lại temp_folder/ + contentcache/");
+        ar_rmrf(g_moddedTempFolderC);
         ar_rmrf(g_moddedPrefixC);
+        ar_mkpath(g_moddedTempFolderC);
         ar_mkpath(g_moddedPrefixC);
 
         DeltaVFS_debugLog("runFirstRunExtraction: build zip index");
@@ -810,7 +890,7 @@ inline void DeltaVFS_runFirstRunExtraction(void (^completion)(BOOL success)) {
                 const char *relative = g_arZipEntries[i].name;
                 int written = snprintf(destPath, sizeof(destPath), "%s%s", g_moddedPrefixC, relative);
                 if (written < 0 || written >= (int)sizeof(destPath)) { allOK = false; continue; }
-                if (ar_extractZipEntry(i, destPath)) {
+                if (ar_extractZipEntry(i, destPath, g_moddedTempFolderC)) {
                     filesWritten++;
                 } else {
                     allOK = false;
@@ -821,12 +901,22 @@ inline void DeltaVFS_runFirstRunExtraction(void (^completion)(BOOL success)) {
             }
         }
 
-        bool markerOK = allOK && ar_writeMarker(g_deltaMarkerPathC, &g_deltaZipStat);
-        bool success = markerOK && filesWritten > 0;
-        DeltaVFS_debugLogf("runFirstRunExtraction: filesWritten=%u allOK=%d markerOK=%d success=%d", filesWritten, allOK, markerOK, success);
+        // temp_folder/ chỉ dùng để staging lúc giải nén (xem ar_extractZipEntry) - dọn sạch ngay
+        // sau khi xong, không để rác (dù rename() đã chuyển hết file hợp lệ sang contentcache/,
+        // 1 entry lỗi giữa chừng vẫn có thể để lại .delta_tmp_* mồ côi).
+        ar_rmrf(g_moddedTempFolderC);
+
+        bool extractedOK = allOK && filesWritten > 0;
+        NSString *finalStatus = extractedOK ? DELTA_STATE_STATUS_COMPLETE : DELTA_STATE_STATUS_EXTRACTING;
+        bool stateOK = ar_stateSave(g_deltaStatePlistPathC, finalStatus, g_moddedFolderNameC, &g_deltaZipStat);
+        bool success = extractedOK && stateOK;
+        DeltaVFS_debugLogf("runFirstRunExtraction: filesWritten=%u allOK=%d stateOK=%d success=%d", filesWritten, allOK, stateOK, success);
         if (success) {
             g_deltaActive.store(true, std::memory_order_relaxed);
             g_deltaNeedsFirstRun.store(false, std::memory_order_relaxed);
+            @autoreleasepool {
+                [[NSNotificationCenter defaultCenter] postNotificationName:DELTA_EXTRACTION_COMPLETE_NOTIFICATION object:nil];
+            }
         }
         if (completion) dispatch_async(dispatch_get_main_queue(), ^{ completion(success); });
     });
