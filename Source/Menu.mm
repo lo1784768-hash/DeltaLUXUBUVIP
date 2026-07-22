@@ -120,6 +120,91 @@ static NSString *LOC(NSString *key) {
     return isEnglishMode ? pair[1] : pair[0];
 }
 
+// ============================================================================
+//  Checkbox vuông bo góc - đúng kiểu công tắc Monite dùng cho gần như mọi tính năng (khác 2 mục
+//  "Chế độ Stream"/"Màu nhấn" ở tab Cài Đặt, vẫn dùng UISwitch tròn thật, xem
+//  addPillToggleCardWithLocKey: bên dưới). Đặt tên property/method giống hệt UISwitch
+//  (on/isOn/setOn:animated:) CỐ Ý - toàn bộ action handler cũ (toggleBox:/toggleAimHead:/...) chỉ
+//  cần đổi kiểu tham số sang UIControl* + ép (id) khi đọc/ghi .on, KHÔNG cần viết lại logic, vì
+//  Objective-C tìm property theo tên trên biểu thức kiểu id bất kể lớp thật là gì lúc runtime.
+// ============================================================================
+@interface DeltaCheckbox : UIControl
+@property (nonatomic, getter=isOn) BOOL on;
+- (void)setOn:(BOOL)on animated:(BOOL)animated;
+@end
+
+@implementation DeltaCheckbox {
+    CALayer *_fillLayer;
+    CAShapeLayer *_checkLayer;
+}
+
+- (instancetype)initWithFrame:(CGRect)frame {
+    self = [super initWithFrame:frame];
+    if (self) {
+        self.backgroundColor = [UIColor clearColor];
+
+        _fillLayer = [CALayer layer];
+        _fillLayer.cornerRadius = 6.0f;
+        _fillLayer.borderWidth = 1.5f;
+        [self.layer addSublayer:_fillLayer];
+
+        _checkLayer = [CAShapeLayer layer];
+        _checkLayer.fillColor = nil;
+        _checkLayer.strokeColor = [UIColor colorWithWhite:0.08 alpha:1.0].CGColor;
+        _checkLayer.lineWidth = 2.2f;
+        _checkLayer.lineCap = kCALineCapRound;
+        _checkLayer.lineJoin = kCALineJoinRound;
+        [self.layer addSublayer:_checkLayer];
+
+        [self addTarget:self action:@selector(handleTap) forControlEvents:UIControlEventTouchUpInside];
+        [self updateAppearanceAnimated:NO];
+    }
+    return self;
+}
+
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    _fillLayer.frame = self.bounds;
+
+    CGFloat w = self.bounds.size.width, h = self.bounds.size.height;
+    UIBezierPath *check = [UIBezierPath bezierPath];
+    [check moveToPoint:CGPointMake(w * 0.24f, h * 0.54f)];
+    [check addLineToPoint:CGPointMake(w * 0.42f, h * 0.72f)];
+    [check addLineToPoint:CGPointMake(w * 0.78f, h * 0.28f)];
+    _checkLayer.path = check.CGPath;
+}
+
+- (void)setOn:(BOOL)on {
+    [self setOn:on animated:NO];
+}
+
+- (void)setOn:(BOOL)on animated:(BOOL)animated {
+    _on = on;
+    [self updateAppearanceAnimated:animated];
+}
+
+- (void)updateAppearanceAnimated:(BOOL)animated {
+    __weak DeltaCheckbox *weakSelf = self;
+    void (^apply)(void) = ^{
+        __strong DeltaCheckbox *self2 = weakSelf;
+        if (!self2) return;
+        self2->_fillLayer.backgroundColor = (self2.isOn ? COLOR_CYAN : [UIColor clearColor]).CGColor;
+        self2->_fillLayer.borderColor = (self2.isOn ? COLOR_CYAN : [UIColor colorWithWhite:1.0 alpha:0.3]).CGColor;
+        self2->_checkLayer.opacity = self2.isOn ? 1.0f : 0.0f;
+    };
+    [CATransaction begin];
+    if (!animated) [CATransaction setDisableActions:YES];
+    apply();
+    [CATransaction commit];
+}
+
+- (void)handleTap {
+    [self setOn:!self.isOn animated:YES];
+    [self sendActionsForControlEvents:UIControlEventValueChanged];
+}
+
+@end
+
 @interface DeltaMenu : NSObject <UITextFieldDelegate, UIGestureRecognizerDelegate>
 
 // First-run extraction flow - declared here (not just defined later in @implementation) vì các
@@ -142,16 +227,16 @@ static NSString *LOC(NSString *key) {
 @property (nonatomic, strong) NSArray<UIView *> *navAccentBars;
 @property (nonatomic, strong) NSArray<UIView *> *tabPages;
 
-// ESP tab
-@property (nonatomic, strong) UISwitch *enableSwitch;
-@property (nonatomic, strong) UISwitch *boxSwitch;
-@property (nonatomic, strong) UISwitch *linesSwitch;
-@property (nonatomic, strong) UISwitch *nameSwitch;
-@property (nonatomic, strong) UISwitch *healthSwitch;
-@property (nonatomic, strong) UISwitch *distanceSwitch;
-@property (nonatomic, strong) UISwitch *skeletonSwitch;
-@property (nonatomic, strong) UISwitch *countSwitch;
-@property (nonatomic, strong) UISwitch *showFovCircleSwitch;
+// ESP tab - UIControl* thay UISwitch* (chứa DeltaCheckbox vuông, xem addToggleCardWithLocKey:)
+@property (nonatomic, strong) UIControl *enableSwitch;
+@property (nonatomic, strong) UIControl *boxSwitch;
+@property (nonatomic, strong) UIControl *linesSwitch;
+@property (nonatomic, strong) UIControl *nameSwitch;
+@property (nonatomic, strong) UIControl *healthSwitch;
+@property (nonatomic, strong) UIControl *distanceSwitch;
+@property (nonatomic, strong) UIControl *skeletonSwitch;
+@property (nonatomic, strong) UIControl *countSwitch;
+@property (nonatomic, strong) UIControl *showFovCircleSwitch;
 @property (nonatomic, strong) UISlider *fovCircleSlider;
 @property (nonatomic, strong) UILabel *fovCircleLabel;
 
@@ -159,19 +244,19 @@ static NSString *LOC(NSString *key) {
 @property (nonatomic, strong) UIView *modMainView;
 @property (nonatomic, strong) UIView *modGocView;
 @property (nonatomic, strong) UIView *modModView;
-@property (nonatomic, strong) UISwitch *aimHeadSwitch;
-@property (nonatomic, strong) UISwitch *aimNheTamSwitch;
+@property (nonatomic, strong) UIControl *aimHeadSwitch;
+@property (nonatomic, strong) UIControl *aimNheTamSwitch;
 @property (nonatomic, strong) UISegmentedControl *aimModeControl;
-@property (nonatomic, strong) UISwitch *aimPreferLowHPSwitch;
-@property (nonatomic, strong) UISwitch *aimMagnetSwitch;
+@property (nonatomic, strong) UIControl *aimPreferLowHPSwitch;
+@property (nonatomic, strong) UIControl *aimMagnetSwitch;
 @property (nonatomic, strong) UISlider *aimMagnetStrengthSlider;
 @property (nonatomic, strong) UILabel *aimMagnetStrengthLabel;
-@property (nonatomic, strong) UISwitch *antenaSwitch;
-@property (nonatomic, strong) UISwitch *speedX2Switch;
-@property (nonatomic, strong) UISwitch *speedX8Switch;
-@property (nonatomic, strong) UISwitch *noRecoilSwitch;
-@property (nonatomic, strong) UISwitch *spinBotSwitch;
-@property (nonatomic, strong) UISwitch *blockUdpPortsSwitch;
+@property (nonatomic, strong) UIControl *antenaSwitch;
+@property (nonatomic, strong) UIControl *speedX2Switch;
+@property (nonatomic, strong) UIControl *speedX8Switch;
+@property (nonatomic, strong) UIControl *noRecoilSwitch;
+@property (nonatomic, strong) UIControl *spinBotSwitch;
+@property (nonatomic, strong) UIControl *blockUdpPortsSwitch;
 @property (nonatomic, strong) UISlider *spinSpeedSlider;
 @property (nonatomic, strong) UILabel *spinSpeedLabel;
 @property (nonatomic, assign) BOOL hasSelectedGoc;
@@ -187,8 +272,8 @@ static NSString *LOC(NSString *key) {
 @property (nonatomic, strong) UITextView *missedFilesView;
 
 // Spy tab (dõi dylib B - gọi hàm nào, sửa bộ nhớ đâu, xem DylibSpy.h)
-@property (nonatomic, strong) UISwitch *spyStartSwitch;
-@property (nonatomic, strong) UISwitch *spyMemWatchSwitch;
+@property (nonatomic, strong) UIControl *spyStartSwitch;
+@property (nonatomic, strong) UIControl *spyMemWatchSwitch;
 @property (nonatomic, strong) UITextView *spyCallLogView;
 @property (nonatomic, strong) UITextView *spyMemLogView;
 
@@ -476,19 +561,19 @@ game_sdk_t *game_sdk = new game_sdk_t();
     _modNames = @[@"AK LV7", @"XM8 LV7", @"UMP LV7", @"AN94 LV7", @"MP40 LV7", @"MP40 LV8", @"M1014 LV8", @"M1887 LV7"];
     _modHexes = @[@"909000063", @"909000085", @"909000098", @"909035012", @"909000075", @"909040010", @"909039011", @"909035007"];
 
-    CGFloat menuWidth = 460;
-    // 360 thay vì 340 cũ - sidebar giờ có 6 mục (thêm "Info" ở dưới cùng), 340 làm mục cuối
-    // tràn khỏi menuView (52 + 6*(46+3) = 346 > 340).
+    // Kích thước/tỉ lệ rộng hơn hẳn bản 460x340 cũ - gần với dáng panel ngang thấy trong ảnh
+    // chụp màn hình thật của Monite (mục 3l), thay vì 1 khung vuông nhỏ kiểu popup tiện ích.
+    CGFloat menuWidth = 560;
     CGFloat menuHeight = 360;
-    CGFloat sidebarWidth = 72;
+    CGFloat sidebarWidth = 84;
     CGFloat x = (kWidth - menuWidth) * 0.5f;
     CGFloat y = (kHeight - menuHeight) * 0.5f;
 
     _menuView = [[UIView alloc] initWithFrame:CGRectMake(x, y, menuWidth, menuHeight)];
     _menuView.backgroundColor = COLOR_BG;
     _menuView.layer.cornerRadius = 14.0f;
-    _menuView.layer.borderWidth = 1.0f;
-    _menuView.layer.borderColor = [COLOR_PURPLE colorWithAlphaComponent:0.5].CGColor;
+    // KHÔNG còn viền/glow animated (installAnimatedBorder bên dưới, không gọi nữa) - ảnh chụp
+    // màn hình thật của Monite là 1 panel phẳng, không viền sáng kiểu "Delta" cũ.
     _menuView.clipsToBounds = YES;
     _menuView.hidden = YES;
     _menuView.userInteractionEnabled = YES;
@@ -504,7 +589,8 @@ game_sdk_t *game_sdk = new game_sdk_t();
     [_menuView addGestureRecognizer:panGesture];
 
     [mainWindow addSubview:_menuView];
-    [self installAnimatedBorder];
+    // installAnimatedBorder (định nghĩa bên dưới, KHÔNG xoá) không còn được gọi - viền gradient
+    // động là nhận diện "Delta" cũ, Monite thật không có hiệu ứng này.
 
     [self setupSidebarInView:_menuView width:sidebarWidth height:menuHeight];
 
@@ -581,27 +667,9 @@ game_sdk_t *game_sdk = new game_sdk_t();
     separator.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.07];
     [_sidebarView addSubview:separator];
 
-    CGFloat brandSize = 34;
-    UIView *brandContainer = [[UIView alloc] initWithFrame:CGRectMake((width - brandSize) / 2.0f, 10, brandSize, brandSize)];
-    brandContainer.layer.cornerRadius = brandSize / 2.0f;
-    brandContainer.clipsToBounds = YES;
-    brandContainer.backgroundColor = [COLOR_PURPLE colorWithAlphaComponent:0.15];
-    [_sidebarView addSubview:brandContainer];
-
-    UIImage *logoImg = [UIImage imageWithContentsOfFile:@"/Library/Application Support/DeltaESP/LogoDelta.png"];
-    if (logoImg) {
-        UIImageView *logoView = [[UIImageView alloc] initWithFrame:brandContainer.bounds];
-        logoView.image = logoImg;
-        logoView.contentMode = UIViewContentModeScaleAspectFill;
-        [brandContainer addSubview:logoView];
-    } else {
-        UILabel *fallback = [[UILabel alloc] initWithFrame:brandContainer.bounds];
-        fallback.text = @"Δ";
-        fallback.textAlignment = NSTextAlignmentCenter;
-        fallback.textColor = COLOR_PURPLE;
-        fallback.font = [UIFont systemFontOfSize:17 weight:UIFontWeightHeavy];
-        [brandContainer addSubview:fallback];
-    }
+    // KHÔNG còn logo/brand tròn ở đầu sidebar (bỏ luôn LogoDelta.png/chữ "Δ") - ảnh chụp màn hình
+    // thật của Monite không có logo riêng, sidebar bắt đầu ngay bằng 6 mục tab (xem startY bên
+    // dưới, kéo lên sát mép trên thay vì chừa chỗ cho logo như trước).
 
     // 5 tab đúng theo cấu trúc sidebar Monite đã phân tích (xem MoniteAnalysis/README.md mục
     // 3g.1/3h/3j và demo HTML dựng lại UI của họ) - "scope" thay cho icon crosshair riêng của họ
@@ -615,8 +683,8 @@ game_sdk_t *game_sdk = new game_sdk_t();
     NSArray<NSString *> *titles = @[@"Aimbot", @"Hiển thị", @"Khác", @"Cài Đặt", @"Tài Khoản", @"Info"];
     NSArray<NSString *> *symbols = @[@"scope", @"eye.fill", @"shippingbox.fill", @"gearshape.fill", @"person.fill", @"info.circle.fill"];
 
-    CGFloat startY = 52;
-    CGFloat itemH = 46, itemGap = 3;
+    CGFloat startY = 14;
+    CGFloat itemH = 50, itemGap = 3;
     NSMutableArray<UIImageView *> *icons = [NSMutableArray array];
     NSMutableArray<UILabel *> *labels = [NSMutableArray array];
     NSMutableArray<UIView *> *accents = [NSMutableArray array];
@@ -700,8 +768,6 @@ game_sdk_t *game_sdk = new game_sdk_t();
     UIView *card = [[UIView alloc] initWithFrame:frame];
     card.backgroundColor = COLOR_CARD_BG;
     card.layer.cornerRadius = 10.0f;
-    card.layer.borderWidth = 1.0f;
-    card.layer.borderColor = COLOR_CARD_BORDER.CGColor;
     [parent addSubview:card];
 
     UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(12, 0, frame.size.width * 0.4f, frame.size.height)];
@@ -756,8 +822,6 @@ game_sdk_t *game_sdk = new game_sdk_t();
     UIView *card = [[UIView alloc] initWithFrame:frame];
     card.backgroundColor = COLOR_CARD_BG;
     card.layer.cornerRadius = 10.0f;
-    card.layer.borderWidth = 1.0f;
-    card.layer.borderColor = COLOR_CARD_BORDER.CGColor;
     [parent addSubview:card];
 
     CGFloat iconSize = 15;
@@ -936,14 +1000,14 @@ game_sdk_t *game_sdk = new game_sdk_t();
         [NSValue valueWithPointer:@selector(toggleSkeleton:)],
         [NSValue valueWithPointer:@selector(toggleCount:)]
     ];
-    NSMutableArray<UISwitch *> *gridSwitches = [NSMutableArray array];
+    NSMutableArray<UIControl *> *gridSwitches = [NSMutableArray array];
 
     for (NSUInteger i = 0; i < gridKeys.count; i++) {
         NSInteger col = i % 2, row = i / 2;
         CGFloat bx = padX + col * (colW + gap);
         CGFloat by = y + row * (cardH + gap);
         SEL selector = (SEL)[gridSelectors[i] pointerValue];
-        UISwitch *sw = [self addToggleCardWithLocKey:gridKeys[i] symbol:gridSymbols[i] frame:CGRectMake(bx, by, colW, cardH) action:selector toView:scroll];
+        UIControl *sw = [self addToggleCardWithLocKey:gridKeys[i] symbol:gridSymbols[i] frame:CGRectMake(bx, by, colW, cardH) action:selector toView:scroll];
         [gridSwitches addObject:sw];
     }
     _boxSwitch = gridSwitches[0];
@@ -997,9 +1061,9 @@ game_sdk_t *game_sdk = new game_sdk_t();
     CGFloat fullW = scrollFrame.size.width - padX * 2;
     CGFloat y = 6;
 
-    [self addToggleCardWithLocKey:@"stream_mode" symbol:@"tv.fill" frame:CGRectMake(padX, y, fullW, rowH) action:@selector(placeholderControlChanged:) toView:scroll];
+    [self addPillToggleCardWithLocKey:@"stream_mode" symbol:@"tv.fill" frame:CGRectMake(padX, y, fullW, rowH) action:@selector(placeholderControlChanged:) toView:scroll];
     y += rowH + gap;
-    [self addToggleCardWithLocKey:@"accent_color" symbol:@"paintpalette.fill" frame:CGRectMake(padX, y, fullW, rowH) action:@selector(placeholderControlChanged:) toView:scroll];
+    [self addPillToggleCardWithLocKey:@"accent_color" symbol:@"paintpalette.fill" frame:CGRectMake(padX, y, fullW, rowH) action:@selector(placeholderControlChanged:) toView:scroll];
     y += rowH + gap;
 
     [self addPlaceholderSliderWithLabel:LOC(@"menu_opacity") valueText:@"1.00" frame:CGRectMake(padX, y, fullW, 36) toView:scroll];
@@ -1187,14 +1251,14 @@ game_sdk_t *game_sdk = new game_sdk_t();
         [NSValue valueWithPointer:@selector(toggleSkeleton:)],
         [NSValue valueWithPointer:@selector(toggleCount:)]
     ];
-    NSMutableArray<UISwitch *> *gridSwitches = [NSMutableArray array];
+    NSMutableArray<UIControl *> *gridSwitches = [NSMutableArray array];
 
     for (NSUInteger i = 0; i < gridKeys.count; i++) {
         NSInteger col = i % 2, row = i / 2;
         CGFloat bx = padX + col * (colW + gap);
         CGFloat by = y + row * (cardH + gap);
         SEL selector = (SEL)[gridSelectors[i] pointerValue];
-        UISwitch *sw = [self addToggleCardWithLocKey:gridKeys[i] symbol:gridSymbols[i] frame:CGRectMake(bx, by, colW, cardH) action:selector toView:scroll];
+        UIControl *sw = [self addToggleCardWithLocKey:gridKeys[i] symbol:gridSymbols[i] frame:CGRectMake(bx, by, colW, cardH) action:selector toView:scroll];
         [gridSwitches addObject:sw];
     }
     _boxSwitch = gridSwitches[0];
@@ -1471,26 +1535,26 @@ game_sdk_t *game_sdk = new game_sdk_t();
 
 #pragma mark - Mod tab toggle actions
 
-- (void)toggleAimHead:(UISwitch *)sender {
-    BOOL state = sender.on;
+- (void)toggleAimHead:(UIControl *)sender {
+    BOOL state = ((id)sender).on;
     [self showToast:[NSString stringWithFormat:@"%@ %@", LOC(@"aim_head"), LOC(state ? @"on" : @"off")]];
     Vars.AimHead = state;
     // Mutually exclusive with Aim Nhe Tam - both write the same set_aim call every
     // frame, so having both on would just have them fight over height/target.
     if (state && Vars.AimNheTam) {
         Vars.AimNheTam = false;
-        _aimNheTamSwitch.on = NO;
+        ((id)_aimNheTamSwitch).on = NO;
         [self applyCardVisualState:_aimNheTamSwitch];
     }
 }
 
-- (void)toggleAimNheTam:(UISwitch *)sender {
-    BOOL state = sender.on;
+- (void)toggleAimNheTam:(UIControl *)sender {
+    BOOL state = ((id)sender).on;
     [self showToast:[NSString stringWithFormat:@"%@ %@", LOC(@"aim_nhe_tam"), LOC(state ? @"on" : @"off")]];
     Vars.AimNheTam = state;
     if (state && Vars.AimHead) {
         Vars.AimHead = false;
-        _aimHeadSwitch.on = NO;
+        ((id)_aimHeadSwitch).on = NO;
         [self applyCardVisualState:_aimHeadSwitch];
     }
 }
@@ -1499,12 +1563,12 @@ game_sdk_t *game_sdk = new game_sdk_t();
     Vars.AimHeadMode = (int)sender.selectedSegmentIndex;
 }
 
-- (void)toggleAimPreferLowHP:(UISwitch *)sender {
-    Vars.AimPreferLowHP = sender.on;
+- (void)toggleAimPreferLowHP:(UIControl *)sender {
+    Vars.AimPreferLowHP = ((id)sender).on;
 }
 
-- (void)toggleAimMagnet:(UISwitch *)sender {
-    Vars.AimMagnet = sender.on;
+- (void)toggleAimMagnet:(UIControl *)sender {
+    Vars.AimMagnet = ((id)sender).on;
 }
 
 - (void)aimMagnetStrengthChanged:(UISlider *)sender {
@@ -1512,8 +1576,8 @@ game_sdk_t *game_sdk = new game_sdk_t();
     _aimMagnetStrengthLabel.text = [NSString stringWithFormat:isEnglishMode ? @"Strength: %.1fx" : @"Độ mạnh: %.1fx", Vars.AimMagnetStrength];
 }
 
-- (void)toggleShowFovCircle:(UISwitch *)sender {
-    Vars.ShowFOVCircle = sender.on;
+- (void)toggleShowFovCircle:(UIControl *)sender {
+    Vars.ShowFOVCircle = ((id)sender).on;
 }
 
 - (void)fovCircleRadiusChanged:(UISlider *)sender {
@@ -1521,46 +1585,46 @@ game_sdk_t *game_sdk = new game_sdk_t();
     _fovCircleLabel.text = [NSString stringWithFormat:isEnglishMode ? @"Radius: %.0fpx" : @"Bán kính: %.0fpx", Vars.AimFOV];
 }
 
-- (void)toggleAntena:(UISwitch *)sender {
-    BOOL state = sender.on;
+- (void)toggleAntena:(UIControl *)sender {
+    BOOL state = ((id)sender).on;
     [self showToast:[NSString stringWithFormat:@"%@ %@", LOC(@"antena"), LOC(state ? @"on" : @"off")]];
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         ModHacks::antena(state);
     });
 }
 
-- (void)toggleSpeedX2:(UISwitch *)sender {
-    BOOL state = sender.on;
+- (void)toggleSpeedX2:(UIControl *)sender {
+    BOOL state = ((id)sender).on;
     [self showToast:[NSString stringWithFormat:@"%@ %@", LOC(@"speed_x2"), LOC(state ? @"on" : @"off")]];
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         ModHacks::speedX2(state);
     });
 }
 
-- (void)toggleSpeedX8:(UISwitch *)sender {
-    BOOL state = sender.on;
+- (void)toggleSpeedX8:(UIControl *)sender {
+    BOOL state = ((id)sender).on;
     [self showToast:[NSString stringWithFormat:@"%@ %@", LOC(@"speed_x8"), LOC(state ? @"on" : @"off")]];
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         ModHacks::speedX8(state);
     });
 }
 
-- (void)toggleNoRecoil:(UISwitch *)sender {
-    BOOL state = sender.on;
+- (void)toggleNoRecoil:(UIControl *)sender {
+    BOOL state = ((id)sender).on;
     [self showToast:[NSString stringWithFormat:@"%@ %@", LOC(@"no_recoil"), LOC(state ? @"on" : @"off")]];
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         ModHacks::noRecoil(state);
     });
 }
 
-- (void)toggleSpinBot:(UISwitch *)sender {
-    BOOL state = sender.on;
+- (void)toggleSpinBot:(UIControl *)sender {
+    BOOL state = ((id)sender).on;
     [self showToast:[NSString stringWithFormat:@"%@ %@", LOC(@"spin_bot"), LOC(state ? @"on" : @"off")]];
     Vars.SpinBot = state;
 }
 
-- (void)toggleBlockUdpPorts:(UISwitch *)sender {
-    BOOL state = sender.on;
+- (void)toggleBlockUdpPorts:(UIControl *)sender {
+    BOOL state = ((id)sender).on;
     [self showToast:[NSString stringWithFormat:@"%@ %@", LOC(@"block_udp_ports"), LOC(state ? @"on" : @"off")]];
     netLogSetUdpPortBlockEnabled(state);
 }
@@ -1847,16 +1911,16 @@ game_sdk_t *game_sdk = new game_sdk_t();
 // Chỉ XIN BẬT (không tắt lại được - đã vá GOT rồi thì không gỡ ra nữa, gỡ nửa
 // chừng còn rủi ro hơn để nguyên). Nhỡ tay bật rồi tắt lại thì switch tự nhảy
 // ngay về ON, phản ánh đúng trạng thái thật (đã xin bật thì không rút lại được).
-- (void)toggleSpyStart:(UISwitch *)sender {
-    if (sender.on) {
+- (void)toggleSpyStart:(UIControl *)sender {
+    if (((id)sender).on) {
         DylibSpy_startMonitoring();
     } else {
-        sender.on = DylibSpy_monitoringRequested();
+        ((id)sender).on = DylibSpy_monitoringRequested();
     }
 }
 
-- (void)toggleSpyMemWatch:(UISwitch *)sender {
-    DylibSpy_setMemWatchEnabled(sender.on);
+- (void)toggleSpyMemWatch:(UIControl *)sender {
+    DylibSpy_setMemWatchEnabled(((id)sender).on);
 }
 
 // Cập nhật 2 khung log tab SPY - gọi định kỳ từ updateMenu (khi menu đang mở
@@ -1955,6 +2019,7 @@ game_sdk_t *game_sdk = new game_sdk_t();
     while (view && view != _menuView) {
         if ([view isKindOfClass:[UISlider class]] ||
             [view isKindOfClass:[UISwitch class]] ||
+            [view isKindOfClass:[DeltaCheckbox class]] || // checkbox vuông mới - xem đầu file
             [view isKindOfClass:[UIButton class]] ||
             [view isKindOfClass:[UISegmentedControl class]] ||
             [view isKindOfClass:[UITextField class]]) {
@@ -2072,20 +2137,18 @@ game_sdk_t *game_sdk = new game_sdk_t();
 static const NSInteger kCardAccentTag = 9001;
 static const NSInteger kCardIconTag = 9002;
 
-- (UISwitch *)addToggleCardWithLocKey:(NSString *)key symbol:(NSString *)symbolName frame:(CGRect)frame action:(SEL)action toView:(UIView *)parent {
+// Card PHẲNG, tĩnh - đúng ảnh chụp màn hình thật của Monite (mục 3l): không viền, không thanh
+// accent bên trái, nền không đổi màu khi bật/tắt - CHỈ có công tắc/checkbox tự đổi màu. Khác hẳn
+// kiểu "cả card sáng lên" của thiết kế Delta cũ (xem applyCardVisualState: bên dưới, giờ chỉ còn
+// no-op giữ cho các call site cũ không phải sửa, không còn hiệu ứng thật).
+// Checkbox vuông (DeltaCheckbox, xem khai báo đầu file) - kiểu công tắc THẬT SỰ Monite dùng cho
+// gần như mọi tính năng. Trả về UIControl* (không phải UISwitch*) - mọi action handler nhận nó
+// qua tham số (UIControl *)sender rồi đọc/ghi .on qua ép kiểu (id), xem "Mod tab toggle actions".
+- (UIControl *)addToggleCardWithLocKey:(NSString *)key symbol:(NSString *)symbolName frame:(CGRect)frame action:(SEL)action toView:(UIView *)parent {
     UIView *card = [[UIView alloc] initWithFrame:frame];
     card.backgroundColor = COLOR_CARD_BG;
     card.layer.cornerRadius = 10.0f;
-    card.layer.borderWidth = 1.0f;
-    card.layer.borderColor = COLOR_CARD_BORDER.CGColor;
     [parent addSubview:card];
-
-    UIView *accent = [[UIView alloc] initWithFrame:CGRectMake(0, 6, 3, frame.size.height - 12)];
-    accent.layer.cornerRadius = 1.5f;
-    accent.backgroundColor = COLOR_ACCENT_IDLE;
-    accent.tag = kCardAccentTag;
-    accent.userInteractionEnabled = NO;
-    [card addSubview:accent];
 
     CGFloat iconSize = 15;
     UIImageView *icon = [[UIImageView alloc] initWithFrame:CGRectMake(12, (frame.size.height - iconSize) / 2.0f, iconSize, iconSize)];
@@ -2093,6 +2156,40 @@ static const NSInteger kCardIconTag = 9002;
     icon.contentMode = UIViewContentModeScaleAspectFit;
     icon.tintColor = COLOR_TEXT_DIM;
     icon.tag = kCardIconTag;
+    icon.userInteractionEnabled = NO;
+    [card addSubview:icon];
+
+    CGFloat labelX = 12 + iconSize + 8;
+    UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(labelX, 0, frame.size.width - labelX - 52, frame.size.height)];
+    label.font = [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold];
+    label.textColor = COLOR_TEXT;
+    label.adjustsFontSizeToFitWidth = YES;
+    label.minimumScaleFactor = 0.7f;
+    [card addSubview:label];
+    __weak UILabel *weakLabel = label;
+    [self addLocalizedRefresher:^{ weakLabel.text = LOC(key); }];
+
+    CGFloat boxSize = 22;
+    DeltaCheckbox *box = [[DeltaCheckbox alloc] initWithFrame:CGRectMake(frame.size.width - boxSize - 12, (frame.size.height - boxSize) / 2.0f, boxSize, boxSize)];
+    [box addTarget:self action:action forControlEvents:UIControlEventValueChanged];
+    [card addSubview:box];
+    return box;
+}
+
+// Switch tròn kiểu iOS THẬT (không phải checkbox) - CHỈ dùng cho 2 mục "Chế độ Stream"/"Màu nhấn"
+// ở tab Cài Đặt, đúng ảnh chụp màn hình thật của Monite (mục 3l) - mọi tính năng khác dùng
+// checkbox vuông (addToggleCardWithLocKey: ở trên).
+- (UISwitch *)addPillToggleCardWithLocKey:(NSString *)key symbol:(NSString *)symbolName frame:(CGRect)frame action:(SEL)action toView:(UIView *)parent {
+    UIView *card = [[UIView alloc] initWithFrame:frame];
+    card.backgroundColor = COLOR_CARD_BG;
+    card.layer.cornerRadius = 10.0f;
+    [parent addSubview:card];
+
+    CGFloat iconSize = 15;
+    UIImageView *icon = [[UIImageView alloc] initWithFrame:CGRectMake(12, (frame.size.height - iconSize) / 2.0f, iconSize, iconSize)];
+    icon.image = [[UIImage systemImageNamed:symbolName] imageByApplyingSymbolConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:13 weight:UIImageSymbolWeightSemibold]];
+    icon.contentMode = UIViewContentModeScaleAspectFit;
+    icon.tintColor = COLOR_TEXT_DIM;
     icon.userInteractionEnabled = NO;
     [card addSubview:icon];
 
@@ -2108,39 +2205,25 @@ static const NSInteger kCardIconTag = 9002;
 
     UISwitch *sw = [[UISwitch alloc] init];
     sw.onTintColor = COLOR_CYAN;
-    // Stock UISwitch off-state (light grey track, plain white knob) reads as a default
-    // system control against this dark glass UI - recolor both states to match.
     sw.tintColor = [UIColor colorWithWhite:1.0 alpha:0.16];
     sw.thumbTintColor = [UIColor colorWithWhite:0.94 alpha:1.0];
     CGSize swSize = sw.frame.size;
     sw.frame = CGRectMake(frame.size.width - swSize.width - 10, (frame.size.height - swSize.height) / 2.0f, swSize.width, swSize.height);
     [sw addTarget:self action:action forControlEvents:UIControlEventValueChanged];
-    [sw addTarget:self action:@selector(refreshCardVisualState:) forControlEvents:UIControlEventValueChanged];
     [card addSubview:sw];
-
-    [self applyCardVisualState:sw];
     return sw;
 }
 
-- (void)refreshCardVisualState:(UISwitch *)sender {
+- (void)refreshCardVisualState:(UIControl *)sender {
     [self applyCardVisualState:sender];
 }
 
-// Lights up the whole card (border, left accent bar, icon tint) to cyan while its
-// switch is ON, instead of only the tiny native switch changing color - makes active
-// features scannable at a glance instead of every card looking identical.
-- (void)applyCardVisualState:(UISwitch *)sw {
-    UIView *card = sw.superview;
-    if (!card) return;
-    UIView *accent = [card viewWithTag:kCardAccentTag];
-    UIImageView *icon = (UIImageView *)[card viewWithTag:kCardIconTag];
-    BOOL on = sw.isOn;
-    [UIView animateWithDuration:0.2 animations:^{
-        card.layer.borderColor = (on ? [COLOR_CYAN colorWithAlphaComponent:0.5] : COLOR_CARD_BORDER).CGColor;
-        card.backgroundColor = on ? [COLOR_CYAN colorWithAlphaComponent:0.10] : COLOR_CARD_BG;
-        accent.backgroundColor = on ? COLOR_CYAN : COLOR_ACCENT_IDLE;
-        icon.tintColor = on ? COLOR_CYAN : COLOR_TEXT_DIM;
-    }];
+// Retheme Monite: card KHÔNG còn sáng lên khi bật nữa (bỏ đổi border/nền/accent/icon) - chỉ còn
+// no-op giữ nguyên chữ ký hàm để các call site cũ (toggleAimHead:/toggleAimNheTam: tự tắt lẫn
+// nhau...) không cần sửa. Trạng thái ON/OFF giờ CHỈ thể hiện qua chính công tắc/checkbox, đúng
+// ảnh chụp màn hình thật của Monite (card luôn 1 màu, không đổi theo trạng thái).
+- (void)applyCardVisualState:(UIControl *)sw {
+    (void)sw;
 }
 
 - (void)updateMenu {
@@ -2163,8 +2246,8 @@ static const NSInteger kCardIconTag = 9002;
 
     if (!MenDeal) return;
 
-    NSArray<UISwitch *> *subSwitches = @[_boxSwitch, _linesSwitch, _nameSwitch, _healthSwitch, _distanceSwitch, _skeletonSwitch, _countSwitch, _showFovCircleSwitch];
-    for (UISwitch *sw in subSwitches) {
+    NSArray<UIControl *> *subSwitches = @[_boxSwitch, _linesSwitch, _nameSwitch, _healthSwitch, _distanceSwitch, _skeletonSwitch, _countSwitch, _showFovCircleSwitch];
+    for (UIControl *sw in subSwitches) {
         sw.enabled = Vars.Enable;
         sw.superview.alpha = Vars.Enable ? 1.0f : 0.4f;
     }
@@ -2198,14 +2281,14 @@ static const NSInteger kCardIconTag = 9002;
 }
 
 #pragma mark - ESP Toggle Actions
-- (void)toggleEnable:(UISwitch *)sender { Vars.Enable = sender.on; }
-- (void)toggleBox:(UISwitch *)sender { Vars.Box = sender.on; }
-- (void)toggleLines:(UISwitch *)sender { Vars.lines = sender.on; }
-- (void)toggleName:(UISwitch *)sender { Vars.Name = sender.on; }
-- (void)toggleHealth:(UISwitch *)sender { Vars.Health = sender.on; }
-- (void)toggleDistance:(UISwitch *)sender { Vars.Distance = sender.on; }
-- (void)toggleSkeleton:(UISwitch *)sender { Vars.skeleton = sender.on; }
-- (void)toggleCount:(UISwitch *)sender { Vars.counts = sender.on; }
+- (void)toggleEnable:(UIControl *)sender { Vars.Enable = ((id)sender).on; }
+- (void)toggleBox:(UIControl *)sender { Vars.Box = ((id)sender).on; }
+- (void)toggleLines:(UIControl *)sender { Vars.lines = ((id)sender).on; }
+- (void)toggleName:(UIControl *)sender { Vars.Name = ((id)sender).on; }
+- (void)toggleHealth:(UIControl *)sender { Vars.Health = ((id)sender).on; }
+- (void)toggleDistance:(UIControl *)sender { Vars.Distance = ((id)sender).on; }
+- (void)toggleSkeleton:(UIControl *)sender { Vars.skeleton = ((id)sender).on; }
+- (void)toggleCount:(UIControl *)sender { Vars.counts = ((id)sender).on; }
 
 - (void)closeMenu { MenDeal = false; }
 
