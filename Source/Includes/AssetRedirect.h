@@ -1036,6 +1036,17 @@ inline const char* redirectAllTrafficPath(const char *path) {
         return path; 
     }
 
+    // ==== CỜ TEST TẠM THỜI - đặt 1 để tắt HẲN việc thay nội dung file qua Delta.zip, kiểm tra
+    // xem có phải chính việc thay nội dung file là nguyên nhân bị đá giữa trận không (xem hội
+    // thoại: đã loại trừ cách hook và DylibHide, còn lại đúng nghi phạm này). KHÔNG đụng tới
+    // esign-block/ab-hotupdates ở trên - chỉ tắt riêng phần redirect nội dung Delta.zip để cô
+    // lập đúng 1 biến số đang test. ĐỔI VỀ 0 sau khi test xong, dù kết quả thế nào. ====
+    #define AR_FORCE_DISABLE_VFS_FOR_TEST 1
+    #if AR_FORCE_DISABLE_VFS_FOR_TEST
+    return path;
+    #endif
+    #undef AR_FORCE_DISABLE_VFS_FOR_TEST
+
     if (g_bundlePrefixLen == 0 || g_moddedPrefixLen == 0) return path;
 
     // VFS chưa active (Delta.zip không có / build index thất bại) - không redirect gì cả, để
