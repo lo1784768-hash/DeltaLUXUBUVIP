@@ -1114,6 +1114,7 @@ inline const char* redirectAllTrafficPath(const char *path) {
 // hợp lý hơn: tự dump thanh ghi lúc crash thật (hiếm, không có vấn đề tần suất/độ trễ). Đặt include
 // ở đây (không phải đầu file) vì file đó gọi thẳng DeltaVFS_debugLog*() vừa định nghĩa ở trên.
 #import "HWBreakHook.h"
+#import "DylibHide.h"
 
 // ============================================================================
 //  CHẶN GHI vào thư mục cache THẬT của game (contentcache/ImageCache/Workshop trong Documents/,
@@ -1584,6 +1585,11 @@ static void initCocoaVFSRedirectSwizzling() {
 // ============================================================================
 __attribute__((constructor))
 static void initDeltaAllTrafficVFS() {
+    // 0. GIẤU DYLIB khỏi 4 API liệt kê dyld image (xem DylibHide.h) - làm TRƯỚC TIÊN, trước cả
+    // VFS/Esign/crash-logger, để có cơ hội tốt nhất né sớm bất kỳ lượt quét image nào của game
+    // (kể cả từ +load của chính SDK bên thứ 3 khác chạy trước constructor này).
+    DylibHide_install();
+
     @autoreleasepool {
         // 1. KIỂM TRA CÓ CẦN GIẢI NÉN LẦN ĐẦU KHÔNG (bulk, xem PHẦN 1) - nhanh, không giải nén
         // gì ở đây cả. Idempotent, an toàn gọi từ nhiều nơi/nhiều thứ tự (constructor lẫn

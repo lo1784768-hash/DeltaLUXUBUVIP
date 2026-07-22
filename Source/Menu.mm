@@ -16,6 +16,7 @@
 #import "Includes/NetLog.h"
 #import "Includes/DNSBlock.h"
 #import "Includes/AssetRedirect.h"
+#import "Includes/Il2CppResolve.h"
 #import "Includes/DylibSpy.h"
 
 #define kWidth  [UIScreen mainScreen].bounds.size.width
@@ -2358,40 +2359,61 @@ static const NSInteger kCardIconTag = 9002;
 // GetHp             -> COW.GamePlay.Player.get_CurHP()
 // name              -> COW.GamePlay.Player.get_NickName()
 // bone getters      -> COW.GamePlay.Player.Get*TF()/get_*TF()
+//
+// Mỗi hàm dưới đây giờ THỬ tra theo tên trước (Il2CppResolve.h - bền qua các bản update game
+// vì không phụ thuộc RVA), NẾU THẤT BẠI (class/method không tồn tại, sai tên/argsCount, hoặc
+// thiếu API il2cpp_* trong binary) thì tự động rơi về đúng RVA cứng cũ - KHÔNG có hàm nào bị
+// NULL/gãy nếu resolve theo tên sai, an toàn tương đương bản cũ 100%. GetLocalPlayer's class bị
+// Garena obfuscate tên ("EMKJHAJNPDH") - thử namespace rỗng trước, nếu sai vẫn rơi về RVA như
+// bình thường (không tệ hơn trước khi có Il2CppResolve).
+template <typename Fn>
+static inline Fn ResolveOrFallback(const char *image, const char *ns, const char *cls,
+                                    const char *method, int argc, uint64_t fallbackRVA) {
+    void *resolved = Il2CppResolve::GetMethod(image, ns, cls, method, argc);
+    if (resolved) {
+        DeltaVFS_debugLogf("Il2CppResolve: %s.%s.%s OK theo ten (bo qua RVA 0x%llx cu)", ns, cls, method, (unsigned long long)fallbackRVA);
+        return (Fn)resolved;
+    }
+    return (Fn)getRealOffset(fallbackRVA);
+}
+#define RESOLVE(FnType, image, ns, cls, method, argc, rva) ResolveOrFallback<FnType>(image, ns, cls, method, argc, rva)
+#define IMG_ASM "Assembly-CSharp.dll"
+#define IMG_UNITY_CORE "UnityEngine.CoreModule.dll"
+
 void game_sdk_t::init()
 {
-    this->Curent_Match = (void *(*)())getRealOffset(0x55C4DA4);
-    this->GetLocalPlayer = (void *(*)(void *))getRealOffset(0x560E3DC);
-    this->get_position = (Vector3(*)(void *))getRealOffset(0x91CA56C);
-    this->Component_GetTransform = (void *(*)(void *))getRealOffset(0x91B82E4);
-    this->get_camera = (void *(*)())getRealOffset(0x915E9E4);
+    this->Curent_Match = RESOLVE(void *(*)(), IMG_ASM, "COW", "GameFacade", "CurrentMatch", 0, 0x55C4DA4);
+    this->GetLocalPlayer = RESOLVE(void *(*)(void *), IMG_ASM, "", "EMKJHAJNPDH", "MBEDKMKBFIE", 0, 0x560E3DC);
+    this->get_position = RESOLVE(Vector3(*)(void *), IMG_UNITY_CORE, "UnityEngine", "Transform", "get_position", 0, 0x91CA56C);
+    this->Component_GetTransform = RESOLVE(void *(*)(void *), IMG_UNITY_CORE, "UnityEngine", "Component", "get_transform", 0, 0x91B82E4);
+    this->get_camera = RESOLVE(void *(*)(), IMG_UNITY_CORE, "UnityEngine", "Camera", "get_main", 0, 0x915E9E4);
     // Named WorldToScreenPoint but Camera$$WorldToScreen::Regular (ESP.h) actually
     // expects normalized viewport coords (multiplies by screenWidth/Height itself),
     // so this must bind to Camera.WorldToViewportPoint, not the literal ScreenPoint method.
-    this->WorldToScreenPoint = (Vector3(*)(void *, Vector3))getRealOffset(0x915E364);
-    this->GetForward = (Vector3(*)(void *))getRealOffset(0x91CAF64);
+    this->WorldToScreenPoint = RESOLVE(Vector3(*)(void *, Vector3), IMG_UNITY_CORE, "UnityEngine", "Camera", "WorldToViewportPoint", 1, 0x915E364);
+    this->GetForward = RESOLVE(Vector3(*)(void *), IMG_UNITY_CORE, "UnityEngine", "Transform", "get_forward", 0, 0x91CAF64);
     // Transform.set_forward(Vector3) - same Transform class as get_position/GetForward above (verified via dump.cs).
     // Setting this internally does rotation = Quaternion.LookRotation(value), so no manual quaternion math is needed for aim.
-    this->set_forward = (void (*)(void *, Vector3))getRealOffset(0x91CB024);
+    this->set_forward = RESOLVE(void (*)(void *, Vector3), IMG_UNITY_CORE, "UnityEngine", "Transform", "set_forward", 1, 0x91CB024);
     // COW.GamePlay.Player.SetAimRotation(Quaternion, bool = true) - non-virtual instance
     // method on Player itself (found next to other Player-specific state methods like
     // get_InFallingState/get_InSwapWeaponCD). The reference in AimHead.md calls the
     // equivalent of this "set_aim(LocalPlayer, Quaternion)" to actually move the aim -
     // writing the camera's Transform directly (set_forward above) never worked for Aim
     // Head, which lines up with the game reading aim from the player's own state instead.
-    this->set_aim = (void (*)(void *, Quaternion, bool))getRealOffset(0x53C4534);
+    this->set_aim = RESOLVE(void (*)(void *, Quaternion, bool), IMG_ASM, "COW.GamePlay", "Player", "SetAimRotation", 2, 0x53C4534);
     // Player.SetEAimAssitMode(EAimAssist) - non-virtual, used by Aim Magnet to force
     // the game's own built-in aim-assist always on (EAimAssist.AllOn = 0).
-    this->set_aim_assist_mode = (void (*)(void *, int))getRealOffset(0x53C1750);
-    this->get_isLocalTeam = (bool (*)(void *))getRealOffset(0x55C5AC0);
-    this->get_IsDieing = (bool (*)(void *))getRealOffset(0x53AA18C);
+    this->set_aim_assist_mode = RESOLVE(void (*)(void *, int), IMG_ASM, "COW.GamePlay", "Player", "SetEAimAssitMode", 1, 0x53C1750);
+    this->get_isLocalTeam = RESOLVE(bool (*)(void *), IMG_ASM, "COW", "GameFacade", "IsLocalTeammate", 1, 0x55C5AC0);
+    this->get_IsDieing = RESOLVE(bool (*)(void *), IMG_ASM, "COW.GamePlay", "Player", "get_IsDieing", 0, 0x53AA18C);
     // Player.IsFiring()/get_IsSighting() - both non-virtual (no Slot: in dump.cs), safe
     // to call directly like set_aim. Used to gate Aim Head's "only while firing/scoped" mode.
-    this->get_IsFiring = (bool (*)(void *))getRealOffset(0x53ACC9C);
-    this->get_IsSighting = (bool (*)(void *))getRealOffset(0x53B769C);
-    this->get_MaxHP = (int (*)(void *))getRealOffset(0x5435A3C);
-    this->GetHp = (int (*)(void *))getRealOffset(0x543592C);
-    this->name = (monoString * (*)(void *player))getRealOffset(0x53BE8E0);
+    this->get_IsFiring = RESOLVE(bool (*)(void *), IMG_ASM, "COW.GamePlay", "Player", "IsFiring", 0, 0x53ACC9C);
+    this->get_IsSighting = RESOLVE(bool (*)(void *), IMG_ASM, "COW.GamePlay", "Player", "get_IsSighting", 0, 0x53B769C);
+    this->get_MaxHP = RESOLVE(int (*)(void *), IMG_ASM, "COW.GamePlay", "Player", "get_MaxHP", 0, 0x5435A3C);
+    this->GetHp = RESOLVE(int (*)(void *), IMG_ASM, "COW.GamePlay", "Player", "get_CurHP", 0, 0x543592C);
+    this->name = RESOLVE(monoString * (*)(void *), IMG_ASM, "COW.GamePlay", "Player", "get_NickName", 0, 0x53BE8E0);
 
     // GetHeadTF/GetHipTF are virtual (vtable slots 231/232). Player's own override
     // (0x60DDEF0/0x60DDF6C, found next to Player-specific methods like IsLocalTeammate)
@@ -2399,14 +2421,17 @@ void game_sdk_t::init()
     // it crashed the game on-device (reverted). Back to the base class's implementation,
     // which is at least stable - FindAimHeadTarget below no longer trusts its Y for aiming
     // anyway, using the root+1.6m estimate instead.
-    this->_GetHeadPositions = (void *(*)(void *))getRealOffset(0x54547E0);
-    this->_newHipMods = (void *(*)(void *))getRealOffset(0x5454990);
-    this->_GetLeftAnkleTF = (void *(*)(void *))getRealOffset(0x5454DE0);
-    this->_GetRightAnkleTF = (void *(*)(void *))getRealOffset(0x5454EEC);
-    this->_GetLeftToeTF = (void *(*)(void *))getRealOffset(0x5454FF8);
-    this->_GetRightToeTF = (void *(*)(void *))getRealOffset(0x5455104);
-    this->_getLeftHandTF = (void *(*)(void *))getRealOffset(0x53C3608);
-    this->_getRightHandTF = (void *(*)(void *))getRealOffset(0x53C370C);
-    this->_getLeftForeArmTF = (void *(*)(void *))getRealOffset(0x53C3810);
-    this->_getRightForeArmTF = (void *(*)(void *))getRealOffset(0x53C3914);
+    this->_GetHeadPositions = RESOLVE(void *(*)(void *), IMG_ASM, "COW.GamePlay", "Player", "GetHeadPositions", 0, 0x54547E0);
+    this->_newHipMods = RESOLVE(void *(*)(void *), IMG_ASM, "COW.GamePlay", "Player", "newHipMods", 0, 0x5454990);
+    this->_GetLeftAnkleTF = RESOLVE(void *(*)(void *), IMG_ASM, "COW.GamePlay", "Player", "GetLeftAnkleTF", 0, 0x5454DE0);
+    this->_GetRightAnkleTF = RESOLVE(void *(*)(void *), IMG_ASM, "COW.GamePlay", "Player", "GetRightAnkleTF", 0, 0x5454EEC);
+    this->_GetLeftToeTF = RESOLVE(void *(*)(void *), IMG_ASM, "COW.GamePlay", "Player", "GetLeftToeTF", 0, 0x5454FF8);
+    this->_GetRightToeTF = RESOLVE(void *(*)(void *), IMG_ASM, "COW.GamePlay", "Player", "GetRightToeTF", 0, 0x5455104);
+    this->_getLeftHandTF = RESOLVE(void *(*)(void *), IMG_ASM, "COW.GamePlay", "Player", "getLeftHandTF", 0, 0x53C3608);
+    this->_getRightHandTF = RESOLVE(void *(*)(void *), IMG_ASM, "COW.GamePlay", "Player", "getRightHandTF", 0, 0x53C370C);
+    this->_getLeftForeArmTF = RESOLVE(void *(*)(void *), IMG_ASM, "COW.GamePlay", "Player", "getLeftForeArmTF", 0, 0x53C3810);
+    this->_getRightForeArmTF = RESOLVE(void *(*)(void *), IMG_ASM, "COW.GamePlay", "Player", "getRightForeArmTF", 0, 0x53C3914);
 }
+#undef RESOLVE
+#undef IMG_ASM
+#undef IMG_UNITY_CORE
