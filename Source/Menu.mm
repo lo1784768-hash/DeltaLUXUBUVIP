@@ -445,9 +445,14 @@ game_sdk_t *game_sdk = new game_sdk_t();
             // inline vào ĐÚNG hàm này không ổn định trên máy/bản game hiện tại, không liên quan
             // gì tới nội dung sửa. Giữ nguyên định nghĩa trong AntiReportSpoof.h (không xoá) để
             // dễ khôi phục/tham khảo sau, chỉ đơn giản không gọi installAntiReportSpoof() nữa.
-            DeltaVFS_debugLog("Menu +load: gọi installPacketCapture() (công cụ chẩn đoán tạm thời, xem PacketCapture.h)");
-            installPacketCapture();
-            DeltaVFS_debugLog("Menu +load: game_sdk + AimMagnet hook + PacketCapture xong");
+            // installPacketCapture() ĐÃ BỎ GỌI - test thật trên máy: cài hook báo "OK" cho cả
+            // Send()/OnHandlePacket() nhưng app crash-loop ngay sau "setup menu hoàn tất"
+            // (~1-2s), lặp lại 3/3 lần, TRƯỚC KHI 2 hàm đó từng được gọi tới (không có log
+            // "PacketCapture GUI:"/"PacketCapture NHAN:" nào cả) - tức là bản thân việc patch
+            // inline vào 2 hàm này gây hỏng thứ gì đó ngay cả khi chưa hề chạy hook body, không
+            // thu được bằng chứng gói tin nào. Giữ nguyên định nghĩa trong PacketCapture.h để
+            // tham khảo/thử lại sau (VD đổi mục tiêu hook), chỉ đơn giản không gọi nữa.
+            DeltaVFS_debugLog("Menu +load: game_sdk + AimMagnet hook xong");
             sdkInitialized = true;
         }
 
