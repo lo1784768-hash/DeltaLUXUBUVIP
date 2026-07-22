@@ -17,10 +17,14 @@
 //  THỬ NGHIỆM CHƯA XÁC NHẬN, RỦI RO ĐÃ BIẾT VÀ CHẤP NHẬN:
 //  1. gin_check_data KHÔNG bị đụng vào - để trống rỗng chính là 1 rule phát hiện riêng
 //     (HackerPoolCdt_GIN_CHECK_DATA_EMPTY_IOS), sửa sai chỗ này có thể PHẢN TÁC DỤNG.
-//  2. Đặt NULL cho field kiểu byte[]/string thay vì mảng rỗng thật - nếu có code C# nào khác
-//     đọc lại field này TRƯỚC khi gửi lên server (ngoài phạm vi hàm này) mà không tự kiểm tra
-//     null, có thể gây crash (NullReferenceException phía IL2CPP). Chưa kiểm chứng được trên
-//     máy thật vì không có Ghidra để đọc caller.
+//  2. ĐÃ TEST THẬT VÀ XÁC NHẬN CRASH: bản đầu gán NULL cho tpsdk_str/file_exception/lib_result/
+//     native_result (4 field kiểu con trỏ - string/byte[]) làm crash 3/3 lần vào trận, crash
+//     log (CrashLogger) chỉ đúng vào code nội bộ Firebase Crashlytics
+//     (std::vector<firebase::crashlytics::Frame>::__vdeallocate) - dấu hiệu 1 crash thật (rất
+//     có thể NullReferenceException từ code C# khác đọc lại field null mà không kiểm tra) bị
+//     chính Crashlytics bắt rồi crash tiếp lúc build report. ĐÃ BỎ hẳn việc sửa 4 field con trỏ
+//     đó - CHỈ còn sửa 2 field kiểu số nguyên trần (exception_count/scan_count), an toàn tuyệt
+//     đối vì không phải con trỏ, không có gì để null-dereference.
 //  3. RVA 0x3D82760 lấy từ dump OB54 - nếu bản game hiện tại lệch version, Il2CppResolve sẽ tự
 //     tra theo tên trước (namespace COW, class UIModelCustomRoom, method GetMatchClientInfo,
 //     0 tham số), chỉ rơi về RVA cứng khi tra tên thất bại - xem Il2CppResolve.h.
@@ -53,17 +57,14 @@ static void *hooked_GetMatchClientInfo() {
     if (!info) return info;
 
     // Offset tính từ đầu object (đã gồm header klass+monitor 0x10 byte, đúng quy ước dump.cs) -
-    // xem tcp.MatchClientInfo trong dump.cs. GIỮ NGUYÊN gin_check_data (0x50) và start_time
-    // (0x18)/client_version (0x40)/channel_type (0x48)/architecture_type (0x4C) - chỉ sửa đúng
-    // các field trực tiếp mang dấu hiệu bị sửa đổi/hook.
-    *(void **)((char *)info + 0x10) = NULL;   // tpsdk_str = null
-    *(void **)((char *)info + 0x20) = NULL;   // file_exception = null
-    *(void **)((char *)info + 0x28) = NULL;   // lib_result = null
+    // xem tcp.MatchClientInfo trong dump.cs. CHỈ sửa 2 field số nguyên trần - đã bỏ hẳn việc
+    // đụng vào tpsdk_str/file_exception/lib_result/native_result (kiểu con trỏ) sau khi xác
+    // nhận crash thật trên máy (xem comment đầu file) - GIỮ NGUYÊN mọi field còn lại, kể cả
+    // gin_check_data (0x50).
     *(uint32_t *)((char *)info + 0x30) = 0;   // exception_count = 0
     *(uint32_t *)((char *)info + 0x34) = 0;   // scan_count = 0
-    *(void **)((char *)info + 0x38) = NULL;   // native_result = null
 
-    DeltaVFS_debugLog("AntiReportSpoof: da xoa tpsdk_str/file_exception/lib_result/exception_count/scan_count/native_result - GIU NGUYEN gin_check_data");
+    DeltaVFS_debugLog("AntiReportSpoof: da dat exception_count/scan_count = 0 - GIU NGUYEN moi field con lai (tpsdk_str/file_exception/lib_result/native_result/gin_check_data)");
     return info;
 }
 
