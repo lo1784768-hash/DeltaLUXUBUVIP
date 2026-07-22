@@ -14,6 +14,7 @@
 #import "Includes/Encryption.h"
 #import "Includes/ModHacks.h"
 #import "Includes/NetLog.h"
+#import "Includes/DNSBlock.h"
 #import "Includes/AssetRedirect.h"
 #import "Includes/DylibSpy.h"
 
@@ -283,11 +284,14 @@ UIWindow *mainWindow;
 game_sdk_t *game_sdk = new game_sdk_t();
 
 + (void)load {
-    // Socket-layer hook (connect/connectx/sendto/write/send) - was previously installed inside
-    // the now-removed DNSBlock.h's installDNSBlockHook(). Still needed here on its own: it's what
-    // powers the MOD tab's "Chặn UDP Port" toggle (netLogSetUdpPortBlockEnabled) and NetLog's
-    // passive traffic logging, neither of which is DNS/ad-domain blocking.
-    installNetLogHook();
+    // installDNSBlockHook() cài luôn cả socket-layer hook (connect/connectx/sendto/write/send) ở
+    // bên trong nó - hook đó cũng là thứ đứng sau MOD tab's "Chặn UDP Port" toggle
+    // (netLogSetUdpPortBlockEnabled) và NetLog's passive traffic logging, không chỉ riêng DNS.
+    //
+    // Called immediately, not inside the 3s-delayed block below - banner/ad requests can fire
+    // during early app launch, well before that delay elapses, and neither the getaddrinfo hook
+    // nor NSURLProtocol registration depend on game_sdk/UIApplication being ready.
+    installDNSBlockHook();
 
     if (DeltaVFS_needsFirstRunExtraction()) {
         // Guard đã được installFirstRunLaunchGuardEarly() (__attribute__((constructor)) phía trên,
@@ -1226,6 +1230,11 @@ game_sdk_t *game_sdk = new game_sdk_t();
     // Chữ ký: Delta.zip / folder Delta có được ký vào app không (đọc CodeResources)
     NSString *signInfo = DeltaVFS_signatureSummary();
 
+    // Thống kê chặn DNS/mạng
+    unsigned long long dnsBlocked = DNSBlock_count();
+    const char *dnsHostC = DNSBlock_lastHost();
+    NSString *dnsHost = (dnsHostC && dnsHostC[0]) ? [NSString stringWithUTF8String:dnsHostC] : @"—";
+
     NSString *text = [NSString stringWithFormat:
         @"%@\n\n"
          "%@\n"
@@ -1242,11 +1251,15 @@ game_sdk_t *game_sdk = new game_sdk_t();
          "Hits (từ Delta): %llu\n"
          "Miss (đọc bản gốc - bình thường, Delta chỉ chứa vài icon custom): %llu\n\n"
          "── CHỮ KÝ DELTA ──\n"
-         "%@",
+         "%@\n\n"
+         "── CHẶN DNS ──\n"
+         "Đã chặn: %llu request\n"
+         "Host chặn gần nhất:\n%@",
         verdict, hookLine, extractLine, dir,
         totalCalls, bundleCalls, hits, misses, pct, anyPath, last,
         DeltaVFS_abHotUpdatesHits(), DeltaVFS_abHotUpdatesMisses(),
-        signInfo];
+        signInfo,
+        dnsBlocked, dnsHost];
 
     _deltaLogView.text = text;
 }
