@@ -1531,7 +1531,10 @@ static BOOL hooked_nsfm_createFileAtPath(id self, SEL _cmd, NSString *path, NSDa
     return orig_nsfm_createFileAtPath(self, _cmd, path, contents, attributes);
 }
 
-static void initCocoaVFSRedirectSwizzling() {
+// __attribute__((unused)) - không còn được gọi (đã quay lại fishhook, xem constructor bên dưới)
+// nhưng giữ nguyên định nghĩa để dễ khôi phục - -Werror,-Wunused-function sẽ chặn build nếu
+// không đánh dấu rõ đây là cố ý giữ lại, không phải code chết quên xoá.
+static void __attribute__((unused)) initCocoaVFSRedirectSwizzling() {
     Class nsBundleClass = [NSBundle class];
     Class nsFileManagerClass = [NSFileManager class];
     Class nsDataClass = [NSData class];
