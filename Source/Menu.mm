@@ -18,6 +18,7 @@
 #import "Includes/AssetRedirect.h"
 #import "Includes/Il2CppResolve.h"
 #import "Includes/AntiReportSpoof.h"
+#import "Includes/PacketCapture.h"
 #import "Includes/DylibSpy.h"
 
 #define kWidth  [UIScreen mainScreen].bounds.size.width
@@ -437,9 +438,16 @@ game_sdk_t *game_sdk = new game_sdk_t();
             game_sdk->init();
             DeltaVFS_debugLog("Menu +load: gọi installAimMagnetHook()");
             installAimMagnetHook();
-            DeltaVFS_debugLog("Menu +load: gọi installAntiReportSpoof()");
-            installAntiReportSpoof();
-            DeltaVFS_debugLog("Menu +load: game_sdk + AimMagnet hook + AntiReportSpoof xong");
+            // installAntiReportSpoof() ĐÃ BỎ GỌI - test thật trên máy xác nhận hook
+            // GetMatchClientInfo() (dù bằng MSHookFunction hay Dobby, dù hook body làm gì hay
+            // hoàn toàn passthrough) gây crash chập chờn bên trong Firebase Crashlytics
+            // (std::vector<firebase::crashlytics::Frame>::__vdeallocate) - bản thân việc patch
+            // inline vào ĐÚNG hàm này không ổn định trên máy/bản game hiện tại, không liên quan
+            // gì tới nội dung sửa. Giữ nguyên định nghĩa trong AntiReportSpoof.h (không xoá) để
+            // dễ khôi phục/tham khảo sau, chỉ đơn giản không gọi installAntiReportSpoof() nữa.
+            DeltaVFS_debugLog("Menu +load: gọi installPacketCapture() (công cụ chẩn đoán tạm thời, xem PacketCapture.h)");
+            installPacketCapture();
+            DeltaVFS_debugLog("Menu +load: game_sdk + AimMagnet hook + PacketCapture xong");
             sdkInitialized = true;
         }
 
