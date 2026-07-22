@@ -1609,11 +1609,12 @@ static void initDeltaAllTrafficVFS() {
         // 2. KÍCH HOẠT HOOK CẤP CAO TRÊN RAM (NSBundle Swizzling - Info.plist spoof)
         initNSBundleMethodSwizzling();
 
-        // 2b. VFS REDIRECT + chặn ghi cache + chặn liệt kê marker Esign, TOÀN BỘ qua Cocoa-swizzle
-        // (xem PHẦN 4 ở trên) - thay cho fishhook trên open/openat/fopen/access/stat/lstat/
-        // opendir/closedir/readdir bên dưới (đã bỏ khỏi rebindings[], KHÔNG xoá hooked_* - giữ
-        // nguyên định nghĩa để dễ khôi phục nếu cần, chỉ đơn giản không rebind nữa).
-        initCocoaVFSRedirectSwizzling();
+        // 2b. initCocoaVFSRedirectSwizzling() ĐÃ BỎ GỌI - quay lại fishhook cho VFS redirect
+        // (rebindings[] bên dưới, mục 3) theo yêu cầu test lại - Cocoa-swizzle redirect được ít
+        // file hơn hẳn fishhook (xác nhận qua tab INFO: chỉ thấy "FreeFire" thay vì cả danh
+        // sách) và KHÔNG giải quyết được vụ bị đá giữa trận dù đã thử (xem AntiReportSpoof.h/
+        // PacketCapture.h). Giữ nguyên định nghĩa initCocoaVFSRedirectSwizzling()/PHẦN 4 để dễ
+        // quay lại nếu cần, chỉ đơn giản không gọi nữa.
     }
 
     bool needsFirstRun = g_deltaNeedsFirstRun.load(std::memory_order_relaxed);
@@ -1646,14 +1647,21 @@ static void initDeltaAllTrafficVFS() {
     // jetsam/watchdog/force-quit). Cũng an toàn gọi vô điều kiện, không đụng gì tới redirect.
     CrashFlag_checkPreviousSessionAndArm();
 
-    // CHỈ còn 2 rebind CFBundle* qua fishhook - đây là 2 hàm C thuần (CoreFoundation), không có
-    // cách swizzle Cocoa nào thay thế được (xem comment ở PHẦN 4). Toàn bộ họ open/openat/fopen/
-    // access/stat/lstat/opendir/closedir/readdir ĐÃ CHUYỂN sang Cocoa-swizzle
-    // (initCocoaVFSRedirectSwizzling() ở trên) - không rebind ở đây nữa, giảm hẳn dấu vết GOT-hook
-    // trên các hàm libc bị gọi tần suất cao (rủi ro PMS_HOOK-style detection, xem mục README về
-    // enum EHacker.HackerPoolCdt).
-    struct rebinding rebindings[2];
+    // ĐÃ QUAY LẠI fishhook cho toàn bộ họ open/openat/fopen/access/stat/lstat/opendir/closedir/
+    // readdir (11 rebind, như bản gốc trước khi thử Cocoa-swizzle) - test thật xác nhận Cocoa-
+    // swizzle không giải quyết được vụ bị đá giữa trận và redirect được ít file hơn hẳn, nên
+    // không còn lý do đánh đổi coverage để né 1 rủi ro (PMS_HOOK) chưa chắc là nguyên nhân thật.
+    struct rebinding rebindings[11];
     int n = 0;
+    rebindings[n].name = "open";   rebindings[n].replacement = (void *)hooked_open;   rebindings[n].replaced = (void **)&orig_open;   n++;
+    rebindings[n].name = "openat"; rebindings[n].replacement = (void *)hooked_openat; rebindings[n].replaced = (void **)&orig_openat; n++;
+    rebindings[n].name = "fopen";  rebindings[n].replacement = (void *)hooked_fopen;  rebindings[n].replaced = (void **)&orig_fopen;  n++;
+    rebindings[n].name = "access"; rebindings[n].replacement = (void *)hooked_access; rebindings[n].replaced = (void **)&orig_access; n++;
+    rebindings[n].name = "stat";   rebindings[n].replacement = (void *)hooked_stat;   rebindings[n].replaced = (void **)&orig_stat;   n++;
+    rebindings[n].name = "lstat";  rebindings[n].replacement = (void *)hooked_lstat;  rebindings[n].replaced = (void **)&orig_lstat;  n++;
+    rebindings[n].name = "opendir";  rebindings[n].replacement = (void *)hooked_opendir;  rebindings[n].replaced = (void **)&orig_opendir;  n++;
+    rebindings[n].name = "closedir"; rebindings[n].replacement = (void *)hooked_closedir; rebindings[n].replaced = (void **)&orig_closedir; n++;
+    rebindings[n].name = "readdir";  rebindings[n].replacement = (void *)hooked_readdir;  rebindings[n].replaced = (void **)&orig_readdir;  n++;
     rebindings[n].name = "CFBundleGetInfoDictionary";           rebindings[n].replacement = (void *)hooked_CFBundleGetInfoDictionary;           rebindings[n].replaced = (void **)&orig_CFBundleGetInfoDictionary;           n++;
     rebindings[n].name = "CFBundleGetValueForInfoDictionaryKey"; rebindings[n].replacement = (void *)hooked_CFBundleGetValueForInfoDictionaryKey; rebindings[n].replaced = (void **)&orig_CFBundleGetValueForInfoDictionaryKey; n++;
 
@@ -1662,11 +1670,9 @@ static void initDeltaAllTrafficVFS() {
 
     // Checkpoint CUỐI CÙNG của constructor - dòng log này LUÔN LÀ 1 TRONG NHỮNG DÒNG ĐẦU TIÊN của
     // debug.log mỗi lần app mở, vì __attribute__((constructor)) chạy trước main()/UIApplicationMain,
-    // trước khi bất kỳ code nào của game (Unity, AppDelegate...) có cơ hội chạy. Tại đây redirect
-    // đã sẵn sàng phục vụ qua Cocoa-swizzle (initCocoaVFSRedirectSwizzling(), gọi ở PHẦN 2b bên
-    // trên, TRƯỚC constructor này) + 2 rebind CFBundle* còn lại qua fishhook. rebindRet ở đây chỉ
-    // phản ánh đúng 2 cái CFBundle, không còn đại diện cho toàn bộ VFS redirect như trước nữa.
-    DeltaVFS_debugLogf("initDeltaAllTrafficVFS: HOÀN TẤT - rebindRet=%d(CFBundle*) hooksOK=%u active=%d zipFound=%d needsFirstRun=%d",
+    // trước khi bất kỳ code nào của game (Unity, AppDelegate...) có cơ hội chạy. rebindRet ở đây
+    // lại đại diện cho toàn bộ 11 rebind fishhook (VFS + 2 CFBundle*) như bản gốc.
+    DeltaVFS_debugLogf("initDeltaAllTrafficVFS: HOÀN TẤT - rebindRet=%d hooksOK=%u active=%d zipFound=%d needsFirstRun=%d",
         rebindRet, g_deltaHooksOK.load(std::memory_order_relaxed),
         g_deltaActive.load(std::memory_order_relaxed),
         g_deltaZipFound.load(std::memory_order_relaxed), needsFirstRun);
