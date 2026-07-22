@@ -1449,7 +1449,7 @@ game_sdk_t *game_sdk = new game_sdk_t();
     }
 
     UIButton *backBtn = [self createButtonWithLocKey:@"back" frame:CGRectMake(btnX, btnY, btnW, btnH)];
-    [backBtn setTitleColor:[UIColor colorWithRed:0.95 green:0.35 blue:0.45 alpha:0.85] forState:UIControlStateNormal];
+    [backBtn setTitleColor:COLOR_TEXT_DIM forState:UIControlStateNormal];
     [backBtn addTarget:self action:@selector(showModMainFromGoc) forControlEvents:UIControlEventTouchUpInside];
     [scroll addSubview:backBtn];
     btnY += btnH + btnGap;
@@ -1479,7 +1479,7 @@ game_sdk_t *game_sdk = new game_sdk_t();
     }
 
     UIButton *backBtn = [self createButtonWithLocKey:@"back" frame:CGRectMake(btnX, btnY, btnW, btnH)];
-    [backBtn setTitleColor:[UIColor colorWithRed:0.95 green:0.35 blue:0.45 alpha:0.85] forState:UIControlStateNormal];
+    [backBtn setTitleColor:COLOR_TEXT_DIM forState:UIControlStateNormal];
     [backBtn addTarget:self action:@selector(showGocListFromMod) forControlEvents:UIControlEventTouchUpInside];
     [scroll addSubview:backBtn];
     btnY += btnH + btnGap;
@@ -2231,7 +2231,7 @@ static const NSInteger kCardIconTag = 9002;
 
     UISwitch *sw = [[UISwitch alloc] init];
     sw.onTintColor = COLOR_CYAN;
-    sw.tintColor = [UIColor colorWithWhite:1.0 alpha:0.16];
+    sw.tintColor = [UIColor colorWithWhite:1.0 alpha:0.3];
     sw.thumbTintColor = [UIColor colorWithWhite:0.94 alpha:1.0];
     CGSize swSize = sw.frame.size;
     sw.frame = CGRectMake(frame.size.width - swSize.width - 10, (frame.size.height - swSize.height) / 2.0f, swSize.width, swSize.height);
