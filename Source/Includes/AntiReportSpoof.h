@@ -34,7 +34,16 @@
 //  đã copy libdobby.a/dobby.h từ FAKEMENU vào Source/Includes/Dobby/ và link qua Makefile.
 // ============================================================================
 #import "Il2CppResolve.h"
+
+// dobby.h tự bọc extern "C" { #include <stdbool.h> #include <stdint.h> ... } - dưới -fmodules
+// (mặc định bật khi build iOS), 2 include chuẩn đó bị dịch thành "@import" ngầm, mà Clang không
+// cho phép "@import" nằm trong extern "C" (lỗi -Wmodule-import-in-extern-c) - đúng loại lỗi đã
+// gặp và xử lý y hệt cho Generated/mach_exc_server.h, xem HWBreakHook.h. Tắt riêng cảnh báo đó
+// quanh include này thay vì sửa dobby.h gốc (giữ nguyên file vendor từ FAKEMENU).
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wmodule-import-in-extern-c"
 #import "Dobby/dobby.h"
+#pragma clang diagnostic pop
 
 typedef void *(*ORIG_GetMatchClientInfo)();
 static ORIG_GetMatchClientInfo orig_GetMatchClientInfo = NULL;
