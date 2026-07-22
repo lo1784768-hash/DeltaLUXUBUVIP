@@ -2276,6 +2276,17 @@ static const NSInteger kCardIconTag = 9002;
         DeltaVFS_debugLog("Main thread heartbeat: updateMenu vẫn đang chạy (CADisplayLink)");
     }
 
+    // Đánh dấu mốc sảnh <-> trận trong debug.log - KHÔNG hook gì mới, chỉ đọc lại
+    // game_sdk->Curent_Match() (hàm đã gọi an toàn sẵn cho Aim/ESP mỗi frame, không phải patch)
+    // mỗi frame và chỉ log khi trạng thái THAY ĐỔI. Giúp đối chiếu thời điểm crash/bị đá với
+    // đúng lúc vào/rời trận thay vì chỉ có "Main thread heartbeat" chung chung.
+    static bool wasInMatch = false;
+    bool isInMatch = game_sdk && game_sdk->Curent_Match && (game_sdk->Curent_Match() != NULL);
+    if (isInMatch != wasInMatch) {
+        DeltaVFS_debugLogf("Match state: %s", isInMatch ? "DA VAO TRAN (Curent_Match != null)" : "DA ROI TRAN / O SANH (Curent_Match == null)");
+        wasInMatch = isInMatch;
+    }
+
     _menuView.hidden = !MenDeal;
 
     get_players();
