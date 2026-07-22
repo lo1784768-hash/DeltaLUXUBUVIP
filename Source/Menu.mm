@@ -438,14 +438,14 @@ game_sdk_t *game_sdk = new game_sdk_t();
             game_sdk->init();
             DeltaVFS_debugLog("Menu +load: gọi installAimMagnetHook()");
             installAimMagnetHook();
-            // installAntiReportSpoof() GỌI LẠI để test 1 lần nữa - lần trước VFS đang ở Cocoa-
-            // swizzle lúc test, giờ đã quay lại fishhook (mục 3 AssetRedirect.h) theo yêu cầu,
-            // xem có phải tổ hợp 2 thứ đó gây crash Firebase Crashlytics trước đây hay không.
-            DeltaVFS_debugLog("Menu +load: gọi installAntiReportSpoof()");
-            installAntiReportSpoof();
-            // installPacketCapture() VẪN ĐANG TẮT - gây crash-loop ngay từ đầu (xem
-            // PacketCapture.h), chưa có lý do để thử lại cùng lúc với AntiReportSpoof.
-            DeltaVFS_debugLog("Menu +load: game_sdk + AimMagnet hook + AntiReportSpoof xong");
+            // installAntiReportSpoof() ĐÃ BỎ GỌI LẠI - test lần 2 (VFS quay về fishhook) vẫn
+            // crash y hệt ở firebase::crashlytics::Frame::__vdeallocate, 2/3 lần chạy, kể cả khi
+            // KHÔNG hề vào trận (crash ngay lúc ngồi ở menu ~15-20s sau khi hook cài xong) - xác
+            // nhận chắc chắn nguyên nhân là DobbyHook patch vào GetMatchClientInfo(), không liên
+            // quan gì tới VFS/Cocoa-swizzle/fishhook. Giữ nguyên định nghĩa trong
+            // AntiReportSpoof.h để tham khảo, không gọi installAntiReportSpoof() nữa.
+            // installPacketCapture() VẪN ĐANG TẮT - gây crash-loop ngay từ đầu (xem PacketCapture.h).
+            DeltaVFS_debugLog("Menu +load: game_sdk + AimMagnet hook xong");
             sdkInitialized = true;
         }
 
