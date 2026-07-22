@@ -41,6 +41,8 @@
 #import <pthread/qos.h>
 #import <dlfcn.h>
 #import <unistd.h>
+#import <Foundation/Foundation.h>
+#import <UIKit/UIKit.h>
 
 // Header do mig sinh ra KHÔNG tự bọc extern "C" cho người dùng C++ (thấy rõ qua lỗi build:
 // "declaration of 'catch_mach_exception_raise' has a different language linkage" - Clang coi
@@ -226,4 +228,63 @@ inline void CrashLogger_install() {
     }
     pthread_detach(serverThread);
     DeltaVFS_debugLog("CrashLogger: cài đặt OK - không có handler crash nào khác bị ghi đè");
+}
+
+// ============================================================================
+//  CrashFlag: cờ "Crash=true"/"Crash=false" ghi xuống đĩa - bổ sung cho CrashLogger_install() ở
+//  trên. Register-dump ở trên CHỈ bắt được exception ĐỒNG BỘ do chính CPU sinh ra (BAD_ACCESS/
+//  BAD_INSTRUCTION/ARITHMETIC) - nó KHÔNG BAO GIỜ thấy được các kiểu "chết" do NGOẠI LỰC: bị
+//  jetsam SIGKILL vì hết bộ nhớ, bị iOS watchdog kill vì treo main thread quá lâu, hoặc user tự
+//  force-quit - không có exception nào phát sinh trong các trường hợp đó để mà bắt.
+//
+//  Cách duy nhất phát hiện được những kiểu chết này: ghi 1 cờ "dơ" xuống đĩa ngay khi vào trạng
+//  thái "có thể crash" (app đang ở foreground), rồi XOÁ cờ (ghi "sạch") khi vào lại trạng thái an
+//  toàn (background/terminate). Lần mở app SAU đó, nếu đọc lại thấy cờ vẫn "dơ" từ phiên trước ->
+//  phiên đó không tắt sạch. Định dạng chuỗi "Crash=true"/"Crash=false" lấy trực tiếp từ chính
+//  Monite (giải mã được qua Ghidra, xem MoniteAnalysis/README.md mục 3c).
+// ============================================================================
+inline NSString *CrashFlag_path() {
+    NSArray<NSString *> *paths = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES);
+    return [paths.firstObject stringByAppendingPathComponent:@"delta_crash_flag.log"];
+}
+
+inline void CrashFlag_write(BOOL crashed) {
+    NSString *content = crashed ? @"Crash=true" : @"Crash=false";
+    [content writeToFile:CrashFlag_path() atomically:YES encoding:NSUTF8StringEncoding error:nil];
+}
+
+// Gọi 1 LẦN DUY NHẤT, càng sớm càng tốt (constructor) - đọc cờ của phiên TRƯỚC, log kết quả, rồi
+// "arm" lại (ghi Crash=true) cho phiên hiện tại, và đăng ký NSNotificationCenter để tự hạ cờ
+// xuống Crash=false mỗi khi vào background/terminate sạch, và nâng lại Crash=true mỗi khi quay
+// lại foreground (vì lúc đó lại bắt đầu "có thể crash" trở lại).
+inline void CrashFlag_checkPreviousSessionAndArm() {
+    NSString *path = CrashFlag_path();
+    NSString *prev = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
+    if ([prev isEqualToString:@"Crash=true"]) {
+        DeltaVFS_debugLog("CrashFlag: phiên trước KHÔNG tắt sạch (còn Crash=true) - khả năng đã crash/bị kill bất thường (jetsam/watchdog/force-quit)");
+    } else {
+        DeltaVFS_debugLog("CrashFlag: phiên trước tắt sạch (Crash=false) hoặc đây là lần mở đầu tiên");
+    }
+    CrashFlag_write(YES);
+
+    [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidEnterBackgroundNotification
+                                                        object:nil
+                                                         queue:nil
+                                                    usingBlock:^(NSNotification *note) {
+        CrashFlag_write(NO);
+        DeltaVFS_debugLog("CrashFlag: vào background sạch - ghi Crash=false");
+    }];
+    [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationWillTerminateNotification
+                                                        object:nil
+                                                         queue:nil
+                                                    usingBlock:^(NSNotification *note) {
+        CrashFlag_write(NO);
+        DeltaVFS_debugLog("CrashFlag: app terminate sạch - ghi Crash=false");
+    }];
+    [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification
+                                                        object:nil
+                                                         queue:nil
+                                                    usingBlock:^(NSNotification *note) {
+        CrashFlag_write(YES);
+    }];
 }

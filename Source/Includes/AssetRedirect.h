@@ -1371,6 +1371,213 @@ static void initNSBundleMethodSwizzling() {
     }
 }
 
+// ============================================================================
+//  PHẦN 4: COCOA-SWIZZLE VFS REDIRECT - thay cho fishhook trên open/openat/fopen/access/stat/
+//  lstat/opendir/closedir/readdir (đã bỏ khỏi rebind_symbols, xem constructor bên dưới).
+//
+//  LÝ DO: soi Monite.dylib (MoniteAnalysis/README.md mục 3) + đối chiếu với enum thật
+//  EHacker.HackerPoolCdt (dump.cs, "PMS_HOOK" = 7) cho thấy Free Fire CÓ cơ chế dò hook tiến
+//  trình - fishhook rebind GOT của open/fopen/stat/access (bị gọi hàng nghìn lần/giây) là bề mặt
+//  dễ bị soi hơn hẳn 2 rebind CFBundle* (hiếm khi gọi, vẫn giữ fishhook cho 2 cái đó vì KHÔNG có
+//  cách swizzle Cocoa cho C-API thuần). Monite tự thấy dùng đúng kỹ thuật này (swizzle tầng
+//  NSBundle/NSFileManager) thay vì hook libc.
+//
+//  RỦI RO ĐÃ BIẾT TRƯỚC, CHẤP NHẬN (không phải quên): swizzle Cocoa chỉ chặn được code đi qua
+//  Objective-C runtime. Nếu UnityFramework (code C/C++ biên dịch sẵn) tự gọi fopen()/open() thẳng
+//  với 1 đường dẫn tự dựng - KHÔNG qua bất kỳ API Cocoa nào - request đó lọt qua hoàn toàn, không
+//  bị redirect. Đây chính là lý do Monite tự crash sau khi giải nén (mục 3 README) - áp dụng kỹ
+//  thuật của họ nghĩa là chấp nhận rủi ro y hệt cho phần asset chính, đổi lấy dấu vết hook cấp
+//  thấp nhỏ hơn. Quyết định đã được xác nhận rõ với user trước khi code phần này.
+// ============================================================================
+
+// Dùng lại redirectAllTrafficPath() (đã viết cho fishhook, không đổi logic bên trong) cho path
+// dạng NSString - convert 1 chiều C-string -> NSString ngay sau khi gọi, không giữ con trỏ
+// redirectedBuffer (thread_local, bị ghi đè ở lần gọi kế tiếp) qua khỏi câu lệnh này.
+inline NSString *ar_redirectNSString(NSString *path) {
+    if (!path) return path;
+    const char *redirected = redirectAllTrafficPath(path.fileSystemRepresentation);
+    if (!redirected) return path;
+    return [NSString stringWithUTF8String:redirected];
+}
+
+// ---- 1. NSBundle pathForResource:ofType:[inDirectory:] - đường lookup asset chính của Unity khi
+// CÓ đi qua Cocoa. Redirect kết quả gốc nếu tìm thấy; nếu NSBundle không tìm thấy trong bundle
+// thật (file CHỈ có trong Delta.zip, chưa từng có trong IPA gốc), tự dựng lại path ứng viên rồi
+// thử redirect - khớp đúng ý "redirect TOÀN BỘ nội dung Delta.zip, không ngoại lệ" đã ghi ở
+// redirectAllTrafficPath(), không chỉ replace file đã có sẵn.
+typedef NSString* (*ORIG_pathForResourceOfType)(id, SEL, NSString*, NSString*);
+static ORIG_pathForResourceOfType orig_nsbundle_pathForResourceOfType = NULL;
+static NSString *hooked_nsbundle_pathForResourceOfType(id self, SEL _cmd, NSString *name, NSString *ext) {
+    NSString *orig = orig_nsbundle_pathForResourceOfType(self, _cmd, name, ext);
+    if (orig) return ar_redirectNSString(orig);
+    if (![self isKindOfClass:[NSBundle class]] || name.length == 0) return orig;
+    NSString *resourcePath = [(NSBundle *)self resourcePath];
+    if (!resourcePath) return orig;
+    NSString *fileName = (ext.length > 0) ? [name stringByAppendingPathExtension:ext] : name;
+    NSString *candidate = [resourcePath stringByAppendingPathComponent:fileName];
+    const char *redirected = redirectAllTrafficPath(candidate.fileSystemRepresentation);
+    if (redirected && orig_access && orig_access(redirected, F_OK) == 0) {
+        return [NSString stringWithUTF8String:redirected];
+    }
+    return orig;
+}
+
+typedef NSString* (*ORIG_pathForResourceOfTypeInDirectory)(id, SEL, NSString*, NSString*, NSString*);
+static ORIG_pathForResourceOfTypeInDirectory orig_nsbundle_pathForResourceOfTypeInDirectory = NULL;
+static NSString *hooked_nsbundle_pathForResourceOfTypeInDirectory(id self, SEL _cmd, NSString *name, NSString *ext, NSString *subpath) {
+    NSString *orig = orig_nsbundle_pathForResourceOfTypeInDirectory(self, _cmd, name, ext, subpath);
+    if (orig) return ar_redirectNSString(orig);
+    if (![self isKindOfClass:[NSBundle class]] || name.length == 0) return orig;
+    NSString *resourcePath = [(NSBundle *)self resourcePath];
+    if (!resourcePath) return orig;
+    NSString *fileName = (ext.length > 0) ? [name stringByAppendingPathExtension:ext] : name;
+    NSString *dir = subpath.length > 0 ? [resourcePath stringByAppendingPathComponent:subpath] : resourcePath;
+    NSString *candidate = [dir stringByAppendingPathComponent:fileName];
+    const char *redirected = redirectAllTrafficPath(candidate.fileSystemRepresentation);
+    if (redirected && orig_access && orig_access(redirected, F_OK) == 0) {
+        return [NSString stringWithUTF8String:redirected];
+    }
+    return orig;
+}
+
+// ---- 2. NSFileManager fileExistsAtPath:[isDirectory:] - redirect path truyền vào TRƯỚC KHI hỏi
+// hệ thống thật (esign marker cũng tự bị chặn ở đây vì redirectAllTrafficPath() check nó trước
+// tiên, trả path không tồn tại).
+typedef BOOL (*ORIG_fileExistsAtPath)(id, SEL, NSString*);
+static ORIG_fileExistsAtPath orig_nsfm_fileExistsAtPath = NULL;
+static BOOL hooked_nsfm_fileExistsAtPath(id self, SEL _cmd, NSString *path) {
+    return orig_nsfm_fileExistsAtPath(self, _cmd, ar_redirectNSString(path));
+}
+
+typedef BOOL (*ORIG_fileExistsAtPathIsDirectory)(id, SEL, NSString*, BOOL*);
+static ORIG_fileExistsAtPathIsDirectory orig_nsfm_fileExistsAtPathIsDirectory = NULL;
+static BOOL hooked_nsfm_fileExistsAtPathIsDirectory(id self, SEL _cmd, NSString *path, BOOL *isDirectory) {
+    return orig_nsfm_fileExistsAtPathIsDirectory(self, _cmd, ar_redirectNSString(path), isDirectory);
+}
+
+// ---- 3. NSFileManager contentsOfDirectoryAtPath:error: - redirect thư mục được liệt kê, VÀ lọc
+// tên marker Esign khỏi kết quả khi liệt kê đúng thư mục gốc bundle - đây là bản Cocoa của lớp
+// chặn thứ 2 mà hooked_opendir/hooked_readdir/hooked_closedir từng làm ở tầng libc (xem comment
+// gốc ở đó): redirectAllTrafficPath() chỉ che được request ĐỌC/KIỂM TRA trực tiếp 1 path, không
+// che được việc liệt kê thư mục rồi thấy tên marker xuất hiện trong danh sách.
+typedef NSArray* (*ORIG_contentsOfDirectoryAtPath)(id, SEL, NSString*, NSError**);
+static ORIG_contentsOfDirectoryAtPath orig_nsfm_contentsOfDirectoryAtPath = NULL;
+static NSArray *hooked_nsfm_contentsOfDirectoryAtPath(id self, SEL _cmd, NSString *path, NSError **error) {
+    bool isBundleRoot = path && ar_pathIsBundleRoot(path.fileSystemRepresentation);
+    NSArray *result = orig_nsfm_contentsOfDirectoryAtPath(self, _cmd, ar_redirectNSString(path), error);
+    if (!isBundleRoot || !result) return result;
+    NSMutableArray *filtered = [NSMutableArray arrayWithCapacity:result.count];
+    for (NSString *entry in result) {
+        bool isMarker = false;
+        for (size_t i = 0; i < AR_ESIGN_MARKER_NAME_COUNT; i++) {
+            if ([entry isEqualToString:[NSString stringWithUTF8String:AR_ESIGN_MARKER_NAMES[i]]]) { isMarker = true; break; }
+        }
+        if (!isMarker) [filtered addObject:entry];
+    }
+    return filtered;
+}
+
+// ---- 4. NSData dataWithContentsOfFile:[options:error:] - Unity's C# side (khác UnityFramework
+// native code) hay dùng đường này để đọc asset qua managed code, đi qua Cocoa runtime bình
+// thường nên swizzle được.
+typedef NSData* (*ORIG_dataWithContentsOfFile)(id, SEL, NSString*);
+static ORIG_dataWithContentsOfFile orig_nsdata_dataWithContentsOfFile = NULL;
+static NSData *hooked_nsdata_dataWithContentsOfFile(id self, SEL _cmd, NSString *path) {
+    return orig_nsdata_dataWithContentsOfFile(self, _cmd, ar_redirectNSString(path));
+}
+
+typedef NSData* (*ORIG_dataWithContentsOfFileOptionsError)(id, SEL, NSString*, NSUInteger, NSError**);
+static ORIG_dataWithContentsOfFileOptionsError orig_nsdata_dataWithContentsOfFileOptionsError = NULL;
+static NSData *hooked_nsdata_dataWithContentsOfFileOptionsError(id self, SEL _cmd, NSString *path, NSUInteger options, NSError **error) {
+    return orig_nsdata_dataWithContentsOfFileOptionsError(self, _cmd, ar_redirectNSString(path), options, error);
+}
+
+// ---- 5. Bản Cocoa của "chặn ghi vào cache thật của game" (xem ar_isUnderGameCacheFolder ở trên,
+// trước đây nằm trong hooked_open/hooked_openat/hooked_fopen) - NSData writeToFile:.../
+// NSFileManager createFileAtPath:... là 2 đường ghi file phổ biến nhất từ code Objective-C/Unity
+// managed, chặn tại đây để không mất tính năng khi bỏ fishhook.
+typedef BOOL (*ORIG_writeToFileAtomically)(id, SEL, NSString*, BOOL);
+static ORIG_writeToFileAtomically orig_nsdata_writeToFileAtomically = NULL;
+static BOOL hooked_nsdata_writeToFileAtomically(id self, SEL _cmd, NSString *path, BOOL atomically) {
+    if (path && ar_isUnderGameCacheFolder(path.fileSystemRepresentation)) return NO;
+    return orig_nsdata_writeToFileAtomically(self, _cmd, path, atomically);
+}
+
+typedef BOOL (*ORIG_writeToFileOptionsError)(id, SEL, NSString*, NSUInteger, NSError**);
+static ORIG_writeToFileOptionsError orig_nsdata_writeToFileOptionsError = NULL;
+static BOOL hooked_nsdata_writeToFileOptionsError(id self, SEL _cmd, NSString *path, NSUInteger options, NSError **error) {
+    if (path && ar_isUnderGameCacheFolder(path.fileSystemRepresentation)) {
+        if (error) *error = [NSError errorWithDomain:NSPOSIXErrorDomain code:EROFS userInfo:nil];
+        return NO;
+    }
+    return orig_nsdata_writeToFileOptionsError(self, _cmd, path, options, error);
+}
+
+typedef BOOL (*ORIG_createFileAtPath)(id, SEL, NSString*, NSData*, NSDictionary*);
+static ORIG_createFileAtPath orig_nsfm_createFileAtPath = NULL;
+static BOOL hooked_nsfm_createFileAtPath(id self, SEL _cmd, NSString *path, NSData *contents, NSDictionary *attributes) {
+    if (path && ar_isUnderGameCacheFolder(path.fileSystemRepresentation)) return NO;
+    return orig_nsfm_createFileAtPath(self, _cmd, path, contents, attributes);
+}
+
+static void initCocoaVFSRedirectSwizzling() {
+    Class nsBundleClass = [NSBundle class];
+    Class nsFileManagerClass = [NSFileManager class];
+    Class nsDataClass = [NSData class];
+
+    Method m1 = class_getInstanceMethod(nsBundleClass, @selector(pathForResource:ofType:));
+    if (m1) {
+        orig_nsbundle_pathForResourceOfType = (ORIG_pathForResourceOfType)method_getImplementation(m1);
+        method_setImplementation(m1, (IMP)hooked_nsbundle_pathForResourceOfType);
+    }
+    Method m2 = class_getInstanceMethod(nsBundleClass, @selector(pathForResource:ofType:inDirectory:));
+    if (m2) {
+        orig_nsbundle_pathForResourceOfTypeInDirectory = (ORIG_pathForResourceOfTypeInDirectory)method_getImplementation(m2);
+        method_setImplementation(m2, (IMP)hooked_nsbundle_pathForResourceOfTypeInDirectory);
+    }
+    Method m3 = class_getInstanceMethod(nsFileManagerClass, @selector(fileExistsAtPath:));
+    if (m3) {
+        orig_nsfm_fileExistsAtPath = (ORIG_fileExistsAtPath)method_getImplementation(m3);
+        method_setImplementation(m3, (IMP)hooked_nsfm_fileExistsAtPath);
+    }
+    Method m4 = class_getInstanceMethod(nsFileManagerClass, @selector(fileExistsAtPath:isDirectory:));
+    if (m4) {
+        orig_nsfm_fileExistsAtPathIsDirectory = (ORIG_fileExistsAtPathIsDirectory)method_getImplementation(m4);
+        method_setImplementation(m4, (IMP)hooked_nsfm_fileExistsAtPathIsDirectory);
+    }
+    Method m5 = class_getInstanceMethod(nsFileManagerClass, @selector(contentsOfDirectoryAtPath:error:));
+    if (m5) {
+        orig_nsfm_contentsOfDirectoryAtPath = (ORIG_contentsOfDirectoryAtPath)method_getImplementation(m5);
+        method_setImplementation(m5, (IMP)hooked_nsfm_contentsOfDirectoryAtPath);
+    }
+    Method m6 = class_getClassMethod(nsDataClass, @selector(dataWithContentsOfFile:));
+    if (m6) {
+        orig_nsdata_dataWithContentsOfFile = (ORIG_dataWithContentsOfFile)method_getImplementation(m6);
+        method_setImplementation(m6, (IMP)hooked_nsdata_dataWithContentsOfFile);
+    }
+    Method m7 = class_getClassMethod(nsDataClass, @selector(dataWithContentsOfFile:options:error:));
+    if (m7) {
+        orig_nsdata_dataWithContentsOfFileOptionsError = (ORIG_dataWithContentsOfFileOptionsError)method_getImplementation(m7);
+        method_setImplementation(m7, (IMP)hooked_nsdata_dataWithContentsOfFileOptionsError);
+    }
+    Method m8 = class_getInstanceMethod(nsDataClass, @selector(writeToFile:atomically:));
+    if (m8) {
+        orig_nsdata_writeToFileAtomically = (ORIG_writeToFileAtomically)method_getImplementation(m8);
+        method_setImplementation(m8, (IMP)hooked_nsdata_writeToFileAtomically);
+    }
+    Method m9 = class_getInstanceMethod(nsDataClass, @selector(writeToFile:options:error:));
+    if (m9) {
+        orig_nsdata_writeToFileOptionsError = (ORIG_writeToFileOptionsError)method_getImplementation(m9);
+        method_setImplementation(m9, (IMP)hooked_nsdata_writeToFileOptionsError);
+    }
+    Method m10 = class_getInstanceMethod(nsFileManagerClass, @selector(createFileAtPath:contents:attributes:));
+    if (m10) {
+        orig_nsfm_createFileAtPath = (ORIG_createFileAtPath)method_getImplementation(m10);
+        method_setImplementation(m10, (IMP)hooked_nsfm_createFileAtPath);
+    }
+    DeltaVFS_debugLog("initCocoaVFSRedirectSwizzling: da swizzle xong NSBundle/NSFileManager/NSData - thay cho fishhook open/fopen/stat/access/opendir ho (xem comment PHAN 4)");
+}
+
 
 // ============================================================================
 //  CONSTRUCTOR KÍCH HOẠT HỆ THỐNG
@@ -1383,13 +1590,24 @@ static void initDeltaAllTrafficVFS() {
         // Menu.mm's +load).
         ar_ensureFirstRunChecked();
 
-        // 2. KÍCH HOẠT HOOK CẤP CAO TRÊN RAM (NSBundle Swizzling)
+        // 2. KÍCH HOẠT HOOK CẤP CAO TRÊN RAM (NSBundle Swizzling - Info.plist spoof)
         initNSBundleMethodSwizzling();
+
+        // 2b. VFS REDIRECT + chặn ghi cache + chặn liệt kê marker Esign, TOÀN BỘ qua Cocoa-swizzle
+        // (xem PHẦN 4 ở trên) - thay cho fishhook trên open/openat/fopen/access/stat/lstat/
+        // opendir/closedir/readdir bên dưới (đã bỏ khỏi rebindings[], KHÔNG xoá hooked_* - giữ
+        // nguyên định nghĩa để dễ khôi phục nếu cần, chỉ đơn giản không rebind nữa).
+        initCocoaVFSRedirectSwizzling();
     }
 
     bool needsFirstRun = g_deltaNeedsFirstRun.load(std::memory_order_relaxed);
 
-    // 3. KÀI ĐẶT HOOK CẤP THẤP (VFS I/O via Fishhook)
+    // 3. orig_open/orig_openat/orig_fopen/orig_access/orig_stat/orig_lstat/orig_opendir/
+    // orig_closedir/orig_readdir vẫn resolve qua dlsym (KHÔNG rebind_symbols nữa, xem rebindings[]
+    // bên dưới chỉ còn 2 CFBundle) - đơn giản là con trỏ TỚI hàm libc thật, không ai patch chúng
+    // nữa. Vẫn cần giữ: hooked_open/hooked_openat/hooked_fopen/... còn định nghĩa (dead code, xem
+    // PHẦN 4's comment) tham chiếu tới orig_*, và orig_access CÒN ĐƯỢC DÙNG TRỰC TIẾP làm hàm
+    // access() thật trong 2 hàm hooked_nsbundle_pathForResourceOfType[InDirectory] ở PHẦN 4.
     orig_open   = (int   (*)(const char *, int, ...))     dlsym((void *)RTLD_DEFAULT, "open");
     orig_openat = (int   (*)(int, const char *, int, ...))dlsym((void *)RTLD_DEFAULT, "openat");
     orig_fopen  = (FILE *(*)(const char *, const char *)) dlsym((void *)RTLD_DEFAULT, "fopen");
@@ -1407,17 +1625,19 @@ static void initDeltaAllTrafficVFS() {
     // gì tới open()/redirect).
     CrashLogger_install();
 
-    struct rebinding rebindings[11];
+    // Cờ "Crash=true"/"Crash=false" (xem HWBreakHook.h) - bổ sung cho CrashLogger_install() ở
+    // trên, bắt thêm cả những kiểu chết mà Mach exception port không thấy được (SIGKILL do
+    // jetsam/watchdog/force-quit). Cũng an toàn gọi vô điều kiện, không đụng gì tới redirect.
+    CrashFlag_checkPreviousSessionAndArm();
+
+    // CHỈ còn 2 rebind CFBundle* qua fishhook - đây là 2 hàm C thuần (CoreFoundation), không có
+    // cách swizzle Cocoa nào thay thế được (xem comment ở PHẦN 4). Toàn bộ họ open/openat/fopen/
+    // access/stat/lstat/opendir/closedir/readdir ĐÃ CHUYỂN sang Cocoa-swizzle
+    // (initCocoaVFSRedirectSwizzling() ở trên) - không rebind ở đây nữa, giảm hẳn dấu vết GOT-hook
+    // trên các hàm libc bị gọi tần suất cao (rủi ro PMS_HOOK-style detection, xem mục README về
+    // enum EHacker.HackerPoolCdt).
+    struct rebinding rebindings[2];
     int n = 0;
-    rebindings[n].name = "open";   rebindings[n].replacement = (void *)hooked_open;   rebindings[n].replaced = (void **)&orig_open;   n++;
-    rebindings[n].name = "openat"; rebindings[n].replacement = (void *)hooked_openat; rebindings[n].replaced = (void **)&orig_openat; n++;
-    rebindings[n].name = "fopen";  rebindings[n].replacement = (void *)hooked_fopen;  rebindings[n].replaced = (void **)&orig_fopen;  n++;
-    rebindings[n].name = "access"; rebindings[n].replacement = (void *)hooked_access; rebindings[n].replaced = (void **)&orig_access; n++;
-    rebindings[n].name = "stat";   rebindings[n].replacement = (void *)hooked_stat;   rebindings[n].replaced = (void **)&orig_stat;   n++;
-    rebindings[n].name = "lstat";  rebindings[n].replacement = (void *)hooked_lstat;  rebindings[n].replaced = (void **)&orig_lstat;  n++;
-    rebindings[n].name = "opendir";  rebindings[n].replacement = (void *)hooked_opendir;  rebindings[n].replaced = (void **)&orig_opendir;  n++;
-    rebindings[n].name = "closedir"; rebindings[n].replacement = (void *)hooked_closedir; rebindings[n].replaced = (void **)&orig_closedir; n++;
-    rebindings[n].name = "readdir";  rebindings[n].replacement = (void *)hooked_readdir;  rebindings[n].replaced = (void **)&orig_readdir;  n++;
     rebindings[n].name = "CFBundleGetInfoDictionary";           rebindings[n].replacement = (void *)hooked_CFBundleGetInfoDictionary;           rebindings[n].replaced = (void **)&orig_CFBundleGetInfoDictionary;           n++;
     rebindings[n].name = "CFBundleGetValueForInfoDictionaryKey"; rebindings[n].replacement = (void *)hooked_CFBundleGetValueForInfoDictionaryKey; rebindings[n].replaced = (void **)&orig_CFBundleGetValueForInfoDictionaryKey; n++;
 
@@ -1426,13 +1646,11 @@ static void initDeltaAllTrafficVFS() {
 
     // Checkpoint CUỐI CÙNG của constructor - dòng log này LUÔN LÀ 1 TRONG NHỮNG DÒNG ĐẦU TIÊN của
     // debug.log mỗi lần app mở, vì __attribute__((constructor)) chạy trước main()/UIApplicationMain,
-    // trước khi bất kỳ code nào của game (Unity, AppDelegate...) có cơ hội chạy. Tại đây
-    // redirectAllTrafficPath() đã sẵn sàng phục vụ 100% - flag g_deltaActive VÀ toàn bộ hook (fishhook
-    // rebind_symbols cho open/openat/fopen/access/stat/lstat/CFBundle*) đều đã được set/cài XONG
-    // TRƯỚC KHI dòng này chạy, đồng bộ, cùng 1 lần gọi hàm, không có khoảng hở cho code khác chen vào
-    // giữa. Log rõ cả 2 điều kiện cần để redirect thực sự có tác dụng: hook cài được (rebindRet==0)
-    // VÀ VFS active (g_deltaActive - chỉ true nếu Delta.zip có + đủ file, xem ar_ensureFirstRunChecked).
-    DeltaVFS_debugLogf("initDeltaAllTrafficVFS: HOÀN TẤT - rebindRet=%d hooksOK=%u active=%d zipFound=%d needsFirstRun=%d",
+    // trước khi bất kỳ code nào của game (Unity, AppDelegate...) có cơ hội chạy. Tại đây redirect
+    // đã sẵn sàng phục vụ qua Cocoa-swizzle (initCocoaVFSRedirectSwizzling(), gọi ở PHẦN 2b bên
+    // trên, TRƯỚC constructor này) + 2 rebind CFBundle* còn lại qua fishhook. rebindRet ở đây chỉ
+    // phản ánh đúng 2 cái CFBundle, không còn đại diện cho toàn bộ VFS redirect như trước nữa.
+    DeltaVFS_debugLogf("initDeltaAllTrafficVFS: HOÀN TẤT - rebindRet=%d(CFBundle*) hooksOK=%u active=%d zipFound=%d needsFirstRun=%d",
         rebindRet, g_deltaHooksOK.load(std::memory_order_relaxed),
         g_deltaActive.load(std::memory_order_relaxed),
         g_deltaZipFound.load(std::memory_order_relaxed), needsFirstRun);
