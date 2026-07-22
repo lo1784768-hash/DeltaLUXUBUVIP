@@ -53,14 +53,24 @@ static void *hooked_GetMatchClientInfo() {
 // Menu.mm's +load, không phải constructor sớm).
 inline void installAntiReportSpoof() {
     void *target = Il2CppResolve::GetMethod("Assembly-CSharp.dll", "COW", "UIModelCustomRoom", "GetMatchClientInfo", 0);
-    if (!target) {
-        target = (void *)getRealOffset(0x3D82760);
-        DeltaVFS_debugLog("AntiReportSpoof: Il2CppResolve that bai, dung RVA cu 0x3D82760");
-    } else {
+    if (target) {
         DeltaVFS_debugLog("AntiReportSpoof: tra theo ten OK (COW.UIModelCustomRoom.GetMatchClientInfo)");
+        MSHookFunction(target, (void *)hooked_GetMatchClientInfo, (void **)&orig_GetMatchClientInfo);
     }
-    MSHookFunction(target, (void *)hooked_GetMatchClientInfo, (void **)&orig_GetMatchClientInfo);
+    // Nếu tra theo tên thất bại NGAY TỪ ĐẦU, hoặc tra được nhưng MSHookFunction cài hook thất
+    // bại (quan sát thấy thật trên máy - địa chỉ đọc từ MethodInfo::methodPointer qua reflection
+    // nhiều khả năng bị ký PAC trên arm64e, khác địa chỉ thô tính qua getRealOffset(RVA) - xem
+    // installAimMagnetHook() trong ESP.h, ĐÃ xác nhận hoạt động với đúng kiểu địa chỉ RVA thô
+    // này cho 1 hàm khác cũng nằm trong UnityFramework) - thử lại bằng RVA cứng.
     if (!orig_GetMatchClientInfo) {
-        DeltaVFS_debugLog("AntiReportSpoof: MSHookFunction that bai - huy, khong sua gi ca");
+        DeltaVFS_debugLogf("AntiReportSpoof: %s - thu lai bang RVA cu 0x3D82760",
+            target ? "MSHookFunction that bai voi dia chi tra theo ten" : "Il2CppResolve that bai");
+        target = (void *)getRealOffset(0x3D82760);
+        MSHookFunction(target, (void *)hooked_GetMatchClientInfo, (void **)&orig_GetMatchClientInfo);
+    }
+    if (!orig_GetMatchClientInfo) {
+        DeltaVFS_debugLog("AntiReportSpoof: MSHookFunction that bai ca 2 lan (ten lan RVA) - huy, khong sua gi ca");
+    } else {
+        DeltaVFS_debugLog("AntiReportSpoof: cai hook thanh cong");
     }
 }
