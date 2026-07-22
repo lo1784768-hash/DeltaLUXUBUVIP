@@ -1017,11 +1017,12 @@ inline const char* redirectAllTrafficPath(const char *path) {
     return path;
 }
 
-// Cơ chế hook open() thay thế bằng hardware breakpoint (né dấu vết fishhook để lại trên GOT) -
-// THỬ NGHIỆM. Đặt include ở đây (không phải đầu file) vì HWBreakHook.h gọi thẳng
-// redirectAllTrafficPath() và DeltaVFS_debugLog*() vừa định nghĩa ở trên - xem chi tiết/rủi ro
-// trong chính file đó. Constructor bên dưới gọi HWBreakHook_tryInstallForOpen(); nếu trả về
-// true thì "open" bị loại khỏi danh sách fishhook (không hook 2 lần cho cùng 1 hàm).
+// HWBreakHook.h TỪNG là thử nghiệm hook open() bằng hardware breakpoint - ĐÃ BỎ HẲN (đo được
+// chậm hơn fishhook ~100-300 lần, gây lỗi "hotfix: SaveFailed" thật, và xác nhận qua Ghidra rằng
+// chính Monite - nguồn cảm hứng ban đầu - cũng KHÔNG dùng kỹ thuật này cho open(), xem đầu file
+// đó). Giờ chỉ còn CrashLogger_install() - dùng lại đúng hạ tầng Mach exception-port cho 1 việc
+// hợp lý hơn: tự dump thanh ghi lúc crash thật (hiếm, không có vấn đề tần suất/độ trễ). Đặt include
+// ở đây (không phải đầu file) vì file đó gọi thẳng DeltaVFS_debugLog*() vừa định nghĩa ở trên.
 #import "HWBreakHook.h"
 
 // ============================================================================
@@ -1311,31 +1312,14 @@ static void initDeltaAllTrafficVFS() {
     orig_CFBundleGetInfoDictionary          = (ORIG_CFBundleGetInfoDictionary)dlsym((void *)RTLD_DEFAULT, "CFBundleGetInfoDictionary");
     orig_CFBundleGetValueForInfoDictionaryKey = (ORIG_CFBundleGetValueForInfoDictionaryKey)dlsym((void *)RTLD_DEFAULT, "CFBundleGetValueForInfoDictionaryKey");
 
-    // Đối chứng đã XÁC NHẬN HWBreakHook là thủ phạm thật (fishhook sạch, HWBreakHook lỗi) - bật
-    // lại (0) để lấy log chẩn đoán MỚI: task_set_exception_ports đã đổi thành
-    // task_swap_exception_ports trong HWBreakHook.h, tự log ra nếu có port EXC_MASK_BREAKPOINT
-    // nào đã bị mình ghi đè mất (nghi vấn DataDomeSDK/FreeFire tự dùng breakpoint riêng).
-    #define HWBREAK_DIAGNOSTIC_FORCE_DISABLE 0
-#if HWBREAK_DIAGNOSTIC_FORCE_DISABLE
-    (void)needsFirstRun;
-    bool hwBreakOpenActive = false;
-#else
-    // THỬ NGHIỆM: cố dùng hardware breakpoint (né dấu vết fishhook để lại trên GOT) cho riêng
-    // open() trước - xem HWBreakHook.h. Có tự kiểm tra + fallback an toàn: nếu KHÔNG hoạt
-    // động đúng trong 500ms, hàm trả false và "open" vẫn được thêm vào fishhook như bình
-    // thường bên dưới (không có khoảng trống không hook được).
-    // CHỈ thử trên process "bình thường" (đã giải nén sẵn từ trước) - process "lần đầu" đang
-    // chuẩn bị popup + giải nén bulk trên background thread rồi tự thoát (xem Menu.mm), không có
-    // lý do gì để mạo hiểm kích hoạt breakpoint đúng lúc I/O nặng nhất, và process này sẽ không
-    // bao giờ chạy tới lúc game thật sự đọc file cả.
-    bool hwBreakOpenActive = needsFirstRun ? false : HWBreakHook_tryInstallForOpen();
-#endif
+    // Crash logger (dùng Mach exception-port, xem HWBreakHook.h) - độc lập hoàn toàn với fishhook/
+    // VFS, an toàn gọi vô điều kiện kể cả ở process "lần đầu" (chỉ log lúc crash thật, không đụng
+    // gì tới open()/redirect).
+    CrashLogger_install();
 
     struct rebinding rebindings[11];
     int n = 0;
-    if (!hwBreakOpenActive) {
-        rebindings[n].name = "open";   rebindings[n].replacement = (void *)hooked_open;   rebindings[n].replaced = (void **)&orig_open;   n++;
-    }
+    rebindings[n].name = "open";   rebindings[n].replacement = (void *)hooked_open;   rebindings[n].replaced = (void **)&orig_open;   n++;
     rebindings[n].name = "openat"; rebindings[n].replacement = (void *)hooked_openat; rebindings[n].replaced = (void **)&orig_openat; n++;
     rebindings[n].name = "fopen";  rebindings[n].replacement = (void *)hooked_fopen;  rebindings[n].replaced = (void **)&orig_fopen;  n++;
     rebindings[n].name = "access"; rebindings[n].replacement = (void *)hooked_access; rebindings[n].replaced = (void **)&orig_access; n++;
