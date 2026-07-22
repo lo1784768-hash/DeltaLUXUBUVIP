@@ -1036,12 +1036,11 @@ inline const char* redirectAllTrafficPath(const char *path) {
         return path; 
     }
 
-    // ==== CỜ TEST TẠM THỜI - đặt 1 để tắt HẲN việc thay nội dung file qua Delta.zip, kiểm tra
-    // xem có phải chính việc thay nội dung file là nguyên nhân bị đá giữa trận không (xem hội
-    // thoại: đã loại trừ cách hook và DylibHide, còn lại đúng nghi phạm này). KHÔNG đụng tới
-    // esign-block/ab-hotupdates ở trên - chỉ tắt riêng phần redirect nội dung Delta.zip để cô
-    // lập đúng 1 biến số đang test. ĐỔI VỀ 0 sau khi test xong, dù kết quả thế nào. ====
-    #define AR_FORCE_DISABLE_VFS_FOR_TEST 1
+    // ==== CỜ TEST TẠM THỜI - đặt 1 để tắt HẲN việc thay nội dung file qua Delta.zip. ĐÃ TEST
+    // XONG (đặt 1, vào trận thật): VẪN bị đá giữa trận dù tắt hẳn redirect nội dung - loại trừ
+    // luôn giả thuyết "nội dung file bị đổi" (xem AntiReportSpoof.h cho hướng đang thử tiếp
+    // theo). Trả về 0 - khôi phục VFS hoạt động bình thường. ====
+    #define AR_FORCE_DISABLE_VFS_FOR_TEST 0
     #if AR_FORCE_DISABLE_VFS_FOR_TEST
     return path;
     #endif

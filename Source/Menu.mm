@@ -17,6 +17,7 @@
 #import "Includes/DNSBlock.h"
 #import "Includes/AssetRedirect.h"
 #import "Includes/Il2CppResolve.h"
+#import "Includes/AntiReportSpoof.h"
 #import "Includes/DylibSpy.h"
 
 #define kWidth  [UIScreen mainScreen].bounds.size.width
@@ -436,7 +437,9 @@ game_sdk_t *game_sdk = new game_sdk_t();
             game_sdk->init();
             DeltaVFS_debugLog("Menu +load: gọi installAimMagnetHook()");
             installAimMagnetHook();
-            DeltaVFS_debugLog("Menu +load: game_sdk + AimMagnet hook xong");
+            DeltaVFS_debugLog("Menu +load: gọi installAntiReportSpoof()");
+            installAntiReportSpoof();
+            DeltaVFS_debugLog("Menu +load: game_sdk + AimMagnet hook + AntiReportSpoof xong");
             sdkInitialized = true;
         }
 
