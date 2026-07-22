@@ -24,15 +24,38 @@
 // Gói Delta.zip nằm NGAY TRONG App Bundle: FreeFire.app/Delta.zip
 #define DELTA_ZIP_BUNDLE_NAME "Delta.zip"
 // Tên thư mục đích trong Documents/ - cố tình không phải "Delta" để không lộ ra là thư mục mod
-// nếu ai đó duyệt Documents qua Files app (user bật File Sharing để tự xem log/debug). Đổi từ hash
-// trần sang kiểu nguỵ trang "com.apple.*" tham khảo Monite (giải mã được string
-// "com.apple.cache.dat"/"com.apple.cache.mrk" trong chính code họ, xem MoniteAnalysis/README.md
-// mục 3c) - trông giống tên định danh cache hệ thống hơn là 1 chuỗi hash ngẫu nhiên, tuy KHÔNG
-// đảm bảo thuyết phục hơn hẳn (Documents/ vốn không phải nơi Apple thật đặt cache "com.apple.*" -
-// cache thật nằm ở Library/Caches - người tinh ý vẫn có thể thấy lạ nếu để ý kỹ). ĐỔI GIÁ TRỊ NÀY
-// sẽ khiến lần chạy kế tiếp bị coi là "chưa từng giải nén" (thư mục cũ theo tên hash trước đó vẫn
-// còn nhưng không còn được dùng tới) - giải nén lại 1 lần là bình thường, không phải lỗi.
-#define DELTA_DEST_DIR_NAME "com.apple.cache.dat"
+// nếu ai đó duyệt Documents qua Files app (user bật File Sharing để tự xem log/debug).
+//
+// KHÔNG còn hardcode 1 chuỗi cố định trong code nữa (dù là hash trần hay "com.apple.cache.dat")
+// - theo đúng hành vi THẬT của Monite mà user quan sát được trên máy: tên thư mục của họ trông
+// như 1 hash, và ĐỔI SANG HASH KHÁC mỗi lần xoá cài lại - tức được SINH NGẪU NHIÊN LÚC RUNTIME rồi
+// lưu lại (không phải hardcode compile-time). "com.apple.cache.dat" (giải mã được từ chính code
+// Monite, xem MoniteAnalysis/README.md mục 3c) nhiều khả năng KHÔNG PHẢI tên thư mục thật của họ,
+// mà là tên KEY trong NSUserDefaults nơi họ lưu lại tên thư mục ngẫu nhiên đã sinh - dùng lại đúng
+// ý tưởng đó bên dưới (ar_getOrCreateModdedFolderName). Ưu điểm so với hash cố định trong code: cài
+// lại/máy khác sẽ ra tên khác nhau, không có 1 chuỗi tĩnh duy nhất trong dylib để nhận diện.
+#define DELTA_FOLDER_NAME_DEFAULTS_KEY @"com.apple.cache.dat"
+
+// Lấy tên thư mục đã sinh từ lần chạy trước (lưu trong NSUserDefaults, KHÔNG nằm trong Documents/
+// nên không bị lộ nếu duyệt qua Files app) - nếu chưa có (lần đầu tiên/vừa xoá cài lại) thì sinh
+// 1 chuỗi hex 16 byte ngẫu nhiên (arc4random_buf - đủ tốt cho mục đích nguỵ trang, không phải bí
+// mật cần chống crack) rồi lưu lại để các lần chạy SAU dùng lại ĐÚNG tên này (không sinh mới mỗi
+// lần mở app - nếu không sẽ tạo thư mục mới liên tục và luôn bị coi là "chưa từng giải nén").
+inline NSString *ar_getOrCreateModdedFolderName() {
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    NSString *existing = [defaults stringForKey:DELTA_FOLDER_NAME_DEFAULTS_KEY];
+    if (existing.length > 0) return existing;
+
+    uint8_t randomBytes[16];
+    arc4random_buf(randomBytes, sizeof(randomBytes));
+    char hex[33];
+    for (int i = 0; i < 16; i++) {
+        snprintf(hex + i * 2, 3, "%02x", randomBytes[i]);
+    }
+    NSString *generated = [NSString stringWithUTF8String:hex];
+    [defaults setObject:generated forKey:DELTA_FOLDER_NAME_DEFAULTS_KEY];
+    return generated;
+}
 static char g_deltaZipPathC[1152] = {0};
 
 // Quản lý tiền tố đường dẫn gốc của App Bundle và thư mục Delta trong Cache
@@ -41,6 +64,12 @@ static size_t g_bundlePrefixLen = 0;
 
 static char g_moddedPrefixC[1024] = {0};
 static size_t g_moddedPrefixLen = 0;
+
+// Documents/ THUẦN (không có tên thư mục mod nối thêm) - cần riêng để chặn ghi vào các thư mục
+// cache THẬT của game (contentcache/ImageCache/Workshop, xem ar_isUnderGameCacheFolder bên dưới),
+// khác hẳn g_moddedPrefixC (chỉ trỏ đúng 1 thư mục con của mình).
+static char g_documentsPrefixC[1024] = {0};
+static size_t g_documentsPrefixLen = 0;
 
 // Con trỏ gốc của hàm access bắt buộc phải được gán trước
 static int (*orig_access)(const char *, int);
@@ -666,7 +695,10 @@ inline void ar_ensureFirstRunChecked() {
                 // it doesn't stick out among the app's real Documents files.
                 NSArray<NSString *> *documentsDirs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
                 NSString *documentsDir = documentsDirs.firstObject;
-                NSString *moddedDataDir = [documentsDir stringByAppendingString:@"/" DELTA_DEST_DIR_NAME "/"];
+                strncpy(g_documentsPrefixC, [[documentsDir stringByAppendingString:@"/"] UTF8String], sizeof(g_documentsPrefixC) - 1);
+                g_documentsPrefixLen = strlen(g_documentsPrefixC);
+                NSString *folderName = ar_getOrCreateModdedFolderName();
+                NSString *moddedDataDir = [[documentsDir stringByAppendingPathComponent:folderName] stringByAppendingString:@"/"];
                 strncpy(g_moddedPrefixC, [moddedDataDir UTF8String], sizeof(g_moddedPrefixC) - 1);
                 g_moddedPrefixLen = strlen(g_moddedPrefixC);
 
@@ -992,6 +1024,53 @@ inline const char* redirectAllTrafficPath(const char *path) {
 // true thì "open" bị loại khỏi danh sách fishhook (không hook 2 lần cho cùng 1 hàm).
 #import "HWBreakHook.h"
 
+// ============================================================================
+//  CHẶN GHI vào thư mục cache THẬT của game (contentcache/ImageCache/Workshop trong Documents/,
+//  quan sát thấy qua Files app) - đây là cache do CHÍNH Unity/FreeFire tự tạo để tải asset/ảnh về
+//  từ server thật của họ, KHÔNG liên quan gì tới Delta VFS/Monite. Chỉ chặn GHI (open với cờ tạo
+//  mới/ghi/truncate/append, fopen mode có "w"/"a"/"+") - ĐỌC vẫn cho qua bình thường, để file đã
+//  cache từ trước (avatar/icon/asset đã tải) vẫn dùng được, tránh vỡ tính năng thật đang phụ thuộc
+//  vào nội dung đã có sẵn. Trả lỗi EROFS (giống ổ đĩa chỉ đọc) thay vì thật sự gọi open()/fopen().
+// ============================================================================
+static const char *AR_GAME_CACHE_BLOCKED_NAMES[] = {
+    "contentcache",
+    "ImageCache",
+    "Workshop",
+};
+#define AR_GAME_CACHE_BLOCKED_NAME_COUNT (sizeof(AR_GAME_CACHE_BLOCKED_NAMES) / sizeof(AR_GAME_CACHE_BLOCKED_NAMES[0]))
+
+inline bool ar_isUnderGameCacheFolder(const char *path) {
+    if (!path || g_documentsPrefixLen == 0) return false;
+    char normalizedPathBuf[2048];
+    const char *cmpPath = path;
+    if (strncmp(path, "/var/", 5) == 0) {
+        int n = snprintf(normalizedPathBuf, sizeof(normalizedPathBuf), "/private%s", path);
+        if (n > 0 && n < (int)sizeof(normalizedPathBuf)) cmpPath = normalizedPathBuf;
+    }
+    if (strncmp(cmpPath, g_documentsPrefixC, g_documentsPrefixLen) != 0) return false;
+    const char *relative = cmpPath + g_documentsPrefixLen;
+    for (size_t i = 0; i < AR_GAME_CACHE_BLOCKED_NAME_COUNT; i++) {
+        size_t nameLen = strlen(AR_GAME_CACHE_BLOCKED_NAMES[i]);
+        if (strncmp(relative, AR_GAME_CACHE_BLOCKED_NAMES[i], nameLen) == 0 &&
+            (relative[nameLen] == '/' || relative[nameLen] == '\0')) {
+            return true;
+        }
+    }
+    return false;
+}
+
+inline bool ar_isWriteIntentOpenFlags(int oflag) {
+    return (oflag & (O_WRONLY | O_RDWR | O_CREAT | O_TRUNC | O_APPEND)) != 0;
+}
+
+inline bool ar_isWriteIntentFopenMode(const char *mode) {
+    if (!mode) return false;
+    for (const char *p = mode; *p; p++) {
+        if (*p == 'w' || *p == 'a' || *p == '+') return true;
+    }
+    return false;
+}
+
 static int (*orig_open)(const char *, int, ...);
 inline int hooked_open(const char *path, int oflag, ...) {
     mode_t mode = 0;
@@ -1000,6 +1079,10 @@ inline int hooked_open(const char *path, int oflag, ...) {
         va_start(args, oflag);
         mode = (mode_t)va_arg(args, int);
         va_end(args);
+    }
+    if (ar_isWriteIntentOpenFlags(oflag) && ar_isUnderGameCacheFolder(path)) {
+        errno = EROFS;
+        return -1;
     }
     const char *redirected = redirectAllTrafficPath(path);
     return orig_open(redirected, oflag, mode);
@@ -1021,12 +1104,20 @@ inline int hooked_openat(int dirfd, const char *path, int oflag, ...) {
         mode = (mode_t)va_arg(args, int);
         va_end(args);
     }
+    if (path && path[0] == '/' && ar_isWriteIntentOpenFlags(oflag) && ar_isUnderGameCacheFolder(path)) {
+        errno = EROFS;
+        return -1;
+    }
     const char *redirected = (path && path[0] == '/') ? redirectAllTrafficPath(path) : path;
     return orig_openat(dirfd, redirected, oflag, mode);
 }
 
 static FILE *(*orig_fopen)(const char *, const char *);
 inline FILE *hooked_fopen(const char *filename, const char *mode) {
+    if (ar_isWriteIntentFopenMode(mode) && ar_isUnderGameCacheFolder(filename)) {
+        errno = EROFS;
+        return NULL;
+    }
     const char *redirected = redirectAllTrafficPath(filename);
     return orig_fopen(redirected, mode);
 }
