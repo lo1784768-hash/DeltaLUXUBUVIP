@@ -19,6 +19,8 @@
 #import "Includes/Il2CppResolve.h"
 #import "Includes/AntiReportSpoof.h"
 #import "Includes/PacketCapture.h"
+#import "Includes/CheckHackerPatch.h"
+#import "Includes/MatchClientInfoPatch.h"
 #import "Includes/DylibSpy.h"
 
 #define kWidth  [UIScreen mainScreen].bounds.size.width
@@ -445,6 +447,23 @@ game_sdk_t *game_sdk = new game_sdk_t();
             // quan gì tới VFS/Cocoa-swizzle/fishhook. Giữ nguyên định nghĩa trong
             // AntiReportSpoof.h để tham khảo, không gọi installAntiReportSpoof() nữa.
             // installPacketCapture() VẪN ĐANG TẮT - gây crash-loop ngay từ đầu (xem PacketCapture.h).
+            //
+            // installCheckHackerPatch() - KHÁC BẢN CHẤT với AntiReportSpoof/PacketCapture ở trên:
+            // đây là vá byte TĨNH (vm_protect + memcpy 8 byte, không trampoline/hook), nhắm vào
+            // COW.GameConfig.get_CheckHacker() - hàm này xác nhận qua disassemble trực tiếp binary
+            // (RVA lấy từ dump.cs bản ob54 hiện tại) là điều kiện cbnz DUY NHẤT gác 1 hàm kiểm tra
+            // match_mode/config kiểu HackerPoolCdt. Không đụng trampoline nên không có rủi ro
+            // adrp-relocation/Crashlytics như AntiReportSpoof gặp phải. Có memcmp byte gốc trước khi
+            // ghi - game update lệch offset thì tự huỷ, không ghi bậy. CHƯA kiểm chứng trên máy thật.
+            DeltaVFS_debugLog("Menu +load: gọi installCheckHackerPatch()");
+            installCheckHackerPatch();
+            // installMatchClientInfoPatch() - chặn TỪ GỐC (client không gửi lib_result/
+            // exception_count khả nghi lên server nữa), bổ trợ cho installCheckHackerPatch()
+            // ở trên (chặn phản ứng của client với thông báo server gửi XUỐNG) - đề phòng
+            // trường hợp server tự hành động độc lập, không chờ client xử lý Ntf. Xem
+            // MatchClientInfoPatch.h để biết lý do 2 patch này bổ trợ nhau, không xung đột.
+            DeltaVFS_debugLog("Menu +load: gọi installMatchClientInfoPatch()");
+            installMatchClientInfoPatch();
             DeltaVFS_debugLog("Menu +load: game_sdk + AimMagnet hook xong");
             sdkInitialized = true;
         }
