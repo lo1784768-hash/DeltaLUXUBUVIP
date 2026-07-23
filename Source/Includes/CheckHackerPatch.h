@@ -1,8 +1,9 @@
-// CheckHackerPatch.h - vá thẳng 8 byte đầu COW.GameConfig.get_CheckHacker() trong
+// CheckHackerPatch.h - vá 4 byte bên trong COW.GameConfig.get_CheckHacker() trong
 // UnityFramework để hàm này luôn trả về false, thay vì hook qua trampoline
 // (Dobby/MSHookFunction) như AntiReportSpoof.h đã thử và bị crash Firebase
 // Crashlytics do chính cơ chế cài trampoline, không phải do giá trị field bị đổi
 // (xem AntiReportSpoof.h - bản passthrough không đổi field gì vẫn crash 2/3 lần mở).
+// (Bản đầu patch nguyên 8 byte đầu hàm, cũng gây crash sớm - xem "SỬA LẦN 3" bên dưới.)
 //
 // Vì sao nhắm vào get_CheckHacker() thay vì spoof field trong GetMatchClientInfo():
 // disassemble trực tiếp binary that (lief+capstone, RVA lấy từ dump.cs bản ob54 hiện
@@ -11,11 +12,6 @@
 // bl 0x4DDCD8C, cả 2 đều trong hàm này) - false thì hàm return ngay, true thì mới
 // chạy tiếp phần so sánh match_mode/config kiểu HackerPoolCdt. Patch tại NGUỒN
 // (get_CheckHacker) chặn được cả 2 điểm gọi cùng lúc, sạch hơn vá rải rác từng nơi.
-//
-// Kỹ thuật: ghi đè 8 byte đầu hàm (2 lệnh prologue "stp x20,x19,[sp,#-0x20]!" +
-// "stp x29,x30,[sp,#0x10]") thành "mov w0,#0 ; ret" (00008052 C0035FD6) - hàm trả
-// về false ngay, không đụng stack/register nào khác. KHÔNG dùng trampoline/hook nên
-// không có rủi ro ARM64 adrp-relocation như GetMatchClientInfo() từng gặp.
 //
 // CHƯA kiểm chứng trên thiết bị thật - bật thử, nếu game crash/không vào được trận thì
 // comment lại dòng gọi installCheckHackerPatch() trong Menu.mm và báo lại để phân tích tiếp.
@@ -30,6 +26,24 @@
 // GIỜ đụng tới quyền của trang thực thi gốc nên không có nguy cơ bỏ lại nó ở trạng thái
 // hỏng. Nếu vm_remap/vm_protect trên bản remap thất bại thì return false TRƯỚC KHI
 // memcpy - không đụng gì tới code gốc, an toàn 100% dù patch có tác dụng hay không.
+//
+// SỬA LẦN 3 (sau khi bisect: tắt/bật riêng từng patch xác nhận CHÍNH patch này, không
+// phải MatchClientInfoPatch, gây crash sớm ngay lúc logo dù ghi bằng vm_remap không lỗi
+// gì): patch cũ ghi đè NGUYÊN 8 byte đầu hàm - trong đó có đoạn "tbnz w8,#0 -> bl
+// 0xa51b04c" ĐẢM BẢO STATIC CONSTRUCTOR của 1 class khác đã chạy. Bỏ qua hẳn đoạn này
+// (không chỉ phần trả về true/false của CheckHacker) rất có thể khiến class đó chưa
+// được khởi tạo đúng lúc trong khi code khác ở đâu đó lại giả định nó ĐÃ được khởi tạo
+// (vì bình thường lần gọi get_CheckHacker() đầu tiên sẽ tự kích hoạt việc này) - dẫn tới
+// crash sớm không rõ ràng (CrashLogger không bắt được vì không phải bad-access thường).
+//
+// Disassemble sâu hơn get_CheckHacker() cho thấy đường trả về giá trị THẬT (khi cờ đã
+// có sẵn, không phải lần đầu) nằm ở RVA 0x4DDCE48: "ldrb w8,[x8,#0x18d]" rồi "and
+// w0,w8,#1" ngay sau. Nhánh còn lại (chưa có cờ/con trỏ null) đã TỰ NHIÊN trả về 0 sẵn
+// (w8 lúc đó luôn là 0 vì vừa test cbnz x8 thất bại), không cần đụng tới. Nên chỉ cần
+// đổi ĐÚNG 1 lệnh "ldrb w8,[x8,#0x18d]" (đọc byte cờ thật) thành "mov w8,#0" - giữ
+// nguyên 100% phần đảm bảo static constructor, cache token, kiểm tra null - chỉ ép giá
+// trị cờ đọc được luôn là 0, giống hệt cách làm với MatchClientInfoPatch.h (đã xác nhận
+// an toàn qua bisect).
 #pragma once
 #import <Foundation/Foundation.h>
 #include <mach/mach.h>
@@ -39,7 +53,7 @@
 #include "MemoryUtils.h"
 #include "AssetRedirect.h"
 
-#define CHECKHACKER_PATCH_RVA 0x4DDCD8CULL
+#define CHECKHACKER_PATCH_RVA 0x4DDCE48ULL  // "ldrb w8,[x8,#0x18d]" - noi doc gia tri that
 
 static inline bool CheckHackerPatch_writeBytes(uintptr_t address, const uint8_t *bytes, size_t len) {
     mach_port_t task = mach_task_self();
@@ -81,13 +95,11 @@ inline void installCheckHackerPatch() {
         return;
     }
 
-    static const uint8_t kPatchBytes[8] = {
-        0x00, 0x00, 0x80, 0x52,  // mov w0, #0
-        0xC0, 0x03, 0x5F, 0xD6   // ret
+    static const uint8_t kPatchBytes[4] = {
+        0x08, 0x00, 0x80, 0x52   // mov w8, #0
     };
-    static const uint8_t kExpectedOriginal[8] = {
-        0xF4, 0x4F, 0xBE, 0xA9,  // stp x20, x19, [sp, #-0x20]!
-        0xFD, 0x7B, 0x01, 0xA9   // stp x29, x30, [sp, #0x10]
+    static const uint8_t kExpectedOriginal[4] = {
+        0x08, 0x35, 0x46, 0x39   // ldrb w8, [x8, #0x18d]
     };
 
     if (memcmp((void *)target, kExpectedOriginal, sizeof(kExpectedOriginal)) != 0) {
