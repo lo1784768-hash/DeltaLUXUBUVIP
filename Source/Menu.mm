@@ -21,6 +21,7 @@
 #import "Includes/PacketCapture.h"
 #import "Includes/CheckHackerPatch.h"
 #import "Includes/MatchClientInfoPatch.h"
+#import "Includes/FFAntiFlagsPatch.h"
 #import "Includes/DylibSpy.h"
 
 #define kWidth  [UIScreen mainScreen].bounds.size.width
@@ -462,12 +463,19 @@ game_sdk_t *game_sdk = new game_sdk_t();
             // trampoline/hook nên không có rủi ro adrp-relocation/Crashlytics như AntiReportSpoof gặp
             // phải. Có memcmp byte gốc trước khi ghi - game update lệch offset thì tự huỷ, không ghi
             // bậy. Đã xác nhận qua bisect: chạy MỘT MÌNH không crash, nhưng CHƯA test xem có thật sự
-            // giải quyết được việc bị đá sau ~11s khi vào trận hay không (mới chỉ test ở màn hình
-            // chờ/logo, chưa vào trận thật).
+            // giải quyết được việc bị đá sau ~11s khi vào trận hay không - test vào trận thật cho
+            // thấy VẪN bị đá nhưng timing đổi thành ~23s (gấp đôi) - xác nhận có patch có tác dụng
+            // 1 phần nhưng còn 1 cơ chế phát hiện ĐỘC LẬP khác (SDK "ffantihack" riêng biệt, không
+            // liên quan HackerPoolCdt/CheckHacker) - xem FFAntiFlagsPatch.h.
             // DeltaVFS_debugLog("Menu +load: gọi installCheckHackerPatch()");
             // installCheckHackerPatch();
             DeltaVFS_debugLog("Menu +load: gọi installMatchClientInfoPatch()");
             installMatchClientInfoPatch();
+            // installFFAntiFlagsPatch() - vá 7 điểm ghi field kết quả phát hiện trong SDK FFAnti
+            // (namespace ffantihack, class MFHPGMELLCC bị obfuscate tên) - xem FFAntiFlagsPatch.h
+            // để biết đầy đủ lý do/giới hạn (mới phủ 4/5 field private đã biết, CHƯA kiểm chứng).
+            DeltaVFS_debugLog("Menu +load: gọi installFFAntiFlagsPatch()");
+            installFFAntiFlagsPatch();
             DeltaVFS_debugLog("Menu +load: game_sdk + AimMagnet hook xong");
             sdkInitialized = true;
         }
