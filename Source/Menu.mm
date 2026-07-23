@@ -448,19 +448,24 @@ game_sdk_t *game_sdk = new game_sdk_t();
             // AntiReportSpoof.h để tham khảo, không gọi installAntiReportSpoof() nữa.
             // installPacketCapture() VẪN ĐANG TẮT - gây crash-loop ngay từ đầu (xem PacketCapture.h).
             //
-            // installCheckHackerPatch()/installMatchClientInfoPatch() - vá byte TĨNH qua vm_remap
-            // (xem 2 file .h), không trampoline/hook nên không có rủi ro adrp-relocation/Crashlytics
-            // như AntiReportSpoof gặp phải. Có memcmp byte gốc trước khi ghi - game update lệch
-            // offset thì tự huỷ, không ghi bậy.
+            // installCheckHackerPatch() ĐÃ TẮT HẲN - đã bisect trên máy thật 2 lần: bản patch nguyên
+            // 8 byte đầu hàm VÀ bản đã sửa chỉ patch đúng 1 lệnh đọc giá trị (RVA 0x4DDCE48, giữ
+            // nguyên phần đảm bảo static constructor) ĐỀU gây crash sớm ngay lúc logo hiện, trong khi
+            // installMatchClientInfoPatch() một mình chạy sạch 20s+ không crash. Vậy vấn đề không nằm
+            // ở CÁCH patch (byte nào bị đổi) mà rất có thể ép GameConfig.CheckHacker về false tự nó
+            // gây ra hệ quả logic ở 1 nơi khác chưa lần ra được (có thể còn nơi gọi get_CheckHacker()
+            // ngoài 2 chỗ đã quét được qua bl trực tiếp - vd gọi gián tiếp qua delegate/reflection).
+            // Không đáng risk tiếp tục dùng patch này. Giữ nguyên định nghĩa trong CheckHackerPatch.h
+            // để tham khảo, không gọi installCheckHackerPatch() nữa.
             //
-            // Đã bisect trên máy thật: bản đầu của installCheckHackerPatch() (patch nguyên 8 byte đầu
-            // hàm get_CheckHacker(), gồm cả đoạn đảm bảo static constructor 1 class khác) gây crash
-            // sớm ngay lúc logo hiện - installMatchClientInfoPatch() một mình thì KHÔNG crash. Đã sửa
-            // installCheckHackerPatch() chỉ vá đúng 1 lệnh đọc giá trị thật (RVA 0x4DDCE48), giữ
-            // nguyên phần đảm bảo static constructor - xem "SỬA LẦN 3" trong CheckHackerPatch.h.
-            // CHƯA kiểm chứng lại bản sửa này trên máy thật.
-            DeltaVFS_debugLog("Menu +load: gọi installCheckHackerPatch()");
-            installCheckHackerPatch();
+            // installMatchClientInfoPatch() - vá byte TĨNH qua vm_remap (xem file .h), không
+            // trampoline/hook nên không có rủi ro adrp-relocation/Crashlytics như AntiReportSpoof gặp
+            // phải. Có memcmp byte gốc trước khi ghi - game update lệch offset thì tự huỷ, không ghi
+            // bậy. Đã xác nhận qua bisect: chạy MỘT MÌNH không crash, nhưng CHƯA test xem có thật sự
+            // giải quyết được việc bị đá sau ~11s khi vào trận hay không (mới chỉ test ở màn hình
+            // chờ/logo, chưa vào trận thật).
+            // DeltaVFS_debugLog("Menu +load: gọi installCheckHackerPatch()");
+            // installCheckHackerPatch();
             DeltaVFS_debugLog("Menu +load: gọi installMatchClientInfoPatch()");
             installMatchClientInfoPatch();
             DeltaVFS_debugLog("Menu +load: game_sdk + AimMagnet hook xong");
