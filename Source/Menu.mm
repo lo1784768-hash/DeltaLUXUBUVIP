@@ -439,8 +439,13 @@ game_sdk_t *game_sdk = new game_sdk_t();
         if (!sdkInitialized) {
             DeltaVFS_debugLog("Menu +load: gọi game_sdk->init()");
             game_sdk->init();
-            DeltaVFS_debugLog("Menu +load: gọi installAimMagnetHook()");
-            installAimMagnetHook();
+            // installAimMagnetHook() TẠM TẮT ĐỂ TEST - dùng MSHookFunction (trampoline/inline-hook
+            // cổ điển) hook thẳng vào GetAimAssistDampCoefficient (RVA 0x545567C), CÀI VÔ ĐIỀU KIỆN
+            // ở đây dù người dùng có bật tính năng Aim Magnet hay không - nghi ngờ đây là thứ bị
+            // PMS_HOOK (case 7 trong dispatcher OnMsgMatchMaking đã tìm thấy trước đó) phát hiện,
+            // khớp với việc user báo "không hề kích hoạt gì vẫn bị đá". Tắt thử để xác nhận.
+            // DeltaVFS_debugLog("Menu +load: gọi installAimMagnetHook()");
+            // installAimMagnetHook();
             // installAntiReportSpoof() ĐÃ BỎ GỌI LẠI - test lần 2 (VFS quay về fishhook) vẫn
             // crash y hệt ở firebase::crashlytics::Frame::__vdeallocate, 2/3 lần chạy, kể cả khi
             // KHÔNG hề vào trận (crash ngay lúc ngồi ở menu ~15-20s sau khi hook cài xong) - xác
