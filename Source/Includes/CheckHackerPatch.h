@@ -19,9 +19,22 @@
 //
 // CHƯA kiểm chứng trên thiết bị thật - bật thử, nếu game crash/không vào được trận thì
 // comment lại dòng gọi installCheckHackerPatch() trong Menu.mm và báo lại để phân tích tiếp.
+//
+// SỬA LẦN 2 (sau khi test thật thấy "vừa hiện logo là văng"): debug.log cho thấy
+// vm_protect(RW) trên chính trang code THÀNH CÔNG, memcpy đã ghi đè byte thật, nhưng
+// vm_protect(RX) để khôi phục lại quyền thực thi SAU ĐÓ THẤT BẠI (err=2) - trang bị bỏ
+// lại ở trạng thái không thực thi được, game gọi tới hàm đó (rất sớm, gần lúc logo) là
+// crash ngay. Đây là giới hạn W^X (Write XOR Execute) của iOS hiện đại - không thể đổi
+// thẳng 1 trang code RX -> RW -> RX bằng vm_protect. Cách đúng: vm_remap tạo ra 1 ánH
+// XẠ RIÊNG (cùng trang vật lý, khác virtual address) rồi ghi qua ánh xạ đó - KHÔNG BAO
+// GIỜ đụng tới quyền của trang thực thi gốc nên không có nguy cơ bỏ lại nó ở trạng thái
+// hỏng. Nếu vm_remap/vm_protect trên bản remap thất bại thì return false TRƯỚC KHI
+// memcpy - không đụng gì tới code gốc, an toàn 100% dù patch có tác dụng hay không.
 #pragma once
 #import <Foundation/Foundation.h>
 #include <mach/mach.h>
+#include <mach/vm_map.h>
+#include <mach/vm_param.h>
 #include <libkern/OSCacheControl.h>
 #include "MemoryUtils.h"
 #include "AssetRedirect.h"
@@ -29,19 +42,34 @@
 #define CHECKHACKER_PATCH_RVA 0x4DDCD8CULL
 
 static inline bool CheckHackerPatch_writeBytes(uintptr_t address, const uint8_t *bytes, size_t len) {
-    mach_port_t port = mach_task_self();
-    kern_return_t err = vm_protect(port, (mach_vm_address_t)address, len, false,
-                                    VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY);
+    mach_port_t task = mach_task_self();
+    vm_size_t pageSize = vm_page_size ? vm_page_size : 4096;
+
+    uintptr_t pageStart = address & ~(uintptr_t)(pageSize - 1);
+    uintptr_t pageEnd = (address + len + pageSize - 1) & ~(uintptr_t)(pageSize - 1);
+    vm_size_t mapSize = (vm_size_t)(pageEnd - pageStart);
+
+    vm_address_t remapAddr = 0;
+    vm_prot_t curProt = 0, maxProt = 0;
+    kern_return_t err = vm_remap(task, &remapAddr, mapSize, 0, VM_FLAGS_ANYWHERE,
+                                  task, (vm_address_t)pageStart, FALSE,
+                                  &curProt, &maxProt, VM_INHERIT_NONE);
     if (err != KERN_SUCCESS) {
-        DeltaVFS_debugLogf("CheckHackerPatch: vm_protect(RW) that bai err=%d tai 0x%llx", err, (unsigned long long)address);
+        DeltaVFS_debugLogf("CheckHackerPatch: vm_remap that bai err=%d tai 0x%lx", err, (unsigned long)address);
         return false;
     }
-    memcpy((void *)address, bytes, len);
-    err = vm_protect(port, (mach_vm_address_t)address, len, false, VM_PROT_READ | VM_PROT_EXECUTE);
+
+    err = vm_protect(task, remapAddr, mapSize, FALSE, VM_PROT_READ | VM_PROT_WRITE);
     if (err != KERN_SUCCESS) {
-        DeltaVFS_debugLogf("CheckHackerPatch: vm_protect(RX) that bai err=%d tai 0x%llx", err, (unsigned long long)address);
+        DeltaVFS_debugLogf("CheckHackerPatch: vm_protect(remap RW) that bai err=%d tai 0x%lx", err, (unsigned long)address);
+        vm_deallocate(task, remapAddr, mapSize);
         return false;
     }
+
+    uintptr_t writeAt = (uintptr_t)remapAddr + (address - pageStart);
+    memcpy((void *)writeAt, bytes, len);
+
+    vm_deallocate(task, remapAddr, mapSize);
     sys_icache_invalidate((void *)address, len);
     return true;
 }
