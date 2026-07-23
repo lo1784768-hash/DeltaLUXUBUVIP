@@ -461,8 +461,11 @@ game_sdk_t *game_sdk = new game_sdk_t();
             // va CrashLogger (bat rieng EXC_BAD_ACCESS/BAD_INSTRUCTION/ARITHMETIC) KHONG ghi duoc dong
             // log crash nao - nghi ngo khong phai loi bad-access thong thuong (co the watchdog timeout
             // hoac loai khac). Tat ca 2 patch de xac dinh truoc chung co that su la nguyen nhan khong.
-            // DeltaVFS_debugLog("Menu +load: gọi installCheckHackerPatch()");
-            // installCheckHackerPatch();
+            // BISECT BUOC 1/2: bat lai RIENG installCheckHackerPatch() de test, van tat
+            // installMatchClientInfoPatch() ben duoi - tat ca 2 dung khong vang (~20s+ chay sach,
+            // xac nhan 1 trong 2 la nguyen nhan). Neu bat cai nay ma van vang => day la thu pham.
+            DeltaVFS_debugLog("Menu +load: gọi installCheckHackerPatch()");
+            installCheckHackerPatch();
             // installMatchClientInfoPatch() - chặn TỪ GỐC (client không gửi lib_result/
             // exception_count khả nghi lên server nữa), bổ trợ cho installCheckHackerPatch()
             // ở trên (chặn phản ứng của client với thông báo server gửi XUỐNG) - đề phòng
