@@ -455,15 +455,21 @@ game_sdk_t *game_sdk = new game_sdk_t();
             // match_mode/config kiểu HackerPoolCdt. Không đụng trampoline nên không có rủi ro
             // adrp-relocation/Crashlytics như AntiReportSpoof gặp phải. Có memcmp byte gốc trước khi
             // ghi - game update lệch offset thì tự huỷ, không ghi bậy. CHƯA kiểm chứng trên máy thật.
-            DeltaVFS_debugLog("Menu +load: gọi installCheckHackerPatch()");
-            installCheckHackerPatch();
+            // TAM TAT 2 dong goi installCheckHackerPatch()/installMatchClientInfoPatch() ben duoi de
+            // test baseline - lan test sau khi sua vm_remap cho thay CA 2 patch GHI THANH CONG (khong
+            // con loi vm_protect/vm_remap) nhung app van vang dung y het timing cu (gan luc logo hien),
+            // va CrashLogger (bat rieng EXC_BAD_ACCESS/BAD_INSTRUCTION/ARITHMETIC) KHONG ghi duoc dong
+            // log crash nao - nghi ngo khong phai loi bad-access thong thuong (co the watchdog timeout
+            // hoac loai khac). Tat ca 2 patch de xac dinh truoc chung co that su la nguyen nhan khong.
+            // DeltaVFS_debugLog("Menu +load: gọi installCheckHackerPatch()");
+            // installCheckHackerPatch();
             // installMatchClientInfoPatch() - chặn TỪ GỐC (client không gửi lib_result/
             // exception_count khả nghi lên server nữa), bổ trợ cho installCheckHackerPatch()
             // ở trên (chặn phản ứng của client với thông báo server gửi XUỐNG) - đề phòng
             // trường hợp server tự hành động độc lập, không chờ client xử lý Ntf. Xem
             // MatchClientInfoPatch.h để biết lý do 2 patch này bổ trợ nhau, không xung đột.
-            DeltaVFS_debugLog("Menu +load: gọi installMatchClientInfoPatch()");
-            installMatchClientInfoPatch();
+            // DeltaVFS_debugLog("Menu +load: gọi installMatchClientInfoPatch()");
+            // installMatchClientInfoPatch();
             DeltaVFS_debugLog("Menu +load: game_sdk + AimMagnet hook xong");
             sdkInitialized = true;
         }
