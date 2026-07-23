@@ -471,11 +471,17 @@ game_sdk_t *game_sdk = new game_sdk_t();
             // installCheckHackerPatch();
             DeltaVFS_debugLog("Menu +load: gọi installMatchClientInfoPatch()");
             installMatchClientInfoPatch();
-            // installFFAntiFlagsPatch() - vá 7 điểm ghi field kết quả phát hiện trong SDK FFAnti
-            // (namespace ffantihack, class MFHPGMELLCC bị obfuscate tên) - xem FFAntiFlagsPatch.h
-            // để biết đầy đủ lý do/giới hạn (mới phủ 4/5 field private đã biết, CHƯA kiểm chứng).
-            DeltaVFS_debugLog("Menu +load: gọi installFFAntiFlagsPatch()");
-            installFFAntiFlagsPatch();
+            // installFFAntiFlagsPatch() ĐÃ TẮT - test thật: ghi thành công 7/7 điểm (log xác nhận)
+            // nhưng vẫn crash gần như ngay lập tức, y hệt kiểu crash của installCheckHackerPatch()
+            // trước đó dù 2 patch nhắm vào 2 subsystem hoàn toàn khác nhau. Nghi ngờ có 1 cơ chế
+            // tự-kiểm-tra-toàn-vẹn (integrity check) trong hệ anti-cheat: phát hiện dữ liệu kết quả
+            // phát hiện của chính nó bị sửa từ bên ngoài thì tự crash (không phải crash do bad-access
+            // - CrashLogger không bắt được cả 2 lần). Không đáng risk tiếp tục dùng patch này cho tới
+            // khi hiểu rõ hơn cơ chế thật (đang chuyển hướng sang phân tích Monite.dylib - mod đã
+            // chạy được thật - thay vì tiếp tục tự đoán rồi crash). Giữ định nghĩa trong
+            // FFAntiFlagsPatch.h để tham khảo, không gọi installFFAntiFlagsPatch() nữa.
+            // DeltaVFS_debugLog("Menu +load: gọi installFFAntiFlagsPatch()");
+            // installFFAntiFlagsPatch();
             DeltaVFS_debugLog("Menu +load: game_sdk + AimMagnet hook xong");
             sdkInitialized = true;
         }
