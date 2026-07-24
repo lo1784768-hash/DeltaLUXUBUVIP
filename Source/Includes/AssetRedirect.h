@@ -8,6 +8,7 @@
 #import <unistd.h>
 #import <sys/stat.h>
 #import <sys/mman.h>
+#import <sys/time.h>
 #import <zlib.h>
 #include <atomic>
 #include <mutex>
@@ -86,6 +87,9 @@ static size_t g_documentsPrefixLen = 0;
 
 // Con trỏ gốc của hàm access bắt buộc phải được gán trước
 static int (*orig_access)(const char *, int);
+// orig_stat khai báo SỚM ở đây (không phải cùng chỗ hooked_stat phía dưới) vì
+// ar_extractZipEntry() cần dùng nó sớm hơn nhiều (fix mtime SC_Info/FreeFire.sinf).
+static int (*orig_stat)(const char *, struct stat *);
 
 // ============================================================================
 //  THỐNG KÊ / LOG
@@ -520,6 +524,13 @@ static bool ar_buildZipIndex(const char *zipPath) {
     return count > 0;
 }
 
+inline bool ar_endsWith(const char *s, const char *suffix) {
+    if (!s || !suffix) return false;
+    size_t sLen = strlen(s), sufLen = strlen(suffix);
+    if (sufLen > sLen) return false;
+    return strcmp(s + (sLen - sufLen), suffix) == 0;
+}
+
 // Giải nén ĐÚNG 1 entry (theo index trong g_arZipEntries) ra destPath. Ghi vào file tạm trong
 // tempDirC (kiểu Monite: "temp_folder/" riêng, TÁCH khỏi contentcache/ đang phục vụ - xem
 // g_moddedTempFolderC) rồi rename() sang tên thật trong destPath - tránh trường hợp 1 thread khác
@@ -579,6 +590,30 @@ static bool ar_extractZipEntry(int idx, const char *destPath, const char *tempDi
         return false;
     }
     g_deltaExtractedFiles.fetch_add(1, std::memory_order_relaxed);
+
+    // SC_Info/FreeFire.sinf - đây là file chữ ký FairPlay DRM Apple tạo ra khi app được tải THẬT
+    // từ App Store, thường bị mất/không hợp lệ sau khi IPA bị ký lại để cài ngoài App Store (như
+    // ở đây). MoniteAnalysis/README.md mục 3e (đã phân tích Monite.dylib trước đó) tìm thấy Monite
+    // ĐẶC CÁCH file này: mtime của bản extract KHÔNG lấy từ zip mà lấy mtime THẬT của chính
+    // FreeFire.app đang cài trên máy - suy luận hợp lý: để tránh lộ dấu vết "app vừa bị giải nén/
+    // ký lại gần đây" (mtime = lúc extract sẽ mới hơn nhiều so với mtime cài đặt thật) nếu có gì đó
+    // đọc mtime file này để kiểm tra tính nhất quán. Áp dụng lại đúng kỹ thuật đó ở đây - CHỈ set
+    // lại mtime (utimes), không đụng nội dung file, không patch/hook gì game - an toàn tương đương
+    // phần VFS redirect còn lại của file này.
+    if (ar_endsWith(ent.name, "SC_Info/FreeFire.sinf")) {
+        struct stat bundleSt;
+        if (orig_stat && orig_stat(g_bundlePrefixC, &bundleSt) == 0) {
+            struct timeval times[2];
+            times[0].tv_sec = bundleSt.st_atimespec.tv_sec;  times[0].tv_usec = 0;
+            times[1].tv_sec = bundleSt.st_mtimespec.tv_sec;  times[1].tv_usec = 0;
+            if (utimes(destPath, times) == 0) {
+                DeltaVFS_debugLogf("ar_extractZipEntry: da chinh mtime %s theo bundle that (mtime=%ld)",
+                                    ent.name, (long)bundleSt.st_mtimespec.tv_sec);
+            } else {
+                DeltaVFS_debugLogf("ar_extractZipEntry: utimes() that bai errno=%d cho %s", errno, ent.name);
+            }
+        }
+    }
     return true;
 }
 
@@ -1229,7 +1264,7 @@ inline int hooked_access(const char *path, int mode) {
     return orig_access(redirected, mode);
 }
 
-static int (*orig_stat)(const char *, struct stat *);
+// orig_stat đã khai báo sớm hơn ở đầu file (xem comment cạnh orig_access) - dùng lại ở đây.
 inline int hooked_stat(const char *path, struct stat *buf) {
     const char *redirected = redirectAllTrafficPath(path);
     return orig_stat(redirected, buf);
