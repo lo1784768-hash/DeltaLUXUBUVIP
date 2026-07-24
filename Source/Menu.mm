@@ -22,6 +22,7 @@
 #import "Includes/PacketCapture.h"
 #import "Includes/CheckHackerPatch.h"
 #import "Includes/MatchClientInfoPatch.h"
+#import "Includes/GameMsgFlagPatch.h"
 #import "Includes/FFAntiFlagsPatch.h"
 #import "Includes/FFAntiObserve.h"
 #import "Includes/DylibSpy.h"
@@ -478,6 +479,8 @@ game_sdk_t *game_sdk = new game_sdk_t();
             // installCheckHackerPatch();
             DeltaVFS_debugLog("Menu +load: gọi installMatchClientInfoPatch()");
             installMatchClientInfoPatch();
+            DeltaVFS_debugLog("Menu +load: gọi installGameMsgFlagPatch()");
+            installGameMsgFlagPatch();
             // installFFAntiFlagsPatch() KHÔNG gọi ở đây nữa - 2 lần thử trước đều gọi NGAY lúc
             // +load (~3s sau khi mở app), tức TRƯỚC KHI class MFHPGMELLCC chạy xong static
             // constructor (FFAntiObserve.h cho thấy phải retry ~23-26 lần/giây mới có static field
