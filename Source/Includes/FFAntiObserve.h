@@ -20,30 +20,34 @@
 
 namespace FFAntiObserve {
 
-static void *g_staticData = NULL;
-static bool g_resolveAttempted = false;
+static void *g_klass = NULL;             // cache class - tim 1 lan la du, class luon ton tai
+static bool g_classLookupFailed = false; // tim class that bai han (khac RVA/ten) - khong thu lai
+static void *g_staticData = NULL;        // static_field_data co the tra NULL nhieu lan - class
+                                          // CHUA CHAY static constructor (chua vao trang thai can
+                                          // thiet) - PHAI THU LAI moi frame cho toi khi khac NULL,
+                                          // khong duoc bo cuoc sau 1 lan (khac voi GetClass()).
+static int g_retryTick = 0;
 static uint8_t g_lastValues[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};  // 0xFF = "chua doc lan nao"
 
 inline void CheckAndLog() {
+    if (g_classLookupFailed) return;
     if (!g_staticData) {
-        if (g_resolveAttempted) return;  // da thu 1 lan, khong tim thay class thi thoi
-        g_resolveAttempted = true;
-
-        // Debug tung buoc de biet CHINH XAC buoc nao that bai, thay vi 1 dong loi chung chung.
-        bool attached = Il2CppResolve::Attach();
-        DeltaVFS_debugLogf("FFAntiObserve: Attach()=%d p_static_field_data=%p", attached,
-                            (void *)Il2CppResolve::p_il2cpp_class_get_static_field_data);
-        void *img = Il2CppResolve::GetImage("Assembly-CSharp.dll");
-        DeltaVFS_debugLogf("FFAntiObserve: GetImage(Assembly-CSharp.dll)=%p", img);
-        void *klass = Il2CppResolve::GetClass("Assembly-CSharp.dll", "ffantihack", "MFHPGMELLCC");
-        DeltaVFS_debugLogf("FFAntiObserve: GetClass(ffantihack.MFHPGMELLCC)=%p", klass);
-
-        g_staticData = Il2CppResolve::GetStaticFieldData("Assembly-CSharp.dll", "ffantihack", "MFHPGMELLCC");
-        if (!g_staticData) {
-            DeltaVFS_debugLog("FFAntiObserve: khong resolve duoc ffantihack.MFHPGMELLCC - tat quan sat nay");
-            return;
+        if (!g_klass) {
+            g_klass = Il2CppResolve::GetClass("Assembly-CSharp.dll", "ffantihack", "MFHPGMELLCC");
+            if (!g_klass) {
+                DeltaVFS_debugLog("FFAntiObserve: khong tim thay class ffantihack.MFHPGMELLCC - tat quan sat nay");
+                g_classLookupFailed = true;
+                return;
+            }
+            DeltaVFS_debugLogf("FFAntiObserve: tim thay class %p, cho static constructor chay...", g_klass);
         }
-        DeltaVFS_debugLogf("FFAntiObserve: resolve OK, static field data tai %p", g_staticData);
+        // Thu lai il2cpp_class_get_static_field_data() moi ~60 frame (~1s) - class co the CHUA
+        // chay static constructor luc ung dung moi mo, se chay khi FFAnti thuc su duoc dung.
+        if (++g_retryTick % 60 != 0) return;
+        if (!Il2CppResolve::p_il2cpp_class_get_static_field_data) return;
+        g_staticData = Il2CppResolve::p_il2cpp_class_get_static_field_data(g_klass);
+        if (!g_staticData) return;  // van chua san sang, thu lai sau
+        DeltaVFS_debugLogf("FFAntiObserve: static field data san sang tai %p (sau %d lan thu)", g_staticData, g_retryTick / 60);
     }
 
     static const struct { size_t off; const char *name; } fields[6] = {
