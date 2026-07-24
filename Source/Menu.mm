@@ -26,6 +26,7 @@
 #import "Includes/FakeMatchDataAlloc.h"
 #import "Includes/MatchClientInfoPatch.h"
 #import "Includes/UnityFrameworkSyscallHook.h"
+#import "Includes/MoniteUFPiggyback.h"
 #import "Includes/GameMsgFlagPatch.h"
 #import "Includes/FFAntiFlagsPatch.h"
 #import "Includes/FFAntiObserve.h"
@@ -498,6 +499,15 @@ game_sdk_t *game_sdk = new game_sdk_t();
             // GỐC (không vá gì) làm baseline ổn định.
             // DeltaVFS_debugLog("Menu +load: gọi installUnityFrameworkSyscallHook()");
             // installUnityFrameworkSyscallHook();
+
+            // installMoniteUFPiggyback() - HƯỚNG MỚI thay cho UnityFrameworkSyscallHook: KHÔNG tự
+            // vá UnityFramework nữa (né hẳn nghi vấn "sửa file bị phát hiện"). Dùng NGUYÊN VẸN
+            // UnityFramework THẬT của Monite (trích từ MoniteV2.ipa, không sửa 1 byte) làm file thay
+            // thế trong IPA, rồi Delta.dylib chỉ tự ghi con trỏ callback CỦA MÌNH vào đúng các "data
+            // slot" mà trampoline SẴN CÓ của Monite đọc lúc chạy - quy ước gọi đã dịch ngược chính
+            // xác từ disassemble (xem MoniteUFPiggyback.h). CHƯA KIỂM CHỨNG TRÊN THIẾT BỊ THẬT.
+            DeltaVFS_debugLog("Menu +load: gọi installMoniteUFPiggyback()");
+            installMoniteUFPiggyback();
             // installGameMsgFlagPatch() TẮT - user báo cứ thêm patch này vào là bấm vào trận bị
             // crash ngay lúc đang loading (chưa vào hẳn trận), SỚM HƠN cả kiểu bị đá thường thấy
             // (trước giờ luôn ~9-12s SAU KHI đã vào hẳn trận). Tắt để quay lại baseline ổn định,
