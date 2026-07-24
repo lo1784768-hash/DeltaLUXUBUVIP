@@ -21,6 +21,7 @@
 #import "Includes/AntiReportSpoof.h"
 #import "Includes/PacketCapture.h"
 #import "Includes/CheckHackerPatch.h"
+#import "Includes/FakeMatchDataAlloc.h"
 #import "Includes/MatchClientInfoPatch.h"
 #import "Includes/GameMsgFlagPatch.h"
 #import "Includes/FFAntiFlagsPatch.h"

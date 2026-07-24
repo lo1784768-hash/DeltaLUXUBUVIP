@@ -38,6 +38,16 @@
 // luôn gin_check_data@0x50 dù đây là field DUY NHẤT có mã lỗi định danh riêng xác nhận rõ ràng
 // (EHacker.HackerPoolCdt_GIN_CHECK_DATA_EMPTY_IOS=19) rằng rỗng field NÀY chắc chắn bị phát hiện -
 // chấp nhận rủi ro đã biết vì 6 field kia không giải quyết được vấn đề.
+// MỞ RỘNG LẦN 3 (sau khi xác nhận: phòng tự tạo KHÔNG gọi GetMatchClientInfo() và KHÔNG bị đá,
+// trong khi ghép trận ngẫu nhiên CÓ gọi và VẪN bị đá dù đã null 7/7 field) - nghi ngờ "null hoàn
+// toàn" chính là dấu hiệu bị bắt (enum CLIENT_INFO_EMPTY=101/GIN_CHECK_DATA_EMPTY_IOS=19 đặt tên
+// riêng cho tình huống "rỗng"). Thử thay 4 field byte[] (file_exception, lib_result@0x28 - tên
+// thật theo dump.cs, khác "native_result" đã ghi nhầm trước đây -, native_result@0x38,
+// gin_check_data) bằng 1 byte[1] THẬT (không null) qua kỹ thuật redirect lệnh "bl <hàm tính giá
+// trị thật>" đứng trước mỗi "str" sang stub riêng (xem FakeMatchDataAlloc.h) - str phía sau giữ
+// NGUYÊN, chỉ giá trị được lưu đổi. Có fallback null (kỹ thuật cũ) nếu redirect thất bại (cấp phát
+// byte[] thất bại, hoặc BL ngoài tầm với ±128MB giữa Delta.dylib và UnityFramework - 2 image riêng
+// biệt, không đảm bảo gần nhau).
 #pragma once
 #import <Foundation/Foundation.h>
 #include <mach/mach.h>
@@ -47,6 +57,7 @@
 #import "CheckHackerPatch.h"  // dùng lại CheckHackerPatch_writeBytes() - #import (không #include)
                                 // để tránh include lại 2 lần trong cùng translation unit khi
                                 // Menu.mm cũng #import trực tiếp file này
+#import "FakeMatchDataAlloc.h"
 
 #define GMCI_LIB_RESULT_RVA      0x3D82990ULL
 #define GMCI_EXCEPTION_COUNT_RVA 0x3D829A4ULL
@@ -80,15 +91,13 @@ inline void installMatchClientInfoPatch() {
         }
     }
 
-    // 4 field pointer - "str xN,[..]!" doi thanh ghi nguon xN -> XZR (byte dau tien cua tu lenh,
-    // little-endian, chinh la truong Rt) - KHONG doi kich thuoc/dia chi/control flow.
+    // 1 field pointer con lai xu ly theo kieu cu (null qua XZR swap) - tpsdk_str co 2 nhanh nguon
+    // gia tri hoi tu truoc luc str (1 qua bl ffantihack.MFHPGMELLCC.NHOPEKHBCBF, 1 qua chuoi cache
+    // co san) nen KHONG fit kieu "redirect 1 bl duy nhat truoc str" nhu 4 field byte[] ben duoi -
+    // giu nguyen ky thuat null cu cho field nay, chua mo rong.
     struct PtrPatchSite { uint64_t rva; uint8_t original[4]; uint8_t patched[4]; const char *label; };
     static const PtrPatchSite ptrSites[] = {
         {0x3D828F0ULL, {0x81,0x0E,0x01,0xF8}, {0x9F,0x0E,0x01,0xF8}, "tpsdk_str@0x10"},
-        {0x3D82974ULL, {0x01,0x0C,0x02,0xF8}, {0x1F,0x0C,0x02,0xF8}, "file_exception@0x20"},
-        {0x3D829CCULL, {0x01,0x8C,0x02,0xF8}, {0x1F,0x8C,0x02,0xF8}, "native_result@0x28"},
-        {0x3D829ECULL, {0x80,0x8E,0x03,0xF8}, {0x9F,0x8E,0x03,0xF8}, "native_result@0x38"},
-        {0x3D82A78ULL, {0x01,0x0C,0x05,0xF8}, {0x1F,0x0C,0x05,0xF8}, "gin_check_data@0x50"},
     };
 
     for (const auto &site : ptrSites) {
@@ -108,6 +117,82 @@ inline void installMatchClientInfoPatch() {
                                 site.label, (unsigned long)target, (unsigned long long)site.rva);
         } else {
             DeltaVFS_debugLogf("MatchClientInfoPatch: ghi patch %s that bai tai 0x%lx", site.label, (unsigned long)target);
+        }
+    }
+
+    // 4 field byte[] - THAY VI null (XZR swap, kieu cu), redirect dung lenh "bl <ham tinh gia tri
+    // that>" dung TRUOC lenh str sang stub tra ve byte[1] THAT (xem FakeMatchDataAlloc.h) - str
+    // phia sau GIU NGUYEN, khong dung toi. Neu redirect that bai vi bat ky ly do gi (cap phat
+    // byte[] that bai, bl khong con dung target nhu da phan tich, hoac ngoai tam voi ±128MB giua
+    // Delta.dylib va UnityFramework) - FALLBACK ve null qua str (kieu cu, da xac nhan an toan)
+    // thay vi bo qua hoan toan, de KHONG BAO GIO de lai gia tri that/nghi ngo o day.
+    FakeMatchData_ensureAllocated();
+
+    struct BlRedirectSite {
+        uint64_t blRva; uint64_t originalTargetRva;
+        uint64_t strRva; uint8_t strOriginal[4]; uint8_t strNullPatched[4];
+        const char *label;
+    };
+    static const BlRedirectSite blSites[] = {
+        {0x3D82968ULL, 0x6889018ULL, 0x3D82974ULL, {0x01,0x0C,0x02,0xF8}, {0x1F,0x0C,0x02,0xF8}, "file_exception@0x20"},
+        {0x3D829C0ULL, 0x6889018ULL, 0x3D829CCULL, {0x01,0x8C,0x02,0xF8}, {0x1F,0x8C,0x02,0xF8}, "lib_result@0x28 (ten dung theo dump.cs)"},
+        {0x3D829E0ULL, 0x6889018ULL, 0x3D829ECULL, {0x80,0x8E,0x03,0xF8}, {0x9F,0x8E,0x03,0xF8}, "native_result@0x38"},
+        {0x3D82A6CULL, 0x827AB24ULL, 0x3D82A78ULL, {0x01,0x0C,0x05,0xF8}, {0x1F,0x0C,0x05,0xF8}, "gin_check_data@0x50"},
+    };
+
+    for (const auto &site : blSites) {
+        bool redirected = false;
+        uintptr_t blAddr = (uintptr_t)getRealOffset(site.blRva);
+        if (blAddr && g_fakeEmptyByteArray) {
+            uint32_t word = 0;
+            memcpy(&word, (void *)blAddr, 4);
+            if ((word >> 26) == 0b100101) {
+                int32_t imm26 = word & 0x3FFFFFF;
+                if (imm26 & 0x2000000) imm26 -= 0x4000000;
+                uintptr_t decodedTarget = blAddr + (intptr_t)imm26 * 4;
+                uintptr_t expectedTarget = (uintptr_t)getRealOffset(site.originalTargetRva);
+                if (decodedTarget == expectedTarget) {
+                    uintptr_t stubAddr = (uintptr_t)&DeltaFakeEmptyByteArrayStub;
+                    intptr_t delta = (intptr_t)stubAddr - (intptr_t)blAddr;
+                    if ((delta % 4) == 0 && delta >= -(1LL << 27) && delta < (1LL << 27)) {
+                        int32_t newImm26 = (int32_t)((delta / 4) & 0x3FFFFFF);
+                        uint32_t newWord = 0x94000000u | (uint32_t)newImm26;
+                        uint8_t newBytes[4];
+                        memcpy(newBytes, &newWord, 4);
+                        if (CheckHackerPatch_writeBytes(blAddr, newBytes, 4)) {
+                            DeltaVFS_debugLogf("MatchClientInfoPatch: da redirect %s sang byte[1] gia tai 0x%lx (RVA 0x%llx)",
+                                                site.label, (unsigned long)blAddr, (unsigned long long)site.blRva);
+                            redirected = true;
+                        }
+                    } else {
+                        DeltaVFS_debugLogf("MatchClientInfoPatch: %s - stub qua xa (ngoai tam BL 128MB), fallback null", site.label);
+                    }
+                } else {
+                    DeltaVFS_debugLogf("MatchClientInfoPatch: %s - bl khong dung target nhu da phan tich (game update?), fallback null", site.label);
+                }
+            } else {
+                DeltaVFS_debugLogf("MatchClientInfoPatch: %s - byte goc khong phai BL (game update?), fallback null", site.label);
+            }
+        } else if (!g_fakeEmptyByteArray) {
+            DeltaVFS_debugLogf("MatchClientInfoPatch: %s - chua co byte[] gia (cap phat that bai), fallback null", site.label);
+        }
+
+        if (!redirected) {
+            uintptr_t strTarget = (uintptr_t)getRealOffset(site.strRva);
+            if (!strTarget) {
+                DeltaVFS_debugLogf("MatchClientInfoPatch: khong tim thay UnityFramework, bo qua %s", site.label);
+                continue;
+            }
+            if (memcmp((void *)strTarget, site.strOriginal, 4) != 0) {
+                DeltaVFS_debugLogf("MatchClientInfoPatch: byte goc tai %s (0x%lx) KHONG khop - HUY patch nay de an toan",
+                                    site.label, (unsigned long)strTarget);
+                continue;
+            }
+            if (CheckHackerPatch_writeBytes(strTarget, site.strNullPatched, 4)) {
+                DeltaVFS_debugLogf("MatchClientInfoPatch: da ep %s ve null (fallback) tai 0x%lx", site.label, (unsigned long)strTarget);
+            } else {
+                DeltaVFS_debugLogf("MatchClientInfoPatch: ghi patch fallback %s that bai tai 0x%lx", site.label, (unsigned long)strTarget);
+            }
         }
     }
 }
