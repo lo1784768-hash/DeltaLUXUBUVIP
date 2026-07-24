@@ -93,6 +93,10 @@ static int (*orig_access)(const char *, int);
 // orig_stat khai báo SỚM ở đây (không phải cùng chỗ hooked_stat phía dưới) vì
 // ar_extractZipEntry() cần dùng nó sớm hơn nhiều (fix mtime SC_Info/FreeFire.sinf).
 static int (*orig_stat)(const char *, struct stat *);
+// orig_open khai báo SỚM ở đây (không phải cùng chỗ hooked_open phía dưới) vì
+// ar_ensureFirstRunChecked() cần dùng nó sớm hơn nhiều (canary write-test) - tương tự lý do
+// orig_stat ở trên.
+static int (*orig_open)(const char *, int, ...);
 
 // ============================================================================
 //  THỐNG KÊ / LOG
@@ -826,7 +830,7 @@ inline void ar_ensureFirstRunChecked() {
     DeltaVFS_debugLogf("ar_ensureFirstRunChecked: bundle=%s zip=%s", g_bundlePrefixC, g_deltaZipPathC);
 
     if (g_moddedPrefixLen > 0 && g_deltaZipPathC[0]) {
-        if (stat(g_deltaZipPathC, &g_deltaZipStat) == 0) {
+        if (orig_stat && orig_stat(g_deltaZipPathC, &g_deltaZipStat) == 0) {
             g_deltaZipFound.store(true, std::memory_order_relaxed);
             DeltaVFS_debugLogf("ar_ensureFirstRunChecked: Delta.zip found, size=%lld mtime=%lld", (long long)g_deltaZipStat.st_size, (long long)g_deltaZipStat.st_mtime);
             ar_mkpath(g_moddedRootC);
@@ -835,10 +839,10 @@ inline void ar_ensureFirstRunChecked() {
                 // Does Documents/hash actually let us create/write? Keep this canary check -
                 // cheap, and confirms the fix instead of assuming it.
                 struct stat checkSt;
-                bool dirExists = (stat(g_moddedPrefixC, &checkSt) == 0 && S_ISDIR(checkSt.st_mode));
+                bool dirExists = (orig_stat && orig_stat(g_moddedPrefixC, &checkSt) == 0 && S_ISDIR(checkSt.st_mode));
                 char canaryPath[1200];
                 snprintf(canaryPath, sizeof(canaryPath), "%s.write_test", g_moddedPrefixC);
-                int canaryFd = open(canaryPath, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+                int canaryFd = orig_open ? orig_open(canaryPath, O_WRONLY | O_CREAT | O_TRUNC, 0644) : -1;
                 bool canaryWritable = (canaryFd >= 0);
                 int canaryErrno = errno;
                 if (canaryFd >= 0) { close(canaryFd); unlink(canaryPath); }
@@ -1237,7 +1241,7 @@ inline bool ar_isWriteIntentFopenMode(const char *mode) {
     return false;
 }
 
-static int (*orig_open)(const char *, int, ...);
+// orig_open đã khai báo sớm hơn ở đầu file (gần orig_stat) - xem comment ở đó.
 inline int hooked_open(const char *path, int oflag, ...) {
     mode_t mode = 0;
     if (oflag & O_CREAT) {
@@ -1691,6 +1695,30 @@ static void initDeltaAllTrafficVFS() {
     // trước khi bật lại.
     // installDlsymSpoof();
 
+    // 0c. orig_open/orig_openat/orig_fopen/orig_access/orig_stat/orig_lstat/orig_opendir/
+    // orig_closedir/orig_readdir resolve qua dlsym NGAY TỪ ĐÂY - PHẢI xong TRƯỚC
+    // ar_ensureFirstRunChecked() bên dưới, vì hàm đó tự gọi thẳng stat() (không qua orig_stat) để
+    // kiểm tra Delta.zip - test thật (chạy song song Monite.dylib thật để soi qua DylibSpy.h) xác
+    // nhận: nếu constructor của 1 dylib KHÁC (vd Monite.dylib) chạy trước và đã tự hook stat() bằng
+    // fishhook riêng của họ (rebind_symbols vá GOT TOÀN TIẾN TRÌNH, không chỉ ảnh của họ), thì lệnh
+    // gọi stat() thẳng ở ar_ensureFirstRunChecked() lúc đó CHẠY XUYÊN QUA HOOK CỦA HỌ, có thể trả
+    // về size/mtime sai lệch cho Delta.zip -> ar_stateNeedsExtract() luôn thấy "đã đổi" -> lặp vô
+    // hạn màn hình "cần giải nén lần đầu" (xem sửa 2 chỗ gọi stat() trực tiếp thành orig_stat() bên
+    // dưới, tại ar_ensureFirstRunChecked). dlsym() tự tra export trie của thư viện đích, KHÔNG bị
+    // ảnh hưởng bởi fishhook rebind GOT của bất kỳ dylib nào khác - an toàn dùng làm nguồn "hàm
+    // libc thật" bất kể thứ tự nạp dylib.
+    orig_open   = (int   (*)(const char *, int, ...))     dlsym((void *)RTLD_DEFAULT, "open");
+    orig_openat = (int   (*)(int, const char *, int, ...))dlsym((void *)RTLD_DEFAULT, "openat");
+    orig_fopen  = (FILE *(*)(const char *, const char *)) dlsym((void *)RTLD_DEFAULT, "fopen");
+    orig_access = (int   (*)(const char *, int))          dlsym((void *)RTLD_DEFAULT, "access");
+    orig_stat   = (int   (*)(const char *, struct stat *))dlsym((void *)RTLD_DEFAULT, "stat");
+    orig_lstat  = (int   (*)(const char *, struct stat *))dlsym((void *)RTLD_DEFAULT, "lstat");
+    orig_opendir  = (DIR *(*)(const char *))              dlsym((void *)RTLD_DEFAULT, "opendir");
+    orig_closedir = (int  (*)(DIR *))                     dlsym((void *)RTLD_DEFAULT, "closedir");
+    orig_readdir  = (struct dirent *(*)(DIR *))           dlsym((void *)RTLD_DEFAULT, "readdir");
+    orig_CFBundleGetInfoDictionary          = (ORIG_CFBundleGetInfoDictionary)dlsym((void *)RTLD_DEFAULT, "CFBundleGetInfoDictionary");
+    orig_CFBundleGetValueForInfoDictionaryKey = (ORIG_CFBundleGetValueForInfoDictionaryKey)dlsym((void *)RTLD_DEFAULT, "CFBundleGetValueForInfoDictionaryKey");
+
     @autoreleasepool {
         // 1. KIỂM TRA CÓ CẦN GIẢI NÉN LẦN ĐẦU KHÔNG (bulk, xem PHẦN 1) - nhanh, không giải nén
         // gì ở đây cả. Idempotent, an toàn gọi từ nhiều nơi/nhiều thứ tự (constructor lẫn
@@ -1710,23 +1738,8 @@ static void initDeltaAllTrafficVFS() {
 
     bool needsFirstRun = g_deltaNeedsFirstRun.load(std::memory_order_relaxed);
 
-    // 3. orig_open/orig_openat/orig_fopen/orig_access/orig_stat/orig_lstat/orig_opendir/
-    // orig_closedir/orig_readdir vẫn resolve qua dlsym (KHÔNG rebind_symbols nữa, xem rebindings[]
-    // bên dưới chỉ còn 2 CFBundle) - đơn giản là con trỏ TỚI hàm libc thật, không ai patch chúng
-    // nữa. Vẫn cần giữ: hooked_open/hooked_openat/hooked_fopen/... còn định nghĩa (dead code, xem
-    // PHẦN 4's comment) tham chiếu tới orig_*, và orig_access CÒN ĐƯỢC DÙNG TRỰC TIẾP làm hàm
-    // access() thật trong 2 hàm hooked_nsbundle_pathForResourceOfType[InDirectory] ở PHẦN 4.
-    orig_open   = (int   (*)(const char *, int, ...))     dlsym((void *)RTLD_DEFAULT, "open");
-    orig_openat = (int   (*)(int, const char *, int, ...))dlsym((void *)RTLD_DEFAULT, "openat");
-    orig_fopen  = (FILE *(*)(const char *, const char *)) dlsym((void *)RTLD_DEFAULT, "fopen");
-    orig_access = (int   (*)(const char *, int))          dlsym((void *)RTLD_DEFAULT, "access");
-    orig_stat   = (int   (*)(const char *, struct stat *))dlsym((void *)RTLD_DEFAULT, "stat");
-    orig_lstat  = (int   (*)(const char *, struct stat *))dlsym((void *)RTLD_DEFAULT, "lstat");
-    orig_opendir  = (DIR *(*)(const char *))              dlsym((void *)RTLD_DEFAULT, "opendir");
-    orig_closedir = (int  (*)(DIR *))                     dlsym((void *)RTLD_DEFAULT, "closedir");
-    orig_readdir  = (struct dirent *(*)(DIR *))           dlsym((void *)RTLD_DEFAULT, "readdir");
-    orig_CFBundleGetInfoDictionary          = (ORIG_CFBundleGetInfoDictionary)dlsym((void *)RTLD_DEFAULT, "CFBundleGetInfoDictionary");
-    orig_CFBundleGetValueForInfoDictionaryKey = (ORIG_CFBundleGetValueForInfoDictionaryKey)dlsym((void *)RTLD_DEFAULT, "CFBundleGetValueForInfoDictionaryKey");
+    // 3. rebind_symbols() ben duoi (2 CFBundle*) - orig_open/.../orig_readdir da resolve xong o
+    // buoc 0c phia tren (truoc ar_ensureFirstRunChecked), khong lap lai o day nua.
 
     // Crash logger (dùng Mach exception-port, xem HWBreakHook.h) - độc lập hoàn toàn với fishhook/
     // VFS, an toàn gọi vô điều kiện kể cả ở process "lần đầu" (chỉ log lúc crash thật, không đụng
