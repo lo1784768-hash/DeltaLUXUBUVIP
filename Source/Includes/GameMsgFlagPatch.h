@@ -36,7 +36,14 @@
 // được gọi y hệt (không né được việc server biết client đã "nhận" gói, chỉ né được việc client tự
 // set cờ nội bộ theo giá trị đó).
 //
-// CHƯA kiểm chứng trên thiết bị thật.
+// KIỂM CHỨNG TRÊN THIẾT BỊ THẬT: patch cài đặt thành công (log xác nhận "da ep OIPCOIFFHBC..."),
+// nhưng user báo bấm vào trận bị CRASH NGAY LÚC ĐANG LOADING (chưa vào hẳn trận) - SỚM HƠN hẳn
+// kiểu bị đá thường thấy (luôn ~9-12s SAU KHI đã vào hẳn trận, "Curent_Match != null"). Đây là
+// crash MỚI, khác hẳn pattern cũ. Đã TẮT installGameMsgFlagPatch() trong Menu.mm để quay lại
+// baseline ổn định. CHƯA XÁC NHẬN chắc chắn nguyên nhân (đang chờ crash log .ips) - 2 khả năng:
+// (a) chính patch này có lỗi/side-effect chưa lường được dù same-size/same-control-flow, hoặc
+// (b) code path khác trong lúc loading trận cũng gọi qua chỗ bị vá theo cách không ngờ tới. KHÔNG
+// nên bật lại cho tới khi hiểu rõ nguyên nhân.
 #pragma once
 #import <Foundation/Foundation.h>
 #include "MemoryUtils.h"

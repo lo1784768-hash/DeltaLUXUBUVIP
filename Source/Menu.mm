@@ -479,8 +479,13 @@ game_sdk_t *game_sdk = new game_sdk_t();
             // installCheckHackerPatch();
             DeltaVFS_debugLog("Menu +load: gọi installMatchClientInfoPatch()");
             installMatchClientInfoPatch();
-            DeltaVFS_debugLog("Menu +load: gọi installGameMsgFlagPatch()");
-            installGameMsgFlagPatch();
+            // installGameMsgFlagPatch() TẮT - user báo cứ thêm patch này vào là bấm vào trận bị
+            // crash ngay lúc đang loading (chưa vào hẳn trận), SỚM HƠN cả kiểu bị đá thường thấy
+            // (trước giờ luôn ~9-12s SAU KHI đã vào hẳn trận). Tắt để quay lại baseline ổn định,
+            // CHƯA rõ nguyên nhân (đang chờ crash log .ips để xác nhận đây có phải do chính patch
+            // này, hay do effect khác) - xem thêm ghi chú trong GameMsgFlagPatch.h.
+            // DeltaVFS_debugLog("Menu +load: gọi installGameMsgFlagPatch()");
+            // installGameMsgFlagPatch();
             // installFFAntiFlagsPatch() KHÔNG gọi ở đây nữa - 2 lần thử trước đều gọi NGAY lúc
             // +load (~3s sau khi mở app), tức TRƯỚC KHI class MFHPGMELLCC chạy xong static
             // constructor (FFAntiObserve.h cho thấy phải retry ~23-26 lần/giây mới có static field
