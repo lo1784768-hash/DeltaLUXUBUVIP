@@ -25,6 +25,7 @@
 #import "Includes/CheckHackerPatch.h"
 #import "Includes/FakeMatchDataAlloc.h"
 #import "Includes/MatchClientInfoPatch.h"
+#import "Includes/UnityFrameworkSyscallHook.h"
 #import "Includes/GameMsgFlagPatch.h"
 #import "Includes/FFAntiFlagsPatch.h"
 #import "Includes/FFAntiObserve.h"
@@ -482,6 +483,8 @@ game_sdk_t *game_sdk = new game_sdk_t();
             // installCheckHackerPatch();
             DeltaVFS_debugLog("Menu +load: gọi installMatchClientInfoPatch()");
             installMatchClientInfoPatch();
+            DeltaVFS_debugLog("Menu +load: gọi installUnityFrameworkSyscallHook()");
+            installUnityFrameworkSyscallHook();
             // installGameMsgFlagPatch() TẮT - user báo cứ thêm patch này vào là bấm vào trận bị
             // crash ngay lúc đang loading (chưa vào hẳn trận), SỚM HƠN cả kiểu bị đá thường thấy
             // (trước giờ luôn ~9-12s SAU KHI đã vào hẳn trận). Tắt để quay lại baseline ổn định,
