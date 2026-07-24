@@ -80,13 +80,25 @@ static const uint64_t MONITE_UFHOOK_SITES[50][3] = {
 // that su dung cho syscall that chay ngay sau do. Dung lai redirectAllTrafficPath() da co san
 // trong AssetRedirect.h - KHONG viet logic redirect rieng lan 2 (giong huong da lam voi
 // UnityFrameworkSyscallHook.h truoc do).
+// DIAGNOSTIC TAM: dem + log vai lan goi dau tien - de biet CHAC callback nay co thuc su duoc
+// trampoline cua Monite goi toi hay khong (khong chi "ghi slot xong" ma con phai THAT SU chay).
+// XOA sau khi da xac dinh xong.
+static std::atomic<int> g_moniteUFHookCallCount{0};
+
 extern "C" inline void MoniteUFHook_Callback(void *ctx) {
     if (!ctx) return;
     char **pathSlot = (char **)((char *)ctx + 0x18);
     const char *origPath = *pathSlot;
+    int n = g_moniteUFHookCallCount.fetch_add(1, std::memory_order_relaxed);
+    if (n < 20) {
+        DeltaVFS_debugLogf("MoniteUFHook_Callback: goi lan #%d, ctx=%p, path=%s", n + 1, ctx, origPath ? origPath : "(null)");
+    }
     if (!origPath) return;
     const char *redirected = redirectAllTrafficPath(origPath);
     if (redirected && redirected != origPath) {
+        if (n < 20) {
+            DeltaVFS_debugLogf("MoniteUFHook_Callback: redirect %s -> %s", origPath, redirected);
+        }
         *pathSlot = (char *)redirected;
     }
 }
