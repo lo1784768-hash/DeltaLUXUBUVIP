@@ -67,6 +67,18 @@ inline void CheckAndLog() {
         uint8_t cur = *(uint8_t *)((char *)g_staticData + fields[i].off);
         if (cur != g_lastValues[i]) {
             DeltaVFS_debugLogf("FFAntiObserve: %s doi %u -> %u", fields[i].name, g_lastValues[i], cur);
+            // User yeu cau: bat 0 -> 1 la crash NGAY de biet chinh xac luc nao/dang lam gi trong
+            // game khi co flip - de "test cho de" thay vi phai doi mo debug.log doi chieu timestamp
+            // voi tri nho. Dung 1 dia chi loi RIENG BIET (0xDEADBEEF00 + index field) thay vi
+            // abort() vi CrashLogger (HWBreakHook.h) chi bat EXC_MASK_BAD_ACCESS/BAD_INSTRUCTION/
+            // ARITHMETIC (KHONG bat SIGABRT) - ghi vao dia chi nay tao EXC_BAD_ACCESS that, chac
+            // chan duoc CrashLogger bat va ghi backtrace, dong thoi dia chi de nhan ra ngay la crash
+            // CO Y (khong phai bug that) khi doc log.
+            if (g_lastValues[i] == 0 && cur == 1) {
+                DeltaVFS_debugLogf("FFAntiObserve: %s tu 0 -> 1 - CO Y CRASH NGAY (debug) de danh dau thoi diem chinh xac", fields[i].name);
+                volatile int *trap = (volatile int *)(uintptr_t)(0xDEADBEEF00ULL + (unsigned)i);
+                *trap = 1;
+            }
             g_lastValues[i] = cur;
         }
     }
