@@ -484,19 +484,20 @@ game_sdk_t *game_sdk = new game_sdk_t();
             DeltaVFS_debugLog("Menu +load: gọi installMatchClientInfoPatch()");
             installMatchClientInfoPatch();
 
-            // installUnityFrameworkSyscallHook() TẮT TẠM - test thật trên máy cho thấy crash MỚI
-            // (CrashLogger exc=1, pc cố định trong libsystem_platform.dylib, ~vài chục giây sau
-            // khi vào trận) mà TRƯỚC ĐÂY (bản chưa có cơ chế này) không hề có - trước chỉ bị đá
-            // nhẹ (văng về sảnh), không crash. Đã thử mở rộng trampoline lưu ĐẦY ĐỦ thanh ghi
-            // caller-saved (xem Tools/patch_unityframework_syscalls.py) nhưng crash y hệt (cùng
-            // pc, cùng giá trị thanh ghi lạ cả 2 bản) - chứng tỏ nguyên nhân KHÔNG phải do thiếu
-            // lưu thanh ghi, nhiều khả năng do chính việc redirect 1 trong ~50 điểm syscall trúng
-            // 1 file mà game dùng để tự kiểm tra tính toàn vẹn (redirect qua bản đã mod -> size/
-            // nội dung không khớp -> game tự crash). Tắt để xác nhận qua test đối chứng: nếu tắt
-            // cái này mà crash biến mất (quay lại kiểu bị đá nhẹ như trước), xác nhận đúng nguyên
-            // nhân nằm ở đây.
-            // DeltaVFS_debugLog("Menu +load: gọi installUnityFrameworkSyscallHook()");
-            // installUnityFrameworkSyscallHook();
+            // installUnityFrameworkSyscallHook() - BẬT LẠI sau khi tìm ra + vá phần còn thiếu.
+            // Lịch sử: bản đầu (chỉ lưu x1/x2/x16/x30) crash exc=1 trong libsystem_platform.dylib
+            // ~vài chục giây sau khi vào trận. Mở rộng lưu ĐẦY ĐỦ GPR (x1-x17/x29/x30) vẫn crash Y
+            // HỆT (cùng pc, cùng giá trị thanh ghi cả 2 bản) - loại trừ giả thuyết thiếu GPR. Disassemble
+            // TRỰC TIẾP trampoline thật của Monite (UnityFramework trong MoniteV2.ipa, __HOOK_TEXT
+            // tại 0xc85c000) phát hiện họ CÒN lưu/khôi phục cả 8 thanh ghi SIMD/NEON q0-q7 (128
+            // byte) mà bản của tui bỏ sót hoàn toàn - code Unity/Il2Cpp compiled rất có thể đang
+            // giữ giá trị tính toán dở trong q0-q7 ngay tại các điểm bị chèn, callback vô tình ghi
+            // đè gây hỏng dữ liệu trễ (khớp đúng kiểu crash biểu hiện ở memmove/memset sau đó, không
+            // phải ngay tại chỗ). Đã thêm lưu/khôi phục q0-q7 (dùng đúng byte trích từ binary thật
+            // của Monite, xem Tools/patch_unityframework_syscalls.py) - CHƯA KIỂM CHỨNG TRÊN THIẾT
+            // BỊ THẬT, đang chờ test lại.
+            DeltaVFS_debugLog("Menu +load: gọi installUnityFrameworkSyscallHook()");
+            installUnityFrameworkSyscallHook();
             // installGameMsgFlagPatch() TẮT - user báo cứ thêm patch này vào là bấm vào trận bị
             // crash ngay lúc đang loading (chưa vào hẳn trận), SỚM HƠN cả kiểu bị đá thường thấy
             // (trước giờ luôn ~9-12s SAU KHI đã vào hẳn trận). Tắt để quay lại baseline ổn định,

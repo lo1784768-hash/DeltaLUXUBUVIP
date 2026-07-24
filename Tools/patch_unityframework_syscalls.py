@@ -85,16 +85,41 @@ _SAVE_PAIRS = [(1, 2, 0), (3, 4, 16), (5, 6, 32), (7, 8, 48), (9, 10, 64),
 _SAVE_FRAME_SIZE = 160
 _X30_OFF = 144
 
+# LUU/KHOI PHUC q0-q7 (8 thanh ghi SIMD/NEON, 128 bit/thanh ghi = 128 byte) - phan CON THIEU sau
+# khi mo rong luu x1-x17/x29/x30 van khong het crash tren may that (test that: cung 1 crash y het,
+# cung pc, cung gia tri thanh ghi ca 2 ban - chung to khong phai do thieu GPR). Disassemble THAT
+# trampoline cua Monite (UnityFramework trong MoniteV2.ipa, segment __HOOK_TEXT tai 0xc85c000) xac
+# nhan ho luu CA q0-q7 truoc x0-x30, khong chi GPR nhu ban dau tui lam. Dung NGUYEN byte da trich
+# xuat truc tiep tu binary THAT cua ho (khong tu suy encoding STP/LDP dang Q - rui ro sai bit field
+# neu tu derive) - 4 cap STP luc luu (offset 0/0x20/0x40/0x60 tu 1 sub sp,#0x80 rieng), 4 cap LDP
+# post-index luc khoi phuc (moi lenh tu tang sp them 0x20, tong 0x80 khop lai voi sub sp ban dau).
+_Q_SAVE_BYTES = [
+    bytes.fromhex('e00700ad'),  # stp q0, q1, [sp]
+    bytes.fromhex('e20f01ad'),  # stp q2, q3, [sp, #0x20]
+    bytes.fromhex('e41702ad'),  # stp q4, q5, [sp, #0x40]
+    bytes.fromhex('e61f03ad'),  # stp q6, q7, [sp, #0x60]
+]
+_Q_RESTORE_BYTES = [
+    bytes.fromhex('e007c1ac'),  # ldp q0, q1, [sp], #0x20
+    bytes.fromhex('e20fc1ac'),  # ldp q2, q3, [sp], #0x20
+    bytes.fromhex('e417c1ac'),  # ldp q4, q5, [sp], #0x20
+    bytes.fromhex('e61fc1ac'),  # ldp q6, q7, [sp], #0x20
+]
+_Q_FRAME_SIZE = 0x80
+
 
 def encode_shared_routine(sr_addr, data_slot_addr):
-    """Tra ve bytes cua ham dung chung: luu toan bo thanh ghi caller-saved, doc con tro callback
-    (data_slot_addr), goi (neu co), khoi phuc lai TOAN BO thanh ghi + so hieu syscall, thuc hien
-    syscall THAT, roi ret - GIU NGUYEN co carry/x0 that cua chinh syscall that (ret khong dung
-    NZCV) de code sau do (b.lo/kiem tra x0 truc tiep) hoat dong dung y het ban goc, bat ke
-    redirect co xay ra hay khong."""
+    """Tra ve bytes cua ham dung chung: luu toan bo thanh ghi caller-saved (GPR + SIMD q0-q7), doc
+    con tro callback (data_slot_addr), goi (neu co), khoi phuc lai TOAN BO thanh ghi + so hieu
+    syscall, thuc hien syscall THAT, roi ret - GIU NGUYEN co carry/x0 that cua chinh syscall that
+    (ret khong dung NZCV) de code sau do (b.lo/kiem tra x0 truc tiep) hoat dong dung y het ban goc,
+    bat ke redirect co xay ra hay khong."""
     insns = []
     offset = 0
-    insns.append(asm.sub_sp_sp_imm(_SAVE_FRAME_SIZE)); offset += 4      # +0
+    insns.append(asm.sub_sp_sp_imm(_Q_FRAME_SIZE)); offset += 4         # +0   luu q0-q7
+    for b in _Q_SAVE_BYTES:
+        insns.append(b); offset += 4
+    insns.append(asm.sub_sp_sp_imm(_SAVE_FRAME_SIZE)); offset += 4      # luu x1-x17/x29/x30
     for r1, r2, off in _SAVE_PAIRS:
         insns.append(asm.stp_x_sp(r1, r2, off)); offset += 4
     insns.append(asm.str_x_sp(X30, _X30_OFF)); offset += 4
@@ -117,6 +142,8 @@ def encode_shared_routine(sr_addr, data_slot_addr):
         insns.append(asm.ldp_x_sp(r1, r2, off)); offset += 4
     insns.append(asm.ldr_x_sp(X30, _X30_OFF)); offset += 4
     insns.append(asm.add_sp_sp_imm(_SAVE_FRAME_SIZE)); offset += 4
+    for b in _Q_RESTORE_BYTES:
+        insns.append(b); offset += 4   # khoi phuc q0-q7 (post-index, tu tang sp, khop lai _Q_FRAME_SIZE)
     insns.append(asm.svc0()); offset += 4   # syscall THAT, x0=path (co the da doi)
     insns.append(asm.ret()); offset += 4
 
@@ -161,7 +188,8 @@ def main():
     if any(data_slack):
         print('LOI: vung trong __DATA KHONG con toan so 0 - file khac voi ban da phan tich, HUY.')
         sys.exit(2)
-    _sr_size_estimate = 4 * (1 + len(_SAVE_PAIRS) + 1 + 3 + 2 + len(_SAVE_PAIRS) + 1 + 1 + 1 + 1)
+    _sr_size_estimate = 4 * (1 + len(_Q_SAVE_BYTES) + 1 + len(_SAVE_PAIRS) + 1 + 3 + 2 +
+                              len(_SAVE_PAIRS) + 1 + 1 + len(_Q_RESTORE_BYTES) + 1 + 1)
     print(f'khoang trong __TEXT: {len(code_slack)} byte (can ~{_sr_size_estimate + 20*len(SITES)}), '
           f'__DATA: {len(data_slack)} byte (can 8) - OK')
 
