@@ -1722,6 +1722,7 @@ static void __attribute__((unused)) initCocoaVFSRedirectSwizzling() {
 // installCsOpsSpoof() bên dưới gọi được ngay dù ai include AssetRedirect.h trước hay CsOpsSpoof.h
 // trước (xem comment trong CsOpsSpoof.h).
 #include "CsOpsSpoof.h"
+#include "TaskDyldInfoSpoof.h"
 
 // ============================================================================
 //  CONSTRUCTOR KÍCH HOẠT HỆ THỐNG
@@ -1733,6 +1734,11 @@ static void initDeltaAllTrafficVFS() {
     // code nào cũng có thể tự hỏi bất cứ lúc nào sau khi process khởi động, không đợi VFS/game_sdk
     // sẵn sàng.
     installCsOpsSpoof();
+
+    // -1b. GIẤU Delta.dylib khỏi task_info(TASK_DYLD_INFO) (xem TaskDyldInfoSpoof.h) - dịch lại
+    // đúng kỹ thuật disassemble được từ Monite.dylib (FUN_000ad944), tầng THẤP HƠN 4 hàm dyld_*
+    // DylibHide.h đang giấu. Làm sớm cùng nhóm với CsOpsSpoof, trước DylibHide/VFS.
+    installTaskDyldInfoSpoof();
 
     // 0. GIẤU DYLIB khỏi 4 API liệt kê dyld image (xem DylibHide.h) - làm TRƯỚC TIÊN, trước cả
     // VFS/Esign/crash-logger, để có cơ hội tốt nhất né sớm bất kỳ lượt quét image nào của game
