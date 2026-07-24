@@ -1651,11 +1651,23 @@ static void __attribute__((unused)) initCocoaVFSRedirectSwizzling() {
 }
 
 
+// CsOpsSpoof.h forward-declare (không #include ngược) DeltaVFS_debugLog/DeltaVFS_debugLogf để
+// tránh include vòng - include Ở ĐÂY, sau khi 2 hàm đó đã được ĐỊNH NGHĨA thật ở trên, nên
+// installCsOpsSpoof() bên dưới gọi được ngay dù ai include AssetRedirect.h trước hay CsOpsSpoof.h
+// trước (xem comment trong CsOpsSpoof.h).
+#include "CsOpsSpoof.h"
+
 // ============================================================================
 //  CONSTRUCTOR KÍCH HOẠT HỆ THỐNG
 // ============================================================================
 __attribute__((constructor))
 static void initDeltaAllTrafficVFS() {
+    // -1. CHE cờ CS_GET_TASK_ALLOW/CS_DEBUGGED khỏi csops(CS_OPS_STATUS) (xem CsOpsSpoof.h) - làm
+    // TRƯỚC MỌI THỨ KHÁC, kể cả DylibHide, vì đây là giá trị TĨNH (ký lúc build/resign) mà bất kỳ
+    // code nào cũng có thể tự hỏi bất cứ lúc nào sau khi process khởi động, không đợi VFS/game_sdk
+    // sẵn sàng.
+    installCsOpsSpoof();
+
     // 0. GIẤU DYLIB khỏi 4 API liệt kê dyld image (xem DylibHide.h) - làm TRƯỚC TIÊN, trước cả
     // VFS/Esign/crash-logger, để có cơ hội tốt nhất né sớm bất kỳ lượt quét image nào của game
     // (kể cả từ +load của chính SDK bên thứ 3 khác chạy trước constructor này).

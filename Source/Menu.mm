@@ -15,6 +15,7 @@
 #import "Includes/ModHacks.h"
 #import "Includes/NetLog.h"
 #import "Includes/DNSBlock.h"
+#import "Includes/CsOpsSpoof.h"
 #import "Includes/AssetRedirect.h"
 #import "Includes/Il2CppResolve.h"
 #import "Includes/AntiReportSpoof.h"
