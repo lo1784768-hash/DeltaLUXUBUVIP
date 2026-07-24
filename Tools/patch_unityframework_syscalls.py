@@ -70,41 +70,58 @@ DATA_SLACK_END   = 0xC41C000   # fileoff cua __LINKEDIT (het phan file that cua 
 
 X16, X17, X9, X30 = 16, 17, 9, 30
 
+# Khung sp (160 byte) luu TOAN BO thanh ghi caller-saved (x1-x17, x29, x30 - tru x0: co y KHONG
+# luu, vi x0 la path argument/return that cua callback, PHAI duoc phep doi). Ly do mo rong tu ban
+# dau chi luu x1/x2/x16/x30: test tren may that (delta_early_diag.log + CrashLogger) cho thay
+# crash exc=1 trong libsystem_platform.dylib ~2s sau khi vao tran - dung luc cac diem syscall nay
+# duoc goi lien tuc de doc asset. Diem chen trampoline nam GIUA 1 ham khac (khong phai ranh gioi
+# goi ham that su do compiler dinh), nen code xung quanh co the dang giu gia tri song trong bat
+# ky thanh ghi caller-saved nao (khong chi x1/x2) - callback (goi NSString/ObjC ben trong
+# redirectAllTrafficPath) duoc phep clobber tat ca thanh ghi do theo dung AAPCS64, gay hong du
+# lieu tre, bieu hien thanh crash o cho khac hoan toan (memmove/memset) sau do. Monite (theo phan
+# tich Ghidra truoc do) luu DAY DU thanh ghi trong trampoline cua ho - sua lai cho khop.
+_SAVE_PAIRS = [(1, 2, 0), (3, 4, 16), (5, 6, 32), (7, 8, 48), (9, 10, 64),
+               (11, 12, 80), (13, 14, 96), (15, 16, 112), (17, 29, 128)]
+_SAVE_FRAME_SIZE = 160
+_X30_OFF = 144
+
 
 def encode_shared_routine(sr_addr, data_slot_addr):
-    """Tra ve bytes cua ham dung chung: doc con tro callback (data_slot_addr), goi (neu co),
-    khoi phuc lai dung tham so + so hieu syscall, thuc hien syscall THAT, roi ret - GIU
-    NGUYEN co carry/x0 that cua chinh syscall that (ret khong dung NZCV) de code sau do (b.lo/
-    kiem tra x0 truc tiep) hoat dong dung y het ban goc, bat ke redirect co xay ra hay khong."""
+    """Tra ve bytes cua ham dung chung: luu toan bo thanh ghi caller-saved, doc con tro callback
+    (data_slot_addr), goi (neu co), khoi phuc lai TOAN BO thanh ghi + so hieu syscall, thuc hien
+    syscall THAT, roi ret - GIU NGUYEN co carry/x0 that cua chinh syscall that (ret khong dung
+    NZCV) de code sau do (b.lo/kiem tra x0 truc tiep) hoat dong dung y het ban goc, bat ke
+    redirect co xay ra hay khong."""
     insns = []
-    insns.append(asm.sub_sp_sp_imm(48))          # +0
-    insns.append(asm.stp_x_sp(1, 2, 0))          # +4   luu x1,x2
-    insns.append(asm.str_x_sp(X16, 16))          # +8   luu x16 (so hieu syscall)
-    insns.append(asm.str_x_sp(X30, 24))          # +12  luu x30 (LR - se bi blr ghi de)
+    offset = 0
+    insns.append(asm.sub_sp_sp_imm(_SAVE_FRAME_SIZE)); offset += 4      # +0
+    for r1, r2, off in _SAVE_PAIRS:
+        insns.append(asm.stp_x_sp(r1, r2, off)); offset += 4
+    insns.append(asm.str_x_sp(X30, _X30_OFF)); offset += 4
 
-    adrp_addr = sr_addr + 16
+    adrp_addr = sr_addr + offset
     cur_page = adrp_addr & ~0xFFF
     tgt_page = data_slot_addr & ~0xFFF
     delta_pages = (tgt_page - cur_page) // 0x1000
     page_off = data_slot_addr & 0xFFF
-    insns.append(asm.adrp(X9, delta_pages))      # +16
-    insns.append(asm.add_reg_imm(X9, X9, page_off))  # +20
-    insns.append(asm.ldr_x_reg_imm(X9, X9, 0))   # +24  x9 = *callback_ptr (0 neu Delta.dylib chua ghi)
+    insns.append(asm.adrp(X9, delta_pages)); offset += 4
+    insns.append(asm.add_reg_imm(X9, X9, page_off)); offset += 4
+    insns.append(asm.ldr_x_reg_imm(X9, X9, 0)); offset += 4   # x9 = *callback_ptr (0 neu Delta.dylib chua ghi)
 
-    # cbz x9, do_syscall (do_syscall o +36, lenh cbz o +28 -> cach 2 lenh)
-    insns.append(asm.cbz_x(X9, 2))               # +28
-    insns.append(asm.blr(X9))                    # +32  goi callback(path=x0) -> x0 = path moi (hoac cu)
+    # cbz x9, do_syscall (blr la lenh duy nhat xen giua -> cach 2 lenh, giong ban cu)
+    insns.append(asm.cbz_x(X9, 2)); offset += 4
+    insns.append(asm.blr(X9)); offset += 4   # goi callback(path=x0) -> x0 = path moi (hoac cu)
 
     # do_syscall:
-    insns.append(asm.ldr_x_sp(X16, 16))          # +36
-    insns.append(asm.ldp_x_sp(1, 2, 0))          # +40
-    insns.append(asm.ldr_x_sp(X30, 24))          # +44
-    insns.append(asm.add_sp_sp_imm(48))          # +48
-    insns.append(asm.svc0())                     # +52  syscall THAT, x0=path (co the da doi)
-    insns.append(asm.ret())                      # +56
+    for r1, r2, off in _SAVE_PAIRS:
+        insns.append(asm.ldp_x_sp(r1, r2, off)); offset += 4
+    insns.append(asm.ldr_x_sp(X30, _X30_OFF)); offset += 4
+    insns.append(asm.add_sp_sp_imm(_SAVE_FRAME_SIZE)); offset += 4
+    insns.append(asm.svc0()); offset += 4   # syscall THAT, x0=path (co the da doi)
+    insns.append(asm.ret()); offset += 4
 
     blob = b''.join(insns)
-    assert len(blob) == 60, len(blob)
+    assert len(blob) == offset
     return blob
 
 
@@ -144,7 +161,8 @@ def main():
     if any(data_slack):
         print('LOI: vung trong __DATA KHONG con toan so 0 - file khac voi ban da phan tich, HUY.')
         sys.exit(2)
-    print(f'khoang trong __TEXT: {len(code_slack)} byte (can {60 + 20*len(SITES)}), '
+    _sr_size_estimate = 4 * (1 + len(_SAVE_PAIRS) + 1 + 3 + 2 + len(_SAVE_PAIRS) + 1 + 1 + 1 + 1)
+    print(f'khoang trong __TEXT: {len(code_slack)} byte (can ~{_sr_size_estimate + 20*len(SITES)}), '
           f'__DATA: {len(data_slack)} byte (can 8) - OK')
 
     data_slot_addr = DATA_SLACK_START

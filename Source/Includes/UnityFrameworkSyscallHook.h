@@ -41,12 +41,16 @@
 #define UFSH_DATA_SLOT_RVA        0xC419810ULL
 #define UFSH_SHARED_ROUTINE_RVA   0xB64AB44ULL
 
-// 24 byte dau cua shared_routine (sub sp,#0x30; stp x1,x2,[sp]; str x16,[sp,#0x10];
-// str x30,[sp,#0x18]; adrp x9,#...) - chu ky de xac nhan UnityFramework hien tai DUNG LA ban da
-// duoc Tools/patch_unityframework_syscalls.py va, khong phai ban goc/ban build khac.
+// 24 byte dau cua shared_routine (sub sp,#0xa0; stp x1,x2,[sp]; stp x3,x4,[sp,#0x10];
+// stp x5,x6,[sp,#0x20]; stp x7,x8,[sp,#0x30]; stp x9,x10,[sp,#0x40]) - chu ky de xac nhan
+// UnityFramework hien tai DUNG LA ban da duoc Tools/patch_unityframework_syscalls.py va (ban
+// LUU DAY DU thanh ghi caller-saved, khong phai ban dau chi luu x1/x2/x16/x30 - da doi sau khi
+// test that xac nhan ban thieu-luu gay crash exc=1 trong libsystem_platform.dylib ~2s sau khi
+// vao tran, xem comment o Tools/patch_unityframework_syscalls.py), khong phai ban goc/ban build
+// khac hay ban cu truoc khi mo rong luu thanh ghi.
 static const uint8_t UFSH_EXPECTED_SIGNATURE[24] = {
-    0xFF, 0xC3, 0x00, 0xD1, 0xE1, 0x0B, 0x00, 0xA9, 0xF0, 0x0B, 0x00, 0xF9, 0xFE, 0x0F, 0x00, 0xF9,
-    0x69, 0x6E, 0x00, 0xF0, 0x29, 0x41, 0x20, 0x91,
+    0xFF, 0x83, 0x02, 0xD1, 0xE1, 0x0B, 0x00, 0xA9, 0xE3, 0x13, 0x01, 0xA9, 0xE5, 0x1B, 0x02, 0xA9,
+    0xE7, 0x23, 0x03, 0xA9, 0xE9, 0x2B, 0x04, 0xA9,
 };
 
 // Callback duoc trampoline trong UnityFramework goi (qua BLR) voi x0 = path goc (con tro C
