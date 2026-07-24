@@ -31,10 +31,13 @@
 // int đã vá (lib_result/exception_count) rõ ràng CHƯA đủ). Vá thêm 3 field pointer còn lại mà trước
 // đây CỐ Ý chừa lại: tpsdk_str@0x10, file_exception@0x20, native_result@0x28 và @0x38 - kỹ thuật
 // giống hệt (đổi thanh ghi nguồn của lệnh "str" thành XZR/thanh ghi luôn = 0, cùng kích thước, không
-// đổi control flow). RIÊNG gin_check_data@0x50 VẪN GIỮ NGUYÊN KHÔNG ĐỤNG - đây là field duy nhất có
-// hẳn 1 mã lỗi định danh riêng xác nhận rõ ràng (EHacker.HackerPoolCdt_GIN_CHECK_DATA_EMPTY_IOS=19)
-// rằng rỗng field NÀY chắc chắn bị phát hiện - 3 field còn lại (tpsdk_str/file_exception/
-// native_result) không có mã lỗi cụ thể nào được xác nhận gắn với việc rỗng, nên rủi ro thấp hơn.
+// đổi control flow).
+//
+// MỞ RỘNG LẦN 2: sau khi vá cả 6 field trên, test thật vẫn bị đá (thậm chí chỉ 3s sau khi vào trận -
+// xác nhận thêm lần nữa: không phải chờ đủ lâu, đánh giá gần như ngay lúc vào trận). User đồng ý vá
+// luôn gin_check_data@0x50 dù đây là field DUY NHẤT có mã lỗi định danh riêng xác nhận rõ ràng
+// (EHacker.HackerPoolCdt_GIN_CHECK_DATA_EMPTY_IOS=19) rằng rỗng field NÀY chắc chắn bị phát hiện -
+// chấp nhận rủi ro đã biết vì 6 field kia không giải quyết được vấn đề.
 #pragma once
 #import <Foundation/Foundation.h>
 #include <mach/mach.h>
@@ -85,6 +88,7 @@ inline void installMatchClientInfoPatch() {
         {0x3D82974ULL, {0x01,0x0C,0x02,0xF8}, {0x1F,0x0C,0x02,0xF8}, "file_exception@0x20"},
         {0x3D829CCULL, {0x01,0x8C,0x02,0xF8}, {0x1F,0x8C,0x02,0xF8}, "native_result@0x28"},
         {0x3D829ECULL, {0x80,0x8E,0x03,0xF8}, {0x9F,0x8E,0x03,0xF8}, "native_result@0x38"},
+        {0x3D82A78ULL, {0x01,0x0C,0x05,0xF8}, {0x1F,0x0C,0x05,0xF8}, "gin_check_data@0x50"},
     };
 
     for (const auto &site : ptrSites) {
