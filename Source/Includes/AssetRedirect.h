@@ -1183,6 +1183,7 @@ inline const char* redirectAllTrafficPath(const char *path) {
 // ở đây (không phải đầu file) vì file đó gọi thẳng DeltaVFS_debugLog*() vừa định nghĩa ở trên.
 #import "HWBreakHook.h"
 #import "DylibHide.h"
+#import "DlsymSpoof.h"  // dung lai hooked_dyld_get_image_name/header cua DylibHide.h - include sau
 
 // ============================================================================
 //  CHẶN GHI vào thư mục cache THẬT của game (contentcache/ImageCache/Workshop trong Documents/,
@@ -1672,6 +1673,13 @@ static void initDeltaAllTrafficVFS() {
     // VFS/Esign/crash-logger, để có cơ hội tốt nhất né sớm bất kỳ lượt quét image nào của game
     // (kể cả từ +load của chính SDK bên thứ 3 khác chạy trước constructor này).
     DylibHide_install();
+
+    // 0b. Hook dlsym() (xem DlsymSpoof.h) - PHẢI gọi SAU DylibHide_install() vì so sánh dia chi
+    // ham that (orig_dyld_get_image_name/header) can DylibHide_install() da resolve xong. Vá lỗ
+    // hổng: dlsym() tự tra export trie, KHÔNG bị ảnh hưởng bởi fishhook rebind GOT của image khác
+    // - nếu ai đó dlsym("_dyld_get_image_name") thay vì gọi thẳng, DylibHide.h bị bỏ qua hoàn toàn
+    // nếu không có hook này.
+    installDlsymSpoof();
 
     @autoreleasepool {
         // 1. KIỂM TRA CÓ CẦN GIẢI NÉN LẦN ĐẦU KHÔNG (bulk, xem PHẦN 1) - nhanh, không giải nén

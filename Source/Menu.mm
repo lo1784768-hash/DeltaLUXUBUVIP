@@ -17,6 +17,8 @@
 #import "Includes/DNSBlock.h"
 #import "Includes/CsOpsSpoof.h"
 #import "Includes/AssetRedirect.h"
+#import "Includes/DlsymSpoof.h"  // AssetRedirect.h da include file nay ben trong (sau DylibHide.h) -
+                                  // dong nay chi de liet ke ro rang, pragma once se bo qua lan nay
 #import "Includes/Il2CppResolve.h"
 #import "Includes/AntiReportSpoof.h"
 #import "Includes/PacketCapture.h"
