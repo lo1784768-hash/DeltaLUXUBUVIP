@@ -17,6 +17,7 @@
 #import <Foundation/Foundation.h>
 #import "AssetRedirect.h"  // DeltaVFS_debugLog/DeltaVFS_debugLogf
 #import "Il2CppResolve.h"
+#include "MemoryUtils.h"  // getRealOffset(0) - lay base UnityFramework de tinh RVA that
 
 namespace FFAntiObserve {
 
@@ -47,7 +48,10 @@ inline void CheckAndLog() {
         if (!Il2CppResolve::p_il2cpp_class_get_static_field_data) return;
         g_staticData = Il2CppResolve::p_il2cpp_class_get_static_field_data(g_klass);
         if (!g_staticData) return;  // van chua san sang, thu lai sau
-        DeltaVFS_debugLogf("FFAntiObserve: static field data san sang tai %p (sau %d lan thu)", g_staticData, g_retryTick / 60);
+        uintptr_t base = (uintptr_t)getRealOffset(0);
+        uintptr_t rva = base ? ((uintptr_t)g_staticData - base) : 0;
+        DeltaVFS_debugLogf("FFAntiObserve: static field data san sang tai %p (sau %d lan thu) - base=0x%lx RVA=0x%lx",
+                            g_staticData, g_retryTick / 60, (unsigned long)base, (unsigned long)rva);
     }
 
     static const struct { size_t off; const char *name; } fields[6] = {
