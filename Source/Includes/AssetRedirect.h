@@ -533,6 +533,40 @@ static bool __attribute__((unused)) ar_endsWith(const char *s, const char *suffi
     return strcmp(s + (sLen - sufLen), suffix) == 0;
 }
 
+// Chỉnh mtime (+atime) của destPath thành mtime THẬT của chính FreeFire.app đang cài trên máy -
+// xem comment đầy đủ ở nơi gọi (ar_extractZipEntry/ar_extractOneEntryIfNeeded) để biết lý do. Gọi
+// được ở CẢ 2 chỗ (file vừa giải nén MỚI, và file đã tồn tại sẵn từ trước khi có fix này) - nếu
+// không gọi lại ở nhánh "đã tồn tại sẵn", file giải nén từ TRƯỚC KHI thêm fix này sẽ giữ mtime sai
+// (lúc giải nén) MÃI MÃI vì đường nhanh access()==0 không bao giờ re-extract để chạy code fix.
+// Tự kiểm tra mtime hiện tại trước, bỏ qua utimes() nếu đã khớp - tránh ghi lại không cần thiết
+// mỗi lần 1 file hot bị truy cập nhiều lần trong 1 phiên.
+inline void ar_fixExtractedFileMtime(const char *destPath) {
+    static struct stat s_bundleSt;
+    static bool s_bundleStOk = false;
+    static bool s_bundleStTried = false;
+    if (!s_bundleStTried) {
+        s_bundleStTried = true;
+        s_bundleStOk = (orig_stat && orig_stat(g_bundlePrefixC, &s_bundleSt) == 0);
+        if (!s_bundleStOk) {
+            DeltaVFS_debugLogf("ar_fixExtractedFileMtime: stat() bundle THAT BAI errno=%d - se KHONG chinh mtime file nao", errno);
+        }
+    }
+    if (!s_bundleStOk || !destPath) return;
+
+    struct stat curSt;
+    if (orig_stat && orig_stat(destPath, &curSt) == 0 &&
+        curSt.st_mtimespec.tv_sec == s_bundleSt.st_mtimespec.tv_sec) {
+        return;  // da khop tu truoc (lan goi truoc trong cung session, hoac fix cu), bo qua
+    }
+
+    struct timeval times[2];
+    times[0].tv_sec = s_bundleSt.st_atimespec.tv_sec;  times[0].tv_usec = 0;
+    times[1].tv_sec = s_bundleSt.st_mtimespec.tv_sec;  times[1].tv_usec = 0;
+    if (utimes(destPath, times) != 0) {
+        DeltaVFS_debugLogf("ar_fixExtractedFileMtime: utimes() that bai errno=%d cho %s", errno, destPath);
+    }
+}
+
 // Giải nén ĐÚNG 1 entry (theo index trong g_arZipEntries) ra destPath. Ghi vào file tạm trong
 // tempDirC (kiểu Monite: "temp_folder/" riêng, TÁCH khỏi contentcache/ đang phục vụ - xem
 // g_moddedTempFolderC) rồi rename() sang tên thật trong destPath - tránh trường hợp 1 thread khác
@@ -593,37 +627,8 @@ static bool ar_extractZipEntry(int idx, const char *destPath, const char *tempDi
     }
     g_deltaExtractedFiles.fetch_add(1, std::memory_order_relaxed);
 
-    // Chỉnh lại mtime của MỌI file vừa giải nén thành mtime THẬT của chính FreeFire.app đang cài
-    // trên máy - thay vì để mtime = "lúc vừa giải nén" (rất mới, luôn khác xa ngày cài app thật).
-    //
-    // Bắt đầu từ phát hiện cụ thể cho SC_Info/FreeFire.sinf (file chữ ký FairPlay DRM, thường mất/
-    // không hợp lệ sau khi IPA bị ký lại để cài ngoài App Store) - MoniteAnalysis/README.md mục 3e
-    // tìm thấy Monite ĐẶC CÁCH đúng file này theo đúng cách này. Nhưng mục 3d cùng file đó còn tìm
-    // thấy Monite theo dõi 1 manifest per-file gồm path+size+mtime cho TỪNG file đã giải nén (không
-    // riêng gì SC_Info) - tức phạm vi kiểm tra tampering của họ KHÔNG giới hạn ở 1 file - nên áp
-    // dụng rộng ra MỌI file ở đây, không chỉ SC_Info/FreeFire.sinf, đề phòng FFAnti cũng kiểm tra
-    // mtime file khác (không chỉ SC_Info) mà mình chưa biết cụ thể là file nào.
-    //
-    // CHỈ set lại mtime (utimes), không đụng nội dung file, không patch/hook gì game - an toàn
-    // tương đương phần VFS redirect còn lại (không phải hook/patch code).
-    static struct stat s_bundleSt;
-    static bool s_bundleStOk = false;
-    static bool s_bundleStTried = false;
-    if (!s_bundleStTried) {
-        s_bundleStTried = true;
-        s_bundleStOk = (orig_stat && orig_stat(g_bundlePrefixC, &s_bundleSt) == 0);
-        if (!s_bundleStOk) {
-            DeltaVFS_debugLogf("ar_extractZipEntry: stat() bundle THAT BAI errno=%d - se KHONG chinh mtime file nao", errno);
-        }
-    }
-    if (s_bundleStOk) {
-        struct timeval times[2];
-        times[0].tv_sec = s_bundleSt.st_atimespec.tv_sec;  times[0].tv_usec = 0;
-        times[1].tv_sec = s_bundleSt.st_mtimespec.tv_sec;  times[1].tv_usec = 0;
-        if (utimes(destPath, times) != 0) {
-            DeltaVFS_debugLogf("ar_extractZipEntry: utimes() that bai errno=%d cho %s", errno, ent.name);
-        }
-    }
+    // Chỉnh mtime giống mtime thật của FreeFire.app - xem comment đầy đủ ở ar_fixExtractedFileMtime.
+    ar_fixExtractedFileMtime(destPath);
     return true;
 }
 
@@ -643,7 +648,15 @@ enum ArEntryStatus { AR_ENTRY_NOT_MODDED = 0, AR_ENTRY_PRESENT = 1, AR_ENTRY_TAM
 // crash, KHÔNG âm thầm vá lại) để tự xác nhận VFS có thật sự đang được game đọc qua hay không.
 static ArEntryStatus ar_extractOneEntryIfNeeded(const char *destPath, const char *relativePath) {
     if (!destPath || !relativePath) return AR_ENTRY_NOT_MODDED;
-    if (orig_access && orig_access(destPath, F_OK) == 0) return AR_ENTRY_PRESENT;
+    if (orig_access && orig_access(destPath, F_OK) == 0) {
+        // File đã tồn tại sẵn (có thể giải nén từ TRƯỚC KHI có ar_fixExtractedFileMtime) - vẫn phải
+        // gọi lại đây, không chỉ ở nhánh vừa giải nén MỚI trong ar_extractZipEntry - nếu không, file
+        // cũ sẽ giữ mtime sai (lúc giải nén) MÃI MÃI vì đường nhanh này không bao giờ re-extract.
+        // Hàm tự kiểm tra mtime hiện tại trước, chỉ ghi lại khi thật sự cần - rẻ cho trường hợp đã
+        // đúng từ trước (đa số lần gọi sau lần đầu tiên trong 1 phiên).
+        ar_fixExtractedFileMtime(destPath);
+        return AR_ENTRY_PRESENT;
+    }
     if (g_arZipEntryCount == 0) return AR_ENTRY_NOT_MODDED;
 
     for (int i = 0; i < g_arZipEntryCount; i++) {
