@@ -524,7 +524,9 @@ static bool ar_buildZipIndex(const char *zipPath) {
     return count > 0;
 }
 
-inline bool ar_endsWith(const char *s, const char *suffix) {
+// Không còn nơi gọi sau khi tổng quát hoá fix mtime ra MỌI file (xem ar_extractZipEntry) - giữ lại
+// để tham khảo/dùng lại nếu sau này cần đặc cách riêng cho 1 tên file cụ thể nào đó.
+static bool __attribute__((unused)) ar_endsWith(const char *s, const char *suffix) {
     if (!s || !suffix) return false;
     size_t sLen = strlen(s), sufLen = strlen(suffix);
     if (sufLen > sLen) return false;
@@ -591,27 +593,35 @@ static bool ar_extractZipEntry(int idx, const char *destPath, const char *tempDi
     }
     g_deltaExtractedFiles.fetch_add(1, std::memory_order_relaxed);
 
-    // SC_Info/FreeFire.sinf - đây là file chữ ký FairPlay DRM Apple tạo ra khi app được tải THẬT
-    // từ App Store, thường bị mất/không hợp lệ sau khi IPA bị ký lại để cài ngoài App Store (như
-    // ở đây). MoniteAnalysis/README.md mục 3e (đã phân tích Monite.dylib trước đó) tìm thấy Monite
-    // ĐẶC CÁCH file này: mtime của bản extract KHÔNG lấy từ zip mà lấy mtime THẬT của chính
-    // FreeFire.app đang cài trên máy - suy luận hợp lý: để tránh lộ dấu vết "app vừa bị giải nén/
-    // ký lại gần đây" (mtime = lúc extract sẽ mới hơn nhiều so với mtime cài đặt thật) nếu có gì đó
-    // đọc mtime file này để kiểm tra tính nhất quán. Áp dụng lại đúng kỹ thuật đó ở đây - CHỈ set
-    // lại mtime (utimes), không đụng nội dung file, không patch/hook gì game - an toàn tương đương
-    // phần VFS redirect còn lại của file này.
-    if (ar_endsWith(ent.name, "SC_Info/FreeFire.sinf")) {
-        struct stat bundleSt;
-        if (orig_stat && orig_stat(g_bundlePrefixC, &bundleSt) == 0) {
-            struct timeval times[2];
-            times[0].tv_sec = bundleSt.st_atimespec.tv_sec;  times[0].tv_usec = 0;
-            times[1].tv_sec = bundleSt.st_mtimespec.tv_sec;  times[1].tv_usec = 0;
-            if (utimes(destPath, times) == 0) {
-                DeltaVFS_debugLogf("ar_extractZipEntry: da chinh mtime %s theo bundle that (mtime=%ld)",
-                                    ent.name, (long)bundleSt.st_mtimespec.tv_sec);
-            } else {
-                DeltaVFS_debugLogf("ar_extractZipEntry: utimes() that bai errno=%d cho %s", errno, ent.name);
-            }
+    // Chỉnh lại mtime của MỌI file vừa giải nén thành mtime THẬT của chính FreeFire.app đang cài
+    // trên máy - thay vì để mtime = "lúc vừa giải nén" (rất mới, luôn khác xa ngày cài app thật).
+    //
+    // Bắt đầu từ phát hiện cụ thể cho SC_Info/FreeFire.sinf (file chữ ký FairPlay DRM, thường mất/
+    // không hợp lệ sau khi IPA bị ký lại để cài ngoài App Store) - MoniteAnalysis/README.md mục 3e
+    // tìm thấy Monite ĐẶC CÁCH đúng file này theo đúng cách này. Nhưng mục 3d cùng file đó còn tìm
+    // thấy Monite theo dõi 1 manifest per-file gồm path+size+mtime cho TỪNG file đã giải nén (không
+    // riêng gì SC_Info) - tức phạm vi kiểm tra tampering của họ KHÔNG giới hạn ở 1 file - nên áp
+    // dụng rộng ra MỌI file ở đây, không chỉ SC_Info/FreeFire.sinf, đề phòng FFAnti cũng kiểm tra
+    // mtime file khác (không chỉ SC_Info) mà mình chưa biết cụ thể là file nào.
+    //
+    // CHỈ set lại mtime (utimes), không đụng nội dung file, không patch/hook gì game - an toàn
+    // tương đương phần VFS redirect còn lại (không phải hook/patch code).
+    static struct stat s_bundleSt;
+    static bool s_bundleStOk = false;
+    static bool s_bundleStTried = false;
+    if (!s_bundleStTried) {
+        s_bundleStTried = true;
+        s_bundleStOk = (orig_stat && orig_stat(g_bundlePrefixC, &s_bundleSt) == 0);
+        if (!s_bundleStOk) {
+            DeltaVFS_debugLogf("ar_extractZipEntry: stat() bundle THAT BAI errno=%d - se KHONG chinh mtime file nao", errno);
+        }
+    }
+    if (s_bundleStOk) {
+        struct timeval times[2];
+        times[0].tv_sec = s_bundleSt.st_atimespec.tv_sec;  times[0].tv_usec = 0;
+        times[1].tv_sec = s_bundleSt.st_mtimespec.tv_sec;  times[1].tv_usec = 0;
+        if (utimes(destPath, times) != 0) {
+            DeltaVFS_debugLogf("ar_extractZipEntry: utimes() that bai errno=%d cho %s", errno, ent.name);
         }
     }
     return true;
