@@ -50,13 +50,17 @@ inline NSString *ar_getOrCreateModdedFolderName() {
     NSString *existing = [defaults stringForKey:DELTA_FOLDER_NAME_DEFAULTS_KEY];
     if (existing.length > 0) return existing;
 
-    uint8_t randomBytes[16];
-    arc4random_buf(randomBytes, sizeof(randomBytes));
-    char hex[33];
+    // Tên folder hash 16 ký tự alphanumeric CHỮ HOA+CHỮ THƯỜNG+SỐ (VD "cujNePpb4MPiuBjO") - khớp
+    // đúng độ dài/kiểu ký tự folder hash THẬT của Monite quan sát được qua Files app trên máy user
+    // (16 ký tự, không phải hex thuần) - trước đây dùng 32 ký tự hex chữ thường (16 byte random ->
+    // hex), khác hẳn kiểu Monite dùng, dễ bị soi ra là "không giống" nếu ai đó để ý.
+    static const char alphabet[] = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    char name[17];
     for (int i = 0; i < 16; i++) {
-        snprintf(hex + i * 2, 3, "%02x", randomBytes[i]);
+        name[i] = alphabet[arc4random_uniform(62)];
     }
-    NSString *generated = [NSString stringWithUTF8String:hex];
+    name[16] = '\0';
+    NSString *generated = [NSString stringWithUTF8String:name];
     [defaults setObject:generated forKey:DELTA_FOLDER_NAME_DEFAULTS_KEY];
     return generated;
 }
