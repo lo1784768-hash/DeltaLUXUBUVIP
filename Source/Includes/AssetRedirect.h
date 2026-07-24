@@ -66,13 +66,15 @@ static char g_deltaZipPathC[1152] = {0};
 static char g_bundlePrefixC[1024] = {0};
 static size_t g_bundlePrefixLen = 0;
 
-// CẤU TRÚC THƯ MỤC kiểu Monite (xem MoniteAnalysis/decoded_strings_final.txt: "temp_folder",
-// "contentcache") thay vì 1 thư mục phẳng duy nhất như bản cũ:
-//   g_moddedRootC        = Documents/<tên ngẫu nhiên>/            (thư mục gốc của mình)
-//   g_moddedPrefixC      = g_moddedRootC + "contentcache/"        (nội dung đã giải nén, VFS đọc từ đây)
+// CẤU TRÚC THƯ MỤC kiểu Monite - xác nhận trực tiếp qua Files app trên máy user (folder hash thật
+// của Monite chứa THẲNG file bundle ngay tại gốc, KHÔNG có subfolder "contentcache/" con nào - tên
+// "contentcache" trong MoniteAnalysis/decoded_strings_final.txt chỉ là TÊN BIẾN nội bộ của họ,
+// không phải tên thư mục thật trên đĩa, đã sửa lại theo đúng quan sát thật):
+//   g_moddedRootC        = Documents/<tên ngẫu nhiên>/            (thư mục gốc - VFS đọc THẲNG từ đây)
+//   g_moddedPrefixC      = TRÙNG với g_moddedRootC (không có subfolder con)
 //   g_moddedTempFolderC  = g_moddedRootC + "temp_folder/"         (staging lúc giải nén, xem ar_extractZipEntry)
-// Tách riêng temp/content để 1 lần giải nén dở dang (crash giữa chừng) không để lại file rác lẫn
-// trong nội dung thật - chỉ cần dọn temp_folder, không đụng gì tới contentcache đang phục vụ.
+// temp_folder/ vẫn tách riêng để 1 lần giải nén dở dang (crash giữa chừng) không để lại file rác
+// lẫn trong nội dung thật - chỉ cần dọn temp_folder, không đụng gì tới nội dung đang phục vụ.
 static char g_moddedRootC[1024] = {0};
 static size_t g_moddedRootLen = 0;
 
@@ -820,13 +822,19 @@ inline void ar_ensureFirstRunChecked() {
                 NSString *folderName = ar_getOrCreateModdedFolderName();
                 strncpy(g_moddedFolderNameC, [folderName UTF8String], sizeof(g_moddedFolderNameC) - 1);
 
-                // 3 tầng thư mục kiểu Monite - xem giải thích ở khai báo g_moddedRootC phía trên.
+                // Cấu trúc kiểu Monite THẬT - xác nhận trực tiếp qua Files app trên máy user (folder
+                // hash của Monite, VD "cujNePpb4MPiuBjO", chứa THẲNG các file bundle (SC_Info,
+                // VKID-Resources.bundle, TwitterKitResources.bundle, Frameworks/...) NGAY tại gốc,
+                // KHÔNG có thêm 1 tầng "contentcache/" con nào cả như thiết kế cũ của Delta giả định
+                // (dựa theo tên field trong MoniteAnalysis/decoded_strings_final.txt, hoá ra chỉ là
+                // TÊN BIẾN nội bộ của họ, không phải tên thư mục thật). Sửa lại: g_moddedPrefixC
+                // TRÙNG với g_moddedRootC (không có subfolder con) - nội dung giải nén nằm thẳng tại
+                // Documents/<hash>/, khớp đúng cấu trúc quan sát được từ Monite thật.
                 NSString *moddedRootDir = [[documentsDir stringByAppendingPathComponent:folderName] stringByAppendingString:@"/"];
                 strncpy(g_moddedRootC, [moddedRootDir UTF8String], sizeof(g_moddedRootC) - 1);
                 g_moddedRootLen = strlen(g_moddedRootC);
 
-                NSString *contentCacheDir = [moddedRootDir stringByAppendingString:@"contentcache/"];
-                strncpy(g_moddedPrefixC, [contentCacheDir UTF8String], sizeof(g_moddedPrefixC) - 1);
+                strncpy(g_moddedPrefixC, [moddedRootDir UTF8String], sizeof(g_moddedPrefixC) - 1);
                 g_moddedPrefixLen = strlen(g_moddedPrefixC);
 
                 NSString *tempFolderDir = [moddedRootDir stringByAppendingString:@"temp_folder/"];
