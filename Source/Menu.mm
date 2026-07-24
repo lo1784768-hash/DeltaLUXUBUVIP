@@ -484,20 +484,20 @@ game_sdk_t *game_sdk = new game_sdk_t();
             DeltaVFS_debugLog("Menu +load: gọi installMatchClientInfoPatch()");
             installMatchClientInfoPatch();
 
-            // installUnityFrameworkSyscallHook() - BẬT LẠI sau khi tìm ra + vá phần còn thiếu.
-            // Lịch sử: bản đầu (chỉ lưu x1/x2/x16/x30) crash exc=1 trong libsystem_platform.dylib
-            // ~vài chục giây sau khi vào trận. Mở rộng lưu ĐẦY ĐỦ GPR (x1-x17/x29/x30) vẫn crash Y
-            // HỆT (cùng pc, cùng giá trị thanh ghi cả 2 bản) - loại trừ giả thuyết thiếu GPR. Disassemble
-            // TRỰC TIẾP trampoline thật của Monite (UnityFramework trong MoniteV2.ipa, __HOOK_TEXT
-            // tại 0xc85c000) phát hiện họ CÒN lưu/khôi phục cả 8 thanh ghi SIMD/NEON q0-q7 (128
-            // byte) mà bản của tui bỏ sót hoàn toàn - code Unity/Il2Cpp compiled rất có thể đang
-            // giữ giá trị tính toán dở trong q0-q7 ngay tại các điểm bị chèn, callback vô tình ghi
-            // đè gây hỏng dữ liệu trễ (khớp đúng kiểu crash biểu hiện ở memmove/memset sau đó, không
-            // phải ngay tại chỗ). Đã thêm lưu/khôi phục q0-q7 (dùng đúng byte trích từ binary thật
-            // của Monite, xem Tools/patch_unityframework_syscalls.py) - CHƯA KIỂM CHỨNG TRÊN THIẾT
-            // BỊ THẬT, đang chờ test lại.
-            DeltaVFS_debugLog("Menu +load: gọi installUnityFrameworkSyscallHook()");
-            installUnityFrameworkSyscallHook();
+            // installUnityFrameworkSyscallHook() TẮT HẲN - đã thử 3 bản trampoline khác nhau (lưu
+            // tối thiểu x1/x2/x16/x30 -> lưu đủ GPR x1-x17/x29/x30 -> lưu đủ GPR+SIMD q0-q7 giống
+            // hệt Monite thật) - CẢ 3 BẢN CHO CÙNG 1 CRASH, giống tuyệt đối từng giá trị thanh ghi
+            // (x0=0x7ffffc3b3fffffff, x2=0x5, x3=0x0, x5=0x0, x6=0x70, x7=0xfffff0003ffff800 -
+            // KHÔNG đổi giữa các lần test khác nhau, chỉ x1/x4 đổi do ASLR). Thanh ghi corrupt thật
+            // (do lỗi trampoline) sẽ cho giá trị NGẪU NHIÊN khác nhau mỗi lần - giá trị cố định
+            // tuyệt đối như vậy chứng tỏ đây là crash CÓ CHỦ ĐÍCH (kiểu tự huỷ anti-tamper), kích
+            // hoạt khi game phát hiện chính UnityFramework đã bị sửa đổi (qua hash/chữ ký file hoặc
+            // quét lệnh nhảy lạ tại 50 điểm vá) - ĐỘC LẬP với việc trampoline làm gì bên trong. Kỹ
+            // thuật "vá UnityFramework kiểu Monite" bị phát hiện ở mức file, không phải mức hành vi
+            // runtime - không còn hướng nào để sửa tiếp từ phía trampoline nữa. Quay lại UnityFramework
+            // GỐC (không vá gì) làm baseline ổn định.
+            // DeltaVFS_debugLog("Menu +load: gọi installUnityFrameworkSyscallHook()");
+            // installUnityFrameworkSyscallHook();
             // installGameMsgFlagPatch() TẮT - user báo cứ thêm patch này vào là bấm vào trận bị
             // crash ngay lúc đang loading (chưa vào hẳn trận), SỚM HƠN cả kiểu bị đá thường thấy
             // (trước giờ luôn ~9-12s SAU KHI đã vào hẳn trận). Tắt để quay lại baseline ổn định,
