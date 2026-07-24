@@ -2330,15 +2330,18 @@ static const NSInteger kCardIconTag = 9002;
     // mỗi frame, chỉ log khi có thay đổi - xem FFAntiObserve.h để biết vì sao chọn đọc thay vì hook.
     FFAntiObserve::CheckAndLog();
 
-    // installFFAntiFlagsPatch() trì hoãn tới khi class ĐÃ init xong (xem giải thích ở +load) -
-    // giả thuyết: patch quá sớm (lúc class chưa chạy xong static constructor) mới là lý do crash
-    // 2 lần trước, không phải nội dung patch. Chỉ gọi ĐÚNG 1 LẦN.
-    static bool ffantiPatchApplied = false;
-    if (!ffantiPatchApplied && FFAntiObserve::IsReady()) {
-        ffantiPatchApplied = true;
-        DeltaVFS_debugLog("updateMenu: FFAntiObserve bao class da san sang, goi installFFAntiFlagsPatch() (tri hoan)");
-        installFFAntiFlagsPatch();
-    }
+    // installFFAntiFlagsPatch() ĐÃ TẮT HẲN - đã thử 3 CÁCH KHÁC NHAU (gọi ngay lúc +load, gọi giữa
+    // chừng, và gọi SAU KHI FFAntiObserve xác nhận class đã init xong hẳn) - CẢ 3 đều crash giống
+    // hệt nhau ngay sau khi patch ghi xong. Loại bỏ được giả thuyết "patch qua som" - viec sua bat
+    // ky lenh nao ben trong MFHPGMELLCC la khong an toan, khong lien quan thoi diem hay field cu
+    // the. Nghi ngo co 1 co che tu bao ve/kiem tra toan ven rieng cua class nay (khop voi viec
+    // ffantihack bi obfuscate nang). KHONG dung huong patch truc tiep class nay nua.
+    // static bool ffantiPatchApplied = false;
+    // if (!ffantiPatchApplied && FFAntiObserve::IsReady()) {
+    //     ffantiPatchApplied = true;
+    //     DeltaVFS_debugLog("updateMenu: FFAntiObserve bao class da san sang, goi installFFAntiFlagsPatch() (tri hoan)");
+    //     installFFAntiFlagsPatch();
+    // }
 
     _menuView.hidden = !MenDeal;
 
