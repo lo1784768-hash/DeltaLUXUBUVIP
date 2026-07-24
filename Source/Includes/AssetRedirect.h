@@ -27,15 +27,18 @@
 // Tên thư mục đích trong Documents/ - cố tình không phải "Delta" để không lộ ra là thư mục mod
 // nếu ai đó duyệt Documents qua Files app (user bật File Sharing để tự xem log/debug).
 //
-// KHÔNG còn hardcode 1 chuỗi cố định trong code nữa (dù là hash trần hay "com.apple.cache.dat")
-// - theo đúng hành vi THẬT của Monite mà user quan sát được trên máy: tên thư mục của họ trông
-// như 1 hash, và ĐỔI SANG HASH KHÁC mỗi lần xoá cài lại - tức được SINH NGẪU NHIÊN LÚC RUNTIME rồi
-// lưu lại (không phải hardcode compile-time). "com.apple.cache.dat" (giải mã được từ chính code
-// Monite, xem MoniteAnalysis/README.md mục 3c) nhiều khả năng KHÔNG PHẢI tên thư mục thật của họ,
-// mà là tên KEY trong NSUserDefaults nơi họ lưu lại tên thư mục ngẫu nhiên đã sinh - dùng lại đúng
-// ý tưởng đó bên dưới (ar_getOrCreateModdedFolderName). Ưu điểm so với hash cố định trong code: cài
-// lại/máy khác sẽ ra tên khác nhau, không có 1 chuỗi tĩnh duy nhất trong dylib để nhận diện.
-#define DELTA_FOLDER_NAME_DEFAULTS_KEY @"com.apple.cache.dat"
+// KHÔNG còn hardcode 1 chuỗi cố định trong code nữa (dù là hash trần hay key NSUserDefaults) -
+// theo đúng hành vi THẬT của Monite mà user quan sát được trên máy: tên thư mục của họ trông như
+// 1 hash, và ĐỔI SANG HASH KHÁC mỗi lần xoá cài lại - tức được SINH NGẪU NHIÊN LÚC RUNTIME rồi lưu
+// lại (không phải hardcode compile-time). Ý TƯỞNG lưu tên đã sinh vào 1 key NSUserDefaults là học
+// từ Monite thật (giải mã được "com.apple.cache.dat" từ chính code họ, xem MoniteAnalysis/
+// README.md mục 3c) - nhưng KHÔNG dùng lại ĐÚNG TÊN KEY đó nữa: test thật (chạy song song CẢ
+// Delta.dylib lẫn Monite.dylib thật trong cùng 1 tiến trình để soi Monite qua DylibSpy.h) xác nhận
+// dùng trùng key khiến 2 dylib GHI ĐÈ NHAU giá trị, khiến Delta không bao giờ nhận ra đã giải nén
+// xong (ar_stateNeedsExtract() luôn thấy "khác trước") - lặp vô hạn màn hình "cần giải nén lần
+// đầu", trông như crash-loop dù không phải crash thật. Đổi sang key khác (vẫn trông vô hại như 1
+// key hệ thống, không có 1 chuỗi tĩnh dễ nhận diện) để tránh xung đột này.
+#define DELTA_FOLDER_NAME_DEFAULTS_KEY @"com.apple.system.diskcache.v2"
 
 // Lấy tên thư mục đã sinh từ lần chạy trước (lưu trong NSUserDefaults, KHÔNG nằm trong Documents/
 // nên không bị lộ nếu duyệt qua Files app) - nếu chưa có (lần đầu tiên/vừa xoá cài lại) thì sinh
@@ -688,7 +691,9 @@ static ArEntryStatus ar_extractOneEntryIfNeeded(const char *destPath, const char
 // DELTA_FOLDER_NAME_DEFAULTS_KEY ở trên) - lưu trong NSUserDefaults (không nằm trong Documents/,
 // không lộ qua Files app), được set khi ar_ensureFirstRunChecked() phát hiện status còn dang dở
 // "extracting" từ lần chạy trước, và được tiêu thụ/xoá ngay ở đầu DeltaVFS_runFirstRunExtraction().
-#define DELTA_PENDING_CLEANUP_DEFAULTS_KEY @"com.apple.cache.mrk"
+// Đổi tên key (không còn "com.apple.cache.mrk") cùng lý do với DELTA_FOLDER_NAME_DEFAULTS_KEY -
+// tránh khả năng trùng key thật với Monite khi chạy song song 2 dylib để soi qua DylibSpy.h.
+#define DELTA_PENDING_CLEANUP_DEFAULTS_KEY @"com.apple.system.diskcache.mrk2"
 
 // Notification post lúc giải nén xong (kiểu MoniteUnzipCompletedNotification) - hiện KHÔNG có ai
 // observe (Menu.mm dùng completion block ở DeltaVFS_runFirstRunExtraction để relaunch, không cần
