@@ -483,8 +483,20 @@ game_sdk_t *game_sdk = new game_sdk_t();
             // installCheckHackerPatch();
             DeltaVFS_debugLog("Menu +load: gọi installMatchClientInfoPatch()");
             installMatchClientInfoPatch();
-            DeltaVFS_debugLog("Menu +load: gọi installUnityFrameworkSyscallHook()");
-            installUnityFrameworkSyscallHook();
+
+            // installUnityFrameworkSyscallHook() TẮT TẠM - test thật trên máy cho thấy crash MỚI
+            // (CrashLogger exc=1, pc cố định trong libsystem_platform.dylib, ~vài chục giây sau
+            // khi vào trận) mà TRƯỚC ĐÂY (bản chưa có cơ chế này) không hề có - trước chỉ bị đá
+            // nhẹ (văng về sảnh), không crash. Đã thử mở rộng trampoline lưu ĐẦY ĐỦ thanh ghi
+            // caller-saved (xem Tools/patch_unityframework_syscalls.py) nhưng crash y hệt (cùng
+            // pc, cùng giá trị thanh ghi lạ cả 2 bản) - chứng tỏ nguyên nhân KHÔNG phải do thiếu
+            // lưu thanh ghi, nhiều khả năng do chính việc redirect 1 trong ~50 điểm syscall trúng
+            // 1 file mà game dùng để tự kiểm tra tính toàn vẹn (redirect qua bản đã mod -> size/
+            // nội dung không khớp -> game tự crash). Tắt để xác nhận qua test đối chứng: nếu tắt
+            // cái này mà crash biến mất (quay lại kiểu bị đá nhẹ như trước), xác nhận đúng nguyên
+            // nhân nằm ở đây.
+            // DeltaVFS_debugLog("Menu +load: gọi installUnityFrameworkSyscallHook()");
+            // installUnityFrameworkSyscallHook();
             // installGameMsgFlagPatch() TẮT - user báo cứ thêm patch này vào là bấm vào trận bị
             // crash ngay lúc đang loading (chưa vào hẳn trận), SỚM HƠN cả kiểu bị đá thường thấy
             // (trước giờ luôn ~9-12s SAU KHI đã vào hẳn trận). Tắt để quay lại baseline ổn định,
