@@ -72,4 +72,10 @@ inline void CheckAndLog() {
     }
 }
 
+// True khi class ffantihack.MFHPGMELLCC ĐÃ chay xong static constructor (static field data san
+// sang) - dung de tri hoan installFFAntiFlagsPatch() cho toi luc nay thay vi chay ngay luc +load
+// (~3s sau khi mo app, LUC CLASS CHUA INIT XONG - nghi ngo chinh la ly do patch gay crash truoc
+// day, khong phai do noi dung patch).
+inline bool IsReady() { return g_staticData != NULL; }
+
 } // namespace FFAntiObserve

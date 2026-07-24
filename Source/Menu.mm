@@ -477,17 +477,13 @@ game_sdk_t *game_sdk = new game_sdk_t();
             // installCheckHackerPatch();
             DeltaVFS_debugLog("Menu +load: gọi installMatchClientInfoPatch()");
             installMatchClientInfoPatch();
-            // installFFAntiFlagsPatch() ĐÃ TẮT LẠI - test lần 2 (cùng FFAntiObserve) xác nhận CHẮC
-            // CHẮN: ghi thành công 7/7 điểm nhưng crash gần như ngay lúc logo, y hệt lần đầu. Patch
-            // TRỰC TIẾP vào MFHPGMELLCC (ghi đè lệnh strb bên trong class này) không an toàn, bất kể
-            // sửa ở đâu trong class - nghi ngờ 1 cơ chế tự-kiểm-tra-toàn-vẹn phản ứng với việc SỬA
-            // CODE bên trong chính class MFHPGMELLCC, không liên quan field nào. FFAntiObserve.h (chỉ
-            // ĐỌC, không sửa) đã xác nhận qua dữ liệu thật: PHEEFAHAHFE/IBJJDBEJMLD/KIBPPIFNAKC thực
-            // sự bị set =1 lúc chơi bình thường - hướng tiếp theo: tìm AI ĐỌC các field này (không
-            // phải ai ghi) - patch phía đọc (thường ở 1 class KHÁC) có thể an toàn hơn vì không đụng
-            // code bên trong MFHPGMELLCC.
-            // DeltaVFS_debugLog("Menu +load: gọi installFFAntiFlagsPatch()");
-            // installFFAntiFlagsPatch();
+            // installFFAntiFlagsPatch() KHÔNG gọi ở đây nữa - 2 lần thử trước đều gọi NGAY lúc
+            // +load (~3s sau khi mở app), tức TRƯỚC KHI class MFHPGMELLCC chạy xong static
+            // constructor (FFAntiObserve.h cho thấy phải retry ~23-26 lần/giây mới có static field
+            // data). Giả thuyết mới: sửa code BÊN TRONG 1 class trong lúc nó CHƯA init xong mới là
+            // lý do crash, không phải nội dung patch. Giờ trì hoãn: gọi trong updateMenu (xem bên
+            // dưới) NGAY KHI FFAntiObserve::IsReady() báo class đã init xong, thay vì gọi cứng ở
+            // +load. Xem đoạn "FFAntiObserve::IsReady()" trong updateMenu.
             DeltaVFS_debugLog("Menu +load: game_sdk + AimMagnet hook xong");
             sdkInitialized = true;
         }
@@ -2333,6 +2329,16 @@ static const NSInteger kCardIconTag = 9002;
     // FFAntiObserve: đọc THUẦN TUÝ (không hook/patch) cờ kết quả phát hiện ffantihack.MFHPGMELLCC
     // mỗi frame, chỉ log khi có thay đổi - xem FFAntiObserve.h để biết vì sao chọn đọc thay vì hook.
     FFAntiObserve::CheckAndLog();
+
+    // installFFAntiFlagsPatch() trì hoãn tới khi class ĐÃ init xong (xem giải thích ở +load) -
+    // giả thuyết: patch quá sớm (lúc class chưa chạy xong static constructor) mới là lý do crash
+    // 2 lần trước, không phải nội dung patch. Chỉ gọi ĐÚNG 1 LẦN.
+    static bool ffantiPatchApplied = false;
+    if (!ffantiPatchApplied && FFAntiObserve::IsReady()) {
+        ffantiPatchApplied = true;
+        DeltaVFS_debugLog("updateMenu: FFAntiObserve bao class da san sang, goi installFFAntiFlagsPatch() (tri hoan)");
+        installFFAntiFlagsPatch();
+    }
 
     _menuView.hidden = !MenDeal;
 
