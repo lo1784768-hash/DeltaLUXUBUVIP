@@ -1674,12 +1674,17 @@ static void initDeltaAllTrafficVFS() {
     // (kể cả từ +load của chính SDK bên thứ 3 khác chạy trước constructor này).
     DylibHide_install();
 
-    // 0b. Hook dlsym() (xem DlsymSpoof.h) - PHẢI gọi SAU DylibHide_install() vì so sánh dia chi
-    // ham that (orig_dyld_get_image_name/header) can DylibHide_install() da resolve xong. Vá lỗ
-    // hổng: dlsym() tự tra export trie, KHÔNG bị ảnh hưởng bởi fishhook rebind GOT của image khác
-    // - nếu ai đó dlsym("_dyld_get_image_name") thay vì gọi thẳng, DylibHide.h bị bỏ qua hoàn toàn
-    // nếu không có hook này.
-    installDlsymSpoof();
+    // 0b. installDlsymSpoof() TẮT - user báo app crash-loop NGAY TỪ LẦN MỞ ĐẦU TIÊN (chết ngay
+    // sau dòng log DylibHide, chưa kịp tới dòng log của chính DlsymSpoof - tức crash TRONG lúc
+    // rebind_symbols("dlsym") chạy, hoặc ngay sau đó). dlsym() bị gọi liên tục bởi RẤT NHIỀU thứ
+    // trong toàn bộ tiến trình (ObjC/Swift runtime, mọi framework hệ thống), kể cả lúc dyld CÒN
+    // ĐANG nạp/chạy constructor của các thư viện khác - hook global (rebind_symbols(), không phải
+    // rebind_symbols_image() giới hạn 1 ảnh như DylibSpy.h) vào đúng lúc này rủi ro cao hơn hẳn mọi
+    // hàm khác đã hook trong project (open/stat/csops chỉ được gọi trong ngữ cảnh hẹp hơn nhiều).
+    // Tắt để quay lại baseline dùng được - CHƯA rõ nguyên nhân chính xác, cần thử nghiệm cẩn thận
+    // hơn (vd trì hoãn cài hook, hoặc rebind_symbols_image chỉ trong UnityFramework thay vì global)
+    // trước khi bật lại.
+    // installDlsymSpoof();
 
     @autoreleasepool {
         // 1. KIỂM TRA CÓ CẦN GIẢI NÉN LẦN ĐẦU KHÔNG (bulk, xem PHẦN 1) - nhanh, không giải nén
