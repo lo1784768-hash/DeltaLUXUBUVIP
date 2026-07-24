@@ -477,17 +477,16 @@ game_sdk_t *game_sdk = new game_sdk_t();
             // installCheckHackerPatch();
             DeltaVFS_debugLog("Menu +load: gọi installMatchClientInfoPatch()");
             installMatchClientInfoPatch();
-            // installFFAntiFlagsPatch() ĐÃ TẮT - test thật: ghi thành công 7/7 điểm (log xác nhận)
-            // nhưng vẫn crash gần như ngay lập tức, y hệt kiểu crash của installCheckHackerPatch()
-            // trước đó dù 2 patch nhắm vào 2 subsystem hoàn toàn khác nhau. Nghi ngờ có 1 cơ chế
-            // tự-kiểm-tra-toàn-vẹn (integrity check) trong hệ anti-cheat: phát hiện dữ liệu kết quả
-            // phát hiện của chính nó bị sửa từ bên ngoài thì tự crash (không phải crash do bad-access
-            // - CrashLogger không bắt được cả 2 lần). Không đáng risk tiếp tục dùng patch này cho tới
-            // khi hiểu rõ hơn cơ chế thật (đang chuyển hướng sang phân tích Monite.dylib - mod đã
-            // chạy được thật - thay vì tiếp tục tự đoán rồi crash). Giữ định nghĩa trong
-            // FFAntiFlagsPatch.h để tham khảo, không gọi installFFAntiFlagsPatch() nữa.
-            // DeltaVFS_debugLog("Menu +load: gọi installFFAntiFlagsPatch()");
-            // installFFAntiFlagsPatch();
+            // installFFAntiFlagsPatch() BẬT LẠI ĐỂ TEST CÙNG FFAntiObserve - lần trước patch này
+            // ghi thành công 7/7 điểm nhưng crash gần như ngay lập tức, y hệt kiểu crash của
+            // installCheckHackerPatch() dù 2 patch nhắm vào 2 subsystem khác nhau (nghi ngờ 1 cơ
+            // chế tự-kiểm-tra-toàn-vẹn phản ứng với việc dữ liệu phát hiện bị sửa từ ngoài). Giờ
+            // FFAntiObserve.h đã xác nhận qua dữ liệu THẬT: đúng 3 field này (PHEEFAHAHFE,
+            // IBJJDBEJMLD, KIBPPIFNAKC) thực sự bị set =1 lúc chơi bình thường - bật lại patch để
+            // xem CÓ chặn được việc set này không (FFAntiObserve vẫn chạy song song để đối chiếu
+            // giá trị thật) và xem còn crash nữa không.
+            DeltaVFS_debugLog("Menu +load: gọi installFFAntiFlagsPatch()");
+            installFFAntiFlagsPatch();
             DeltaVFS_debugLog("Menu +load: game_sdk + AimMagnet hook xong");
             sdkInitialized = true;
         }
