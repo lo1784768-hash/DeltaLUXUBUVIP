@@ -28,9 +28,19 @@ inline void CheckAndLog() {
     if (!g_staticData) {
         if (g_resolveAttempted) return;  // da thu 1 lan, khong tim thay class thi thoi
         g_resolveAttempted = true;
+
+        // Debug tung buoc de biet CHINH XAC buoc nao that bai, thay vi 1 dong loi chung chung.
+        bool attached = Il2CppResolve::Attach();
+        DeltaVFS_debugLogf("FFAntiObserve: Attach()=%d p_static_field_data=%p", attached,
+                            (void *)Il2CppResolve::p_il2cpp_class_get_static_field_data);
+        void *img = Il2CppResolve::GetImage("Assembly-CSharp.dll");
+        DeltaVFS_debugLogf("FFAntiObserve: GetImage(Assembly-CSharp.dll)=%p", img);
+        void *klass = Il2CppResolve::GetClass("Assembly-CSharp.dll", "ffantihack", "MFHPGMELLCC");
+        DeltaVFS_debugLogf("FFAntiObserve: GetClass(ffantihack.MFHPGMELLCC)=%p", klass);
+
         g_staticData = Il2CppResolve::GetStaticFieldData("Assembly-CSharp.dll", "ffantihack", "MFHPGMELLCC");
         if (!g_staticData) {
-            DeltaVFS_debugLog("FFAntiObserve: khong resolve duoc ffantihack.MFHPGMELLCC (ten class co the da doi, hoac thieu il2cpp_class_get_static_field_data trong binary) - tat quan sat nay");
+            DeltaVFS_debugLog("FFAntiObserve: khong resolve duoc ffantihack.MFHPGMELLCC - tat quan sat nay");
             return;
         }
         DeltaVFS_debugLogf("FFAntiObserve: resolve OK, static field data tai %p", g_staticData);
