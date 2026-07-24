@@ -788,6 +788,17 @@ inline void ar_ensureFirstRunChecked() {
     std::lock_guard<std::mutex> lock(g_deltaFirstRunCheckMutex);
     if (g_deltaFirstRunCheckDone.load(std::memory_order_relaxed)) return;
 
+    // Tự resolve orig_stat/orig_open TẠI ĐÂY nếu chưa có, thay vì chỉ trông cậy vào bước "0c" của
+    // initDeltaAllTrafficVFS() đã gán trước đó - xác nhận qua delta_early_diag.log thật: có build
+    // mà installFirstRunLaunchGuardEarly() (constructor RIÊNG trong Menu.mm, xem file đó) chạy
+    // TRƯỚC initDeltaAllTrafficVFS() (thứ tự giữa 2 __attribute__((constructor)) khác hàm không có
+    // gì đảm bảo, phụ thuộc link order) - lúc đó orig_stat vẫn còn NULL, khiến stat(Delta.zip) bị
+    // coi như "không tìm thấy" dù file có thật, dẫn tới im lặng bỏ qua toàn bộ VFS (không popup,
+    // không tạo folder, không crash - game chạy y hệt bản gốc). Resolve ngay ở đây làm hàm này tự
+    // đủ, không phụ thuộc constructor nào gọi nó trước.
+    if (!orig_stat) orig_stat = (int (*)(const char *, struct stat *))dlsym(RTLD_DEFAULT, "stat");
+    if (!orig_open) orig_open = (int (*)(const char *, int, ...))dlsym(RTLD_DEFAULT, "open");
+
     if (g_bundlePrefixLen == 0) {
         @autoreleasepool {
             NSString *bundlePath = [[NSBundle mainBundle] bundlePath];
