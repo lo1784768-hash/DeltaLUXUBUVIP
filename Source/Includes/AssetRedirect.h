@@ -827,6 +827,39 @@ inline void ar_ensureFirstRunChecked() {
         }
     }
 
+    // DIAGNOSTIC TẠM: ghi thẳng vào Documents/ (KHÔNG phải Documents/<hash>/contentcache/) - luôn
+    // tồn tại sẵn (iOS tự cấp cho mọi app, không cần mkdir) nên KHÔNG phụ thuộc ar_mkpath() ở dưới
+    // đã chạy hay chưa. Case đang điều tra: folder Documents/<hash> không hề được tạo, nghĩa là
+    // debug.log bình thường (nằm trong contentcache/) KHÔNG THỂ ghi được (open() fail ENOENT vì
+    // thư mục cha chưa tồn tại) - không có cách nào biết vì sao chỉ bằng debug.log thường. File
+    // này thay thế tạm để thấy được orig_stat có null không / stat() thật trả gì cho Delta.zip.
+    // XOÁ sau khi đã xác định xong nguyên nhân, không phải cơ chế lâu dài.
+    if (g_documentsPrefixLen > 0) {
+        int (*diagOpen)(const char *, int, ...) = (int (*)(const char *, int, ...))dlsym(RTLD_DEFAULT, "open");
+        if (diagOpen) {
+            char diagPath[1200];
+            snprintf(diagPath, sizeof(diagPath), "%sdelta_early_diag.log", g_documentsPrefixC);
+            int diagFd = diagOpen(diagPath, O_WRONLY | O_CREAT | O_APPEND, 0644);
+            if (diagFd >= 0) {
+                struct stat rawSt;
+                int (*rawStat)(const char *, struct stat *) = (int (*)(const char *, struct stat *))dlsym(RTLD_DEFAULT, "stat");
+                int rawStatRet = rawStat ? rawStat(g_deltaZipPathC, &rawSt) : -999;
+                int rawStatErrno = errno;
+                int accessRet = access(g_deltaZipPathC, F_OK);
+                int accessErrno = errno;
+                char line[1400];
+                int len = snprintf(line, sizeof(line),
+                    "[diag] bundle=%s zip=%s orig_stat_ptr=%p rawStat_ret=%d rawStat_errno=%d(%s) access_ret=%d access_errno=%d(%s) rawStat_size=%lld\n",
+                    g_bundlePrefixC, g_deltaZipPathC, (void *)orig_stat,
+                    rawStatRet, rawStatErrno, strerror(rawStatErrno),
+                    accessRet, accessErrno, strerror(accessErrno),
+                    rawStatRet == 0 ? (long long)rawSt.st_size : -1);
+                if (len > 0) write(diagFd, line, (size_t)len);
+                close(diagFd);
+            }
+        }
+    }
+
     DeltaVFS_debugLogf("ar_ensureFirstRunChecked: bundle=%s zip=%s", g_bundlePrefixC, g_deltaZipPathC);
 
     if (g_moddedPrefixLen > 0 && g_deltaZipPathC[0]) {
