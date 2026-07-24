@@ -22,6 +22,7 @@
 #import "Includes/CheckHackerPatch.h"
 #import "Includes/MatchClientInfoPatch.h"
 #import "Includes/FFAntiFlagsPatch.h"
+#import "Includes/FFAntiObserve.h"
 #import "Includes/DylibSpy.h"
 
 #define kWidth  [UIScreen mainScreen].bounds.size.width
@@ -2328,6 +2329,10 @@ static const NSInteger kCardIconTag = 9002;
         DeltaVFS_debugLogf("Match state: %s", isInMatch ? "DA VAO TRAN (Curent_Match != null)" : "DA ROI TRAN / O SANH (Curent_Match == null)");
         wasInMatch = isInMatch;
     }
+
+    // FFAntiObserve: đọc THUẦN TUÝ (không hook/patch) cờ kết quả phát hiện ffantihack.MFHPGMELLCC
+    // mỗi frame, chỉ log khi có thay đổi - xem FFAntiObserve.h để biết vì sao chọn đọc thay vì hook.
+    FFAntiObserve::CheckAndLog();
 
     _menuView.hidden = !MenDeal;
 

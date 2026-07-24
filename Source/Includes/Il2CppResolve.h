@@ -49,6 +49,7 @@ typedef void*  (*FN_il2cpp_class_from_name)(const void*, const char*, const char
 typedef void*  (*FN_il2cpp_class_get_method_from_name)(void*, const char*, int);
 typedef void*  (*FN_il2cpp_class_get_field_from_name)(void*, const char*);
 typedef size_t (*FN_il2cpp_field_get_offset)(void*);
+typedef void*  (*FN_il2cpp_class_get_static_field_data)(void*);
 
 static FN_il2cpp_thread_attach                 p_il2cpp_thread_attach = NULL;
 static FN_il2cpp_domain_get                    p_il2cpp_domain_get = NULL;
@@ -59,6 +60,7 @@ static FN_il2cpp_class_from_name               p_il2cpp_class_from_name = NULL;
 static FN_il2cpp_class_get_method_from_name    p_il2cpp_class_get_method_from_name = NULL;
 static FN_il2cpp_class_get_field_from_name     p_il2cpp_class_get_field_from_name = NULL;
 static FN_il2cpp_field_get_offset              p_il2cpp_field_get_offset = NULL;
+static FN_il2cpp_class_get_static_field_data   p_il2cpp_class_get_static_field_data = NULL;
 
 static void *g_domain = NULL;
 static std::atomic<bool> g_attached{false};
@@ -78,6 +80,7 @@ inline bool Attach() {
     p_il2cpp_class_get_method_from_name = (FN_il2cpp_class_get_method_from_name)dlsym(RTLD_DEFAULT, "il2cpp_class_get_method_from_name");
     p_il2cpp_class_get_field_from_name  = (FN_il2cpp_class_get_field_from_name) dlsym(RTLD_DEFAULT, "il2cpp_class_get_field_from_name");
     p_il2cpp_field_get_offset           = (FN_il2cpp_field_get_offset)          dlsym(RTLD_DEFAULT, "il2cpp_field_get_offset");
+    p_il2cpp_class_get_static_field_data = (FN_il2cpp_class_get_static_field_data)dlsym(RTLD_DEFAULT, "il2cpp_class_get_static_field_data");
 
     g_attached.store(true, std::memory_order_relaxed);
 
@@ -142,6 +145,18 @@ inline size_t GetFieldOffset(const char *imageName, const char *namespaze, const
     void *field = p_il2cpp_class_get_field_from_name(klass, fieldName);
     if (!field) return 0;
     return p_il2cpp_field_get_offset(field);
+}
+
+// Trả về con trỏ tới VÙNG NHỚ chứa toàn bộ static field của 1 class (đúng API IL2CPP chuẩn
+// il2cpp_class_get_static_field_data) - CHỈ ĐỌC, không hook/patch gì cả nên không có rủi ro
+// crash kiểu trampoline đã gặp với MSHookFunction/Dobby trên các hàm "nhạy cảm". Cộng thêm offset
+// field (lấy từ dump.cs, vd "// 0x38") vào con trỏ trả về để đọc thẳng giá trị field tĩnh đó.
+// Trả NULL nếu không tra được (class không tồn tại/đổi tên, hoặc thiếu API trong binary).
+inline void *GetStaticFieldData(const char *imageName, const char *namespaze, const char *className) {
+    if (!Attach() || !p_il2cpp_class_get_static_field_data) return NULL;
+    void *klass = GetClass(imageName, namespaze, className);
+    if (!klass) return NULL;
+    return p_il2cpp_class_get_static_field_data(klass);
 }
 
 } // namespace Il2CppResolve
