@@ -32,7 +32,6 @@
 #import "Includes/FFAntiObserve.h"
 #import "Includes/EmulatorCheckSpoof.h"
 #import "Includes/EmulatorScorePatch.h"
-#import "Includes/CheatDetectTiming.h"
 #import "Includes/DylibSpy.h"
 
 #define kWidth  [UIScreen mainScreen].bounds.size.width
@@ -431,14 +430,6 @@ game_sdk_t *game_sdk = new game_sdk_t();
     // KHÔNG chờ 3 giây - xem EmulatorCheckSpoof.h.
     EmulatorCheckSpoof::installEarly();
 
-    // installEmulatorScorePatchEarly() - đây là patch CODE TĨNH (vá lệnh máy của set_EmulatorScore),
-    // chỉ cần UnityFramework map xong vào bộ nhớ là patch được - KHÔNG liên quan gì đến "đã login
-    // xong"/"vào sảnh"/"bấm vào đội" (những sự kiện đó chỉ quyết định LÚC set_EmulatorScore được
-    // GỌI, không quyết định lúc PATCH được). Gọi ngay ở +load, thay vì gọi 1 lần cố định (dù ngay
-    // đây hay ở block 3s) - hàm này tự retry bên trong bằng timer 20ms (xem EmulatorScorePatch.h)
-    // cho tới khi getRealOffset() thành công, nên không phụ thuộc việc đoán đúng mốc thời gian nào.
-    installEmulatorScorePatchEarly();
-
     if (DeltaVFS_needsFirstRunExtraction()) {
         // Guard đã được installFirstRunLaunchGuardEarly() (__attribute__((constructor)) phía trên,
         // chạy TRƯỚC +load này) cài rồi - không cài lại ở đây, chỉ return sớm để không chạy tiếp
@@ -447,6 +438,18 @@ game_sdk_t *game_sdk = new game_sdk_t();
         return;
     }
     DeltaVFS_debugLog("Menu +load: needsFirstRunExtraction=false, normal menu flow, scheduling setup in 3s");
+
+    // installEmulatorScorePatch() - field THẬT quyết định icon máy tính lúc vào đội (tcp.
+    // GroupJoinReq.emulator_score, đọc từ COW.UIModelUser.EmulatorScore lúc client tự gửi request
+    // vào đội) - khác hẳn GameFacade.m_IsEmulator (chỉ dùng cho báo cáo ffantihack riêng, sửa
+    // không hết icon). Đây là patch TĨNH (vá byte thực thi, không phải ghi field runtime) - chỉ
+    // cần UnityFramework đã map vào bộ nhớ (getRealOffset(), qua dyld) nên an toàn gọi ngay từ
+    // đây, không cần chờ 3 giây - xem EmulatorScorePatch.h. Đặt SAU dòng log
+    // "needsFirstRunExtraction=false" ở trên (không phải TRƯỚC như bản đầu) - xác nhận qua test
+    // thật: gọi trước đó, log của hàm này bị NUỐT MẤT hoàn toàn (không phải patch thất bại, mà vì
+    // g_moddedPrefixC - nơi debug.log ghi vào - CHƯA được thiết lập tại điểm đó, chỉ sẵn sàng
+    // SAU KHI DeltaVFS_needsFirstRunExtraction() ở trên chạy xong ít nhất 1 lần).
+    installEmulatorScorePatch();
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         // Checkpoint - nếu dòng này KHÔNG xuất hiện trong debug.log, nghĩa là main thread bị
@@ -502,24 +505,6 @@ game_sdk_t *game_sdk = new game_sdk_t();
             DeltaVFS_debugLog("Menu +load: gọi installMatchClientInfoPatch()");
             installMatchClientInfoPatch();
 
-            // installEmulatorScorePatch() ĐÃ DỜI RA installEmulatorScorePatchEarly(), gọi ngay từ
-            // +load (tự retry tới khi UnityFramework sẵn sàng) - không còn gọi ở đây nữa, xem đầu
-            // hàm +load.
-
-            // CheatDetectTiming TẮT HẲN - user quyết định KHÔNG chấp nhận rủi ro hook trampoline
-            // nữa (dù passthrough) sau khi đối chiếu FAKEMENU (tool modding khác): họ CŨNG không
-            // hook bất kỳ hàm nào trong UnityFramework (macro MSHookFunction comment tắt hết,
-            // Dobby vendor sẵn nhưng không nơi nào thực sự gọi) - toàn bộ kỹ thuật của họ là gọi
-            // thẳng/đọc thẳng bộ nhớ, không chặn lúc GAME tự gọi hàm. Quay về hướng đọc field tĩnh
-            // an toàn (FFAntiObserve.h, EmulatorCheckSpoof.h) thay vì hook thêm hàm nào nữa.
-            // DeltaVFS_debugLog("Menu +load: gọi CheatDetectTiming::installProcessAHTiming()");
-            // CheatDetectTiming::installProcessAHTiming();
-            // CheatDetectTiming::installGenerateLibMapAndMemTiming();
-            // CheatDetectTiming::installSecPlayerLoginTiming();
-            // CheatDetectTiming::installProcessffantihackGGPTiming();
-            // CheatDetectTiming::installSkinModMD5CheckTiming();
-            // CheatDetectTiming::installHackerDetectedUITiming();
-
             // installUnityFrameworkSyscallHook() TẮT HẲN - đã thử 3 bản trampoline khác nhau (lưu
             // tối thiểu x1/x2/x16/x30 -> lưu đủ GPR x1-x17/x29/x30 -> lưu đủ GPR+SIMD q0-q7 giống
             // hệt Monite thật) - CẢ 3 BẢN CHO CÙNG 1 CRASH, giống tuyệt đối từng giá trị thanh ghi
@@ -535,14 +520,14 @@ game_sdk_t *game_sdk = new game_sdk_t();
             // DeltaVFS_debugLog("Menu +load: gọi installUnityFrameworkSyscallHook()");
             // installUnityFrameworkSyscallHook();
 
-            // installMoniteUFPiggyback() TẮT LẠI - bản revert về b22b148 (theo yêu cầu trước) đã vô
-            // tình bật lại hàm này, và debug.log mới nhất (sau khi thêm EmulatorScorePatch/
-            // CheatDetectTiming) cho thấy ĐÚNG crash-loop cũ đã xác nhận: MoniteUFHook_Callback luôn
-            // dừng đúng tại lần gọi #28 (path "/Applications/Zebra.app"), lặp lại y hệt ở cả 2
-            // process kế tiếp nhau trong cùng phiên - không liên quan gì đến EmulatorScorePatch hay
-            // CheatDetectTiming. Tắt lại như đã xác nhận qua control test trước đó.
-            // DeltaVFS_debugLog("Menu +load: gọi installMoniteUFPiggyback()");
-            // installMoniteUFPiggyback();
+            // installMoniteUFPiggyback() - HƯỚNG MỚI thay cho UnityFrameworkSyscallHook: KHÔNG tự
+            // vá UnityFramework nữa (né hẳn nghi vấn "sửa file bị phát hiện"). Dùng NGUYÊN VẸN
+            // UnityFramework THẬT của Monite (trích từ MoniteV2.ipa, không sửa 1 byte) làm file thay
+            // thế trong IPA, rồi Delta.dylib chỉ tự ghi con trỏ callback CỦA MÌNH vào đúng các "data
+            // slot" mà trampoline SẴN CÓ của Monite đọc lúc chạy - quy ước gọi đã dịch ngược chính
+            // xác từ disassemble (xem MoniteUFPiggyback.h). CHƯA KIỂM CHỨNG TRÊN THIẾT BỊ THẬT.
+            DeltaVFS_debugLog("Menu +load: gọi installMoniteUFPiggyback()");
+            installMoniteUFPiggyback();
             // installGameMsgFlagPatch() TẮT - user báo cứ thêm patch này vào là bấm vào trận bị
             // crash ngay lúc đang loading (chưa vào hẳn trận), SỚM HƠN cả kiểu bị đá thường thấy
             // (trước giờ luôn ~9-12s SAU KHI đã vào hẳn trận). Tắt để quay lại baseline ổn định,

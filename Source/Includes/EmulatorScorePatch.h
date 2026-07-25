@@ -34,26 +34,15 @@
 #include "AssetRedirect.h"
 #import "CheckHackerPatch.h"  // dùng lại CheckHackerPatch_writeBytes()
 
-// Đây là patch CODE TĨNH (vá lệnh máy của set_EmulatorScore), không phải ghi field runtime theo
-// từng sự kiện - nên KHÔNG cần biết chính xác lúc nào là "login xong"/"vào sảnh"/"bấm vào đội".
-// Chỉ cần patch xong TRƯỚC LẦN GỌI ĐẦU TIÊN của set_EmulatorScore (lúc client lưu điểm server trả
-// về lúc login) - sau đó mọi lệnh gọi tiếp theo, bất kể lúc nào, đều tự động lưu 0.
-//
-// Điều kiện thật quyết định "patch được chưa" là "UnityFramework đã map xong vào bộ nhớ và đăng ký
-// với dyld chưa" (để getRealOffset() tính được địa chỉ) - đây là 1 sự kiện THẬT có thể tự phát hiện
-// bằng retry (giống EmulatorCheckSpoof.h), KHÔNG cần đoán mò bằng số giây cố định như bản trước
-// (dispatch_after 3s) - vốn chỉ tình cờ đủ muộn để né lỗi getRealOffset(), không phải vì 3s có ý
-// nghĩa game-logic gì. installEarly() retry mỗi 20ms ngay từ +load, patch ngay khi
-// UnityFramework sẵn sàng (thường nhanh hơn 3s nhiều), rồi tự huỷ timer - không phụ thuộc mốc thời
-// gian đoán mò nào nữa.
-inline bool tryInstallEmulatorScorePatch() {
+inline void installEmulatorScorePatch() {
     static const uint64_t kRva = 0x473C078ULL;
     static const uint8_t kOriginal[4] = {0x01, 0xB4, 0x00, 0xB9};  // str w1, [x0, #0xb4]
     static const uint8_t kPatched[4]  = {0x1F, 0xB4, 0x00, 0xB9};  // str wzr, [x0, #0xb4]
 
     uintptr_t target = (uintptr_t)getRealOffset(kRva);
     if (!target) {
-        return false;  // UnityFramework chua map xong - thu lai tick sau, KHONG bo cuoc
+        DeltaVFS_debugLog("EmulatorScorePatch: khong tim thay UnityFramework, bo qua");
+        return;
     }
     if (memcmp((void *)target, kOriginal, 4) != 0) {
         const uint8_t *actual = (const uint8_t *)target;
@@ -62,7 +51,7 @@ inline bool tryInstallEmulatorScorePatch() {
                             (unsigned long)target,
                             kOriginal[0], kOriginal[1], kOriginal[2], kOriginal[3],
                             actual[0], actual[1], actual[2], actual[3]);
-        return true;  // da co ket qua (that bai vinh vien do mismatch) - khong retry nua
+        return;
     }
     if (CheckHackerPatch_writeBytes(target, kPatched, 4)) {
         DeltaVFS_debugLogf("EmulatorScorePatch: da ep UIModelUser.set_EmulatorScore luon luu 0 tai 0x%lx (RVA 0x%llx)",
@@ -70,27 +59,4 @@ inline bool tryInstallEmulatorScorePatch() {
     } else {
         DeltaVFS_debugLogf("EmulatorScorePatch: ghi patch that bai tai 0x%lx", (unsigned long)target);
     }
-    return true;
-}
-
-// Gọi 1 LẦN DUY NHẤT từ +load - tự retry bên trong bằng timer, không cần caller lo timing.
-inline void installEmulatorScorePatchEarly() {
-    static dispatch_source_t timer;
-    static int tickCount = 0;
-    dispatch_queue_t queue = dispatch_get_main_queue();
-    timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, queue);
-    dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, 0),
-                               20 * NSEC_PER_MSEC, 5 * NSEC_PER_MSEC);
-    dispatch_source_set_event_handler(timer, ^{
-        ++tickCount;
-        bool done = tryInstallEmulatorScorePatch();
-        if (done) {
-            dispatch_source_cancel(timer);
-        } else if (tickCount >= 500) {  // ~10s tran retry - UnityFramework le ra phai map xong tu lau
-            DeltaVFS_debugLog("EmulatorScorePatch: qua 500 lan retry (~10s) van khong tim thay UnityFramework - bo cuoc");
-            dispatch_source_cancel(timer);
-        }
-    });
-    dispatch_resume(timer);
-    DeltaVFS_debugLog("EmulatorScorePatch: installEarly() - retry moi 20ms tu +load cho den khi UnityFramework san sang");
 }

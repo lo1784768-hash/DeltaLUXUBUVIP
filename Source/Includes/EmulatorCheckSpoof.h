@@ -38,11 +38,9 @@ static void *g_klass = NULL;
 static void *g_staticData = NULL;
 static int g_retryTick = 0;
 static bool g_everWritten = false;
-static uint8_t g_lastPoolValue = 0xFF;  // 0xFF = "chua doc lan nao" - IsEmulatorPool CHI DOC, khong ghi
 
 #define EMU_OFF_CHECKED  0x35F
 #define EMU_OFF_ISEMU    0x360
-#define EMU_OFF_POOL     0x17E  // public static bool IsEmulatorPool (dump.cs) - CHỈ ĐỌC, không ghi
 
 // KHÁC FFAntiObserve.h: KHÔNG có "g_classLookupFailed" bỏ cuộc vĩnh viễn sau 1 lần NULL - hàm này
 // giờ được gọi từ installEarly() (timer 50ms bắt đầu NGAY lúc +load, xem bên dưới), rất có thể
@@ -75,15 +73,6 @@ inline void Tick() {
             DeltaVFS_debugLog("EmulatorCheckSpoof: da ep m_EmulatorChecked=true, m_IsEmulator=false");
             g_everWritten = true;
         }
-    }
-
-    // CHỈ ĐỌC (không ghi) IsEmulatorPool - field CÔNG KHAI riêng cho biết runtime có đang bị nhét
-    // vào "pool giả lập" cho matchmaking hay không (khác m_IsEmulator/m_EmulatorChecked, vốn chỉ
-    // dùng cho báo cáo SendLoginTime). Cùng cách an toàn với FFAntiObserve.h - chỉ đọc, log lúc đổi.
-    uint8_t poolValue = *((uint8_t *)g_staticData + EMU_OFF_POOL);
-    if (poolValue != g_lastPoolValue) {
-        DeltaVFS_debugLogf("EmulatorCheckSpoof: GameFacade.IsEmulatorPool doi %u -> %u", g_lastPoolValue, poolValue);
-        g_lastPoolValue = poolValue;
     }
 }
 
