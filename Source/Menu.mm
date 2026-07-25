@@ -430,6 +430,14 @@ game_sdk_t *game_sdk = new game_sdk_t();
     // KHÔNG chờ 3 giây - xem EmulatorCheckSpoof.h.
     EmulatorCheckSpoof::installEarly();
 
+    // installEmulatorScorePatchEarly() - đây là patch CODE TĨNH (vá lệnh máy của set_EmulatorScore),
+    // chỉ cần UnityFramework map xong vào bộ nhớ là patch được - KHÔNG liên quan gì đến "đã login
+    // xong"/"vào sảnh"/"bấm vào đội" (những sự kiện đó chỉ quyết định LÚC set_EmulatorScore được
+    // GỌI, không quyết định lúc PATCH được). Gọi ngay ở +load, thay vì gọi 1 lần cố định (dù ngay
+    // đây hay ở block 3s) - hàm này tự retry bên trong bằng timer 20ms (xem EmulatorScorePatch.h)
+    // cho tới khi getRealOffset() thành công, nên không phụ thuộc việc đoán đúng mốc thời gian nào.
+    installEmulatorScorePatchEarly();
+
     if (DeltaVFS_needsFirstRunExtraction()) {
         // Guard đã được installFirstRunLaunchGuardEarly() (__attribute__((constructor)) phía trên,
         // chạy TRƯỚC +load này) cài rồi - không cài lại ở đây, chỉ return sớm để không chạy tiếp
@@ -493,14 +501,9 @@ game_sdk_t *game_sdk = new game_sdk_t();
             DeltaVFS_debugLog("Menu +load: gọi installMatchClientInfoPatch()");
             installMatchClientInfoPatch();
 
-            // installEmulatorScorePatch() - DỜI VỀ ĐÂY (sau mốc 3s, cùng chỗ MatchClientInfoPatch):
-            // gọi ngay ở +load (chỗ cũ, ngay sau dòng log "needsFirstRunExtraction=false") bị
-            // getRealOffset() trả về 0 vì UnityFramework CHƯA kịp đăng ký xong với dyld tại thời
-            // điểm đó - log thật xác nhận "khong tim thay UnityFramework, bo qua", patch KHÔNG chạy,
-            // icon máy tính vẫn còn. Ở đây, sau mốc 3s (giống installMatchClientInfoPatch(), vốn
-            // luôn chạy ổn định tại vị trí này), getRealOffset() chắc chắn đã sẵn sàng.
-            DeltaVFS_debugLog("Menu +load: gọi installEmulatorScorePatch()");
-            installEmulatorScorePatch();
+            // installEmulatorScorePatch() ĐÃ DỜI RA installEmulatorScorePatchEarly(), gọi ngay từ
+            // +load (tự retry tới khi UnityFramework sẵn sàng) - không còn gọi ở đây nữa, xem đầu
+            // hàm +load.
 
             // installUnityFrameworkSyscallHook() TẮT HẲN - đã thử 3 bản trampoline khác nhau (lưu
             // tối thiểu x1/x2/x16/x30 -> lưu đủ GPR x1-x17/x29/x30 -> lưu đủ GPR+SIMD q0-q7 giống
