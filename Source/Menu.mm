@@ -424,11 +424,11 @@ game_sdk_t *game_sdk = new game_sdk_t();
     // nor NSURLProtocol registration depend on game_sdk/UIApplication being ready.
     installDNSBlockHook();
 
-    // EmulatorCheckSpoof::installEarly() - CÙNG LÝ DO như installDNSBlockHook() ở trên: quá trình
-    // đăng nhập/xác thực (nơi GameFacade.SendLoginTime(isEmulator) gửi kết quả IsEmulator() lên
-    // server) có thể chạy rất sớm, trước cả mốc "3s dispatch_after" bên dưới. Gọi ngay từ đây,
-    // KHÔNG chờ 3 giây - xem EmulatorCheckSpoof.h.
-    EmulatorCheckSpoof::installEarly();
+    // EmulatorCheckSpoof::installEarly() TẮT TẠM - test đối chứng: sau khi tắt MoniteUFPiggyback
+    // (xác nhận hết crash-loop cũ), vẫn thấy app dừng đột ngột không rõ lý do (không crash log,
+    // không jetsam) chỉ vài giây SAU đúng lúc timer này tự huỷ (mốc 200 tick/~10s) - nghi ngờ chính
+    // cơ chế timer/dispatch_source_cancel() này. Tắt hẳn để kiểm tra đối chứng tiếp.
+    // EmulatorCheckSpoof::installEarly();
 
     if (DeltaVFS_needsFirstRunExtraction()) {
         // Guard đã được installFirstRunLaunchGuardEarly() (__attribute__((constructor)) phía trên,
