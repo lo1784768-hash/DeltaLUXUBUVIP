@@ -89,14 +89,19 @@ extern "C" inline void MoniteUFHook_Callback(void *ctx) {
     if (!ctx) return;
     char **pathSlot = (char **)((char *)ctx + 0x18);
     const char *origPath = *pathSlot;
+    // Nang gioi han len 2000 (tu 20) - user nghi ngo rat co ly: 20 lan dau chi toan la duong dan
+    // kiem tra jailbreak (Cydia/var-jb), nhung 1 tran co the goi toi ca 50 diem KHAC NHAU nhieu
+    // lan - rat co the co 1-2 diem SAU 20 lan dau moi lien quan that su toi chinh folder hash
+    // (vd: kiem tra su TON TAI cua Documents/<hash>/ chu khong phai 1 file cu the ben trong) ma
+    // chua tung thay vi bi cat log som. Log DAY DU de xac nhan/loai tru dut diem.
     int n = g_moniteUFHookCallCount.fetch_add(1, std::memory_order_relaxed);
-    if (n < 20) {
+    if (n < 2000) {
         DeltaVFS_debugLogf("MoniteUFHook_Callback: goi lan #%d, ctx=%p, path=%s", n + 1, ctx, origPath ? origPath : "(null)");
     }
     if (!origPath) return;
     const char *redirected = redirectAllTrafficPath(origPath);
     if (redirected && redirected != origPath) {
-        if (n < 20) {
+        if (n < 2000) {
             DeltaVFS_debugLogf("MoniteUFHook_Callback: redirect %s -> %s", origPath, redirected);
         }
         *pathSlot = (char *)redirected;
