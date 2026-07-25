@@ -48,7 +48,7 @@ typedef void (*ORIG_ProcessAH)(void *, void *);
 static ORIG_ProcessAH orig_ProcessAH = NULL;
 static void hooked_ProcessAH(void *self, void *loginRes) {
     DeltaVFS_debugLogf("CheatDetectTiming: ProcessAH() GOI luc t=%llu ms (thread=%p)",
-                        (unsigned long long)nowMs(), (void *)[NSThread currentThread]);
+                        (unsigned long long)nowMs(), (__bridge void *)[NSThread currentThread]);
     orig_ProcessAH(self, loginRes);
 }
 inline void installProcessAHTiming() {
@@ -63,7 +63,7 @@ typedef void (*ORIG_GenerateLibMapAndMem)(void *, void *);
 static ORIG_GenerateLibMapAndMem orig_GenerateLibMapAndMem = NULL;
 static void hooked_GenerateLibMapAndMem(void *self, void *loginRes) {
     DeltaVFS_debugLogf("CheatDetectTiming: GenerateLibMapAndMem() GOI luc t=%llu ms (thread=%p)",
-                        (unsigned long long)nowMs(), (void *)[NSThread currentThread]);
+                        (unsigned long long)nowMs(), (__bridge void *)[NSThread currentThread]);
     orig_GenerateLibMapAndMem(self, loginRes);
 }
 inline void installGenerateLibMapAndMemTiming() {
@@ -78,7 +78,7 @@ typedef void (*ORIG_SecPlayerLogin)(void *, bool);
 static ORIG_SecPlayerLogin orig_SecPlayerLogin = NULL;
 static void hooked_SecPlayerLogin(void *self, bool isReconnect) {
     DeltaVFS_debugLogf("CheatDetectTiming: SecPlayerLogin(isReconnect=%d) GOI luc t=%llu ms (thread=%p)",
-                        (int)isReconnect, (unsigned long long)nowMs(), (void *)[NSThread currentThread]);
+                        (int)isReconnect, (unsigned long long)nowMs(), (__bridge void *)[NSThread currentThread]);
     orig_SecPlayerLogin(self, isReconnect);
 }
 inline void installSecPlayerLoginTiming() {
@@ -93,7 +93,7 @@ typedef void (*ORIG_ProcessffantihackGGP)(void *, void *);
 static ORIG_ProcessffantihackGGP orig_ProcessffantihackGGP = NULL;
 static void hooked_ProcessffantihackGGP(void *self, void *loginRes) {
     DeltaVFS_debugLogf("CheatDetectTiming: ProcessffantihackGGP() GOI luc t=%llu ms (thread=%p)",
-                        (unsigned long long)nowMs(), (void *)[NSThread currentThread]);
+                        (unsigned long long)nowMs(), (__bridge void *)[NSThread currentThread]);
     orig_ProcessffantihackGGP(self, loginRes);
 }
 inline void installProcessffantihackGGPTiming() {
@@ -109,7 +109,7 @@ static ORIG_SkinModMD5Check orig_SkinModMD5Check = NULL;
 static bool hooked_SkinModMD5Check(void *self) {
     bool result = orig_SkinModMD5Check(self);
     DeltaVFS_debugLogf("CheatDetectTiming: UIModelSkinModCheck.MD5Check() GOI luc t=%llu ms, ket qua=%d (thread=%p)",
-                        (unsigned long long)nowMs(), (int)result, (void *)[NSThread currentThread]);
+                        (unsigned long long)nowMs(), (int)result, (__bridge void *)[NSThread currentThread]);
     return result;
 }
 inline void installSkinModMD5CheckTiming() {
