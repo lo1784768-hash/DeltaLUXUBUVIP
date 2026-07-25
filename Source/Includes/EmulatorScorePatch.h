@@ -45,8 +45,12 @@ inline void installEmulatorScorePatch() {
         return;
     }
     if (memcmp((void *)target, kOriginal, 4) != 0) {
+        const uint8_t *actual = (const uint8_t *)target;
         DeltaVFS_debugLogf("EmulatorScorePatch: byte goc tai 0x%lx KHONG khop du lieu ob54 da phan tich "
-                            "(game da update / offset lech) - HUY patch nay de an toan", (unsigned long)target);
+                            "(ky vong %02X %02X %02X %02X, thuc te %02X %02X %02X %02X) - HUY patch nay de an toan",
+                            (unsigned long)target,
+                            kOriginal[0], kOriginal[1], kOriginal[2], kOriginal[3],
+                            actual[0], actual[1], actual[2], actual[3]);
         return;
     }
     if (CheckHackerPatch_writeBytes(target, kPatched, 4)) {
