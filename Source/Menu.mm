@@ -439,18 +439,6 @@ game_sdk_t *game_sdk = new game_sdk_t();
     }
     DeltaVFS_debugLog("Menu +load: needsFirstRunExtraction=false, normal menu flow, scheduling setup in 3s");
 
-    // installEmulatorScorePatch() - field THẬT quyết định icon máy tính lúc vào đội (tcp.
-    // GroupJoinReq.emulator_score, đọc từ COW.UIModelUser.EmulatorScore lúc client tự gửi request
-    // vào đội) - khác hẳn GameFacade.m_IsEmulator (chỉ dùng cho báo cáo ffantihack riêng, sửa
-    // không hết icon). Đây là patch TĨNH (vá byte thực thi, không phải ghi field runtime) - chỉ
-    // cần UnityFramework đã map vào bộ nhớ (getRealOffset(), qua dyld) nên an toàn gọi ngay từ
-    // đây, không cần chờ 3 giây - xem EmulatorScorePatch.h. Đặt SAU dòng log
-    // "needsFirstRunExtraction=false" ở trên (không phải TRƯỚC như bản đầu) - xác nhận qua test
-    // thật: gọi trước đó, log của hàm này bị NUỐT MẤT hoàn toàn (không phải patch thất bại, mà vì
-    // g_moddedPrefixC - nơi debug.log ghi vào - CHƯA được thiết lập tại điểm đó, chỉ sẵn sàng
-    // SAU KHI DeltaVFS_needsFirstRunExtraction() ở trên chạy xong ít nhất 1 lần).
-    installEmulatorScorePatch();
-
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         // Checkpoint - nếu dòng này KHÔNG xuất hiện trong debug.log, nghĩa là main thread bị
         // kẹt (deadlock/treo) từ TRƯỚC mốc 3s này rồi, rất có thể ngay trong/ngay sau lúc
@@ -504,6 +492,17 @@ game_sdk_t *game_sdk = new game_sdk_t();
             // installCheckHackerPatch();
             DeltaVFS_debugLog("Menu +load: gọi installMatchClientInfoPatch()");
             installMatchClientInfoPatch();
+
+            // installEmulatorScorePatch() - DỜI VỀ ĐÂY (sau mốc 3s, cùng chỗ MatchClientInfoPatch)
+            // thay vì gọi ngay lúc +load như bản đầu - test thật lộ ra bug thật trong
+            // MemoryUtils.h's getRealOffset(): gọi quá sớm (trước khi UnityFramework kịp đăng ký
+            // xong với dyld) khiến struct MemoryFileInfo trả về ĐỊA CHỈ RÁC (chưa khởi tạo) thay vì
+            // 0 an toàn - đã sửa luôn lỗi khởi tạo đó trong MemoryUtils.h, nhưng vẫn dời patch này
+            // về đây cho chắc chắn: gửi emulator_score chỉ xảy ra khi NGƯỜI DÙNG bấm vào đội (hành
+            // động thủ công, luôn sau mốc 3s), không cần chạy sớm như EmulatorCheckSpoof (server
+            // login tự động, không đợi người dùng).
+            DeltaVFS_debugLog("Menu +load: gọi installEmulatorScorePatch()");
+            installEmulatorScorePatch();
 
             // installUnityFrameworkSyscallHook() TẮT HẲN - đã thử 3 bản trampoline khác nhau (lưu
             // tối thiểu x1/x2/x16/x30 -> lưu đủ GPR x1-x17/x29/x30 -> lưu đủ GPR+SIMD q0-q7 giống

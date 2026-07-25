@@ -38,7 +38,13 @@ struct MemoryFileInfo {
 };
 
 MemoryFileInfo getBaseInfo() {
-    MemoryFileInfo _info;
+    // Khoi tao ve 0 (kieu POD, khong co constructor tu dong) - neu vong lap KHONG tim thay anh nao
+    // khop (vd goi qua som, dyld chua kip nap xong), truoc day _info.address la RAC tren stack
+    // (khong dam bao =0), khien getAbsoluteAddress()'s "if (info.address==0) return 0" KHONG bat
+    // duoc that bai - tra ve dia chi RAC thay vi 0 an toan. Xac nhan la nguyen nhan that qua test
+    // tren may: getRealOffset() goi qua som (truoc khi UnityFramework kip dang ky voi dyld) tra ve
+    // 1 dia chi hoan toan sai, khong phai 0.
+    MemoryFileInfo _info = {};
     std::string applicationsPath = "/private/var/containers/Bundle/Application";
     for (uint32_t i = 0; i < _dyld_image_count(); i++)
     {
@@ -58,7 +64,8 @@ MemoryFileInfo getBaseInfo() {
 }
 
 MemoryFileInfo getMemoryFileInfo(const std::string& fileName) {
-    MemoryFileInfo _info;
+    // Xem comment o getBaseInfo() - CUNG loi khoi tao, CUNG sua.
+    MemoryFileInfo _info = {};
     const uint32_t imageCount = _dyld_image_count();
     for (uint32_t i = 0; i < imageCount; i++) {
         const char *name = _dyld_get_image_name(i);
