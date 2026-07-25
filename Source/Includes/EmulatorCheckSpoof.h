@@ -83,11 +83,17 @@ inline bool IsReady() { return g_staticData != NULL; }
 // dispatch_after") vẫn KHÔNG xoá được icon máy tính - rất có thể quá trình đăng nhập/xác thực với
 // server (nơi SendLoginTime(isEmulator) gửi kết quả ĐI) đã chạy xong TRƯỚC mốc 3 giây đó, ngay
 // những giây đầu app mở - sửa cache ở client sau khi đã gửi lên server rồi thì không rút lại được.
-// Dùng dispatch_source_timer trên background queue, kiểm tra mỗi 50ms - đủ nhanh để bắt kịp
-// GameFacade static constructor chạy xong CÀNG SỚM CÀNG TỐT, độc lập với mọi delay của UI setup.
+//
+// PHẢI chạy trên MAIN QUEUE, KHÔNG phải background queue - test thật bản đầu (timer trên
+// dispatch_get_global_queue) crash NGAY LẬP TỨC (exc=1 bên trong UnityFramework, rất sớm, trước cả
+// mốc 3s) - gọi API IL2CPP (GetClass/il2cpp_class_get_static_field_data) từ 1 thread KHÔNG PHẢI
+// main thread rất có thể không an toàn (FFAntiObserve.h/MatchClientInfoPatch.h trước giờ CHỈ gọi
+// từ main thread qua CADisplayLink, chưa từng thử thread khác). Timer trên main queue vẫn chạy
+// SỚM HƠN nhiều so với "3s dispatch_after" (không cần đợi UI setup), chỉ là không phải 1 thread
+// riêng - main run loop vẫn xử lý các timer/dispatch khác đủ nhanh để không đáng lo về độ trễ.
 inline void installEarly() {
     static dispatch_source_t timer;
-    dispatch_queue_t queue = dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
+    dispatch_queue_t queue = dispatch_get_main_queue();
     timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, queue);
     dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, 0),
                                50 * NSEC_PER_MSEC, 10 * NSEC_PER_MSEC);
