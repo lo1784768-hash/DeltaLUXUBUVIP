@@ -2394,10 +2394,11 @@ static const NSInteger kCardIconTag = 9002;
     // mỗi frame, chỉ log khi có thay đổi - xem FFAntiObserve.h để biết vì sao chọn đọc thay vì hook.
     FFAntiObserve::CheckAndLog();
 
-    // EmulatorCheckSpoof: ép COW.GameFacade.IsEmulator() luôn trả "không phải giả lập" - xem
-    // EmulatorCheckSpoof.h. Gọi mỗi frame (idempotent, rẻ - chỉ so 2 byte) để bắt kịp ngay lúc
-    // class GameFacade init xong, và tự ghi đè lại nếu có gì reset field về sau.
-    EmulatorCheckSpoof::Tick();
+    // EmulatorCheckSpoof::Tick() TẮT TẠM CÙNG installEarly() - phát hiện qua log thật: tắt
+    // installEarly() ở +load KHÔNG đủ, vì chỗ gọi Tick() Ở ĐÂY (vòng lặp mỗi frame, thêm từ TRƯỚC
+    // installEarly()) vẫn còn hoạt động độc lập, khiến control test trước đó không thực sự "sạch"
+    // (EmulatorCheckSpoof vẫn chạy, chỉ trễ hơn). Tắt nốt để có phép test đối chứng đúng nghĩa.
+    // EmulatorCheckSpoof::Tick();
 
     // installFFAntiFlagsPatch() ĐÃ TẮT HẲN - đã thử 3 CÁCH KHÁC NHAU (gọi ngay lúc +load, gọi giữa
     // chừng, và gọi SAU KHI FFAntiObserve xác nhận class đã init xong hẳn) - CẢ 3 đều crash giống
