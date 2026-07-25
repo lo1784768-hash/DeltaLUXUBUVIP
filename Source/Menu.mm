@@ -525,8 +525,15 @@ game_sdk_t *game_sdk = new game_sdk_t();
             // thế trong IPA, rồi Delta.dylib chỉ tự ghi con trỏ callback CỦA MÌNH vào đúng các "data
             // slot" mà trampoline SẴN CÓ của Monite đọc lúc chạy - quy ước gọi đã dịch ngược chính
             // xác từ disassemble (xem MoniteUFPiggyback.h). CHƯA KIỂM CHỨNG TRÊN THIẾT BỊ THẬT.
-            DeltaVFS_debugLog("Menu +load: gọi installMoniteUFPiggyback()");
-            installMoniteUFPiggyback();
+            // installMoniteUFPiggyback() TẮT TẠM - test thật cho thấy crash-restart LẶP LẠI Y HỆT
+            // (9/9 lần) luôn dừng đúng tại lần gọi callback thứ 28 (path "/Applications/Zebra.app"),
+            // không bao giờ tới lần 29 - đã loại trừ nghi vấn do timer EmulatorCheckSpoof chạy vô hạn
+            // (giới hạn 200 tick rồi huỷ, vẫn crash y hệt). Tắt hẳn cơ chế này để kiểm tra đối chứng:
+            // nếu tắt mà VẪN crash y hệt, chứng tỏ đây là lỗi có sẵn trong chính game (không liên
+            // quan Delta) khi tự kiểm tra jailbreak tới đúng path đó; nếu HẾT crash, xác nhận đúng
+            // trampoline của Monite (hoặc callback của Delta gắn vào đó) là nguyên nhân.
+            // DeltaVFS_debugLog("Menu +load: gọi installMoniteUFPiggyback()");
+            // installMoniteUFPiggyback();
             // installGameMsgFlagPatch() TẮT - user báo cứ thêm patch này vào là bấm vào trận bị
             // crash ngay lúc đang loading (chưa vào hẳn trận), SỚM HƠN cả kiểu bị đá thường thấy
             // (trước giờ luôn ~9-12s SAU KHI đã vào hẳn trận). Tắt để quay lại baseline ổn định,
