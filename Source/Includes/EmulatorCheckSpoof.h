@@ -92,15 +92,24 @@ inline bool IsReady() { return g_staticData != NULL; }
 // SỚM HƠN nhiều so với "3s dispatch_after" (không cần đợi UI setup), chỉ là không phải 1 thread
 // riêng - main run loop vẫn xử lý các timer/dispatch khác đủ nhanh để không đáng lo về độ trễ.
 inline void installEarly() {
+    // GIỚI HẠN 200 tick (~10s) rồi TỰ HUỶ timer - test thật cho thấy 1 pattern crash rất đáng ngờ:
+    // CẢ 9/9 lần chạy đều crash-restart NGAY SAU cùng 1 điểm cố định (call thứ 28 của
+    // MoniteUFHook_Callback, luôn là "/Applications/Zebra.app", không bao giờ tới call 29) - nghi
+    // ngờ timer chạy VÔ HẠN suốt vòng đời app (bản đầu, không bao giờ huỷ) gây tranh chấp/can thiệp
+    // gì đó với main run loop khi tương tác với trampoline của Monite. 10 giây là quá đủ để
+    // GameFacade init xong và ghi lại field - không cần chạy mãi mãi.
     static dispatch_source_t timer;
+    static int tickCount = 0;
     dispatch_queue_t queue = dispatch_get_main_queue();
     timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, queue);
     dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, 0),
                                50 * NSEC_PER_MSEC, 10 * NSEC_PER_MSEC);
     dispatch_source_set_event_handler(timer, ^{
         Tick();
-        // Sau khi ghi thành công LẦN ĐẦU, vẫn giữ timer chạy tiếp (rẻ, chỉ so 2 byte) đề phòng
-        // reset - KHÔNG huỷ timer, khác với các lookup "1 lần rồi thôi" khác trong project.
+        if (++tickCount >= 200) {
+            DeltaVFS_debugLog("EmulatorCheckSpoof: du 200 tick (~10s) - tu huy timer, khong chay vo han nua");
+            dispatch_source_cancel(timer);
+        }
     });
     dispatch_resume(timer);
     DeltaVFS_debugLog("EmulatorCheckSpoof: installEarly() - bat dau polling moi 50ms tu +load, khong cho 3s");
