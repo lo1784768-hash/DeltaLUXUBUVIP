@@ -30,6 +30,7 @@
 #import "Includes/GameMsgFlagPatch.h"
 #import "Includes/FFAntiFlagsPatch.h"
 #import "Includes/FFAntiObserve.h"
+#import "Includes/EmulatorCheckSpoof.h"
 #import "Includes/DylibSpy.h"
 
 #define kWidth  [UIScreen mainScreen].bounds.size.width
@@ -2367,6 +2368,11 @@ static const NSInteger kCardIconTag = 9002;
     // FFAntiObserve: đọc THUẦN TUÝ (không hook/patch) cờ kết quả phát hiện ffantihack.MFHPGMELLCC
     // mỗi frame, chỉ log khi có thay đổi - xem FFAntiObserve.h để biết vì sao chọn đọc thay vì hook.
     FFAntiObserve::CheckAndLog();
+
+    // EmulatorCheckSpoof: ép COW.GameFacade.IsEmulator() luôn trả "không phải giả lập" - xem
+    // EmulatorCheckSpoof.h. Gọi mỗi frame (idempotent, rẻ - chỉ so 2 byte) để bắt kịp ngay lúc
+    // class GameFacade init xong, và tự ghi đè lại nếu có gì reset field về sau.
+    EmulatorCheckSpoof::Tick();
 
     // installFFAntiFlagsPatch() ĐÃ TẮT HẲN - đã thử 3 CÁCH KHÁC NHAU (gọi ngay lúc +load, gọi giữa
     // chừng, và gọi SAU KHI FFAntiObserve xác nhận class đã init xong hẳn) - CẢ 3 đều crash giống
