@@ -32,6 +32,7 @@
 #import "Includes/FFAntiObserve.h"
 #import "Includes/EmulatorCheckSpoof.h"
 #import "Includes/EmulatorScorePatch.h"
+#import "Includes/CheatDetectTiming.h"
 #import "Includes/DylibSpy.h"
 
 #define kWidth  [UIScreen mainScreen].bounds.size.width
@@ -504,6 +505,19 @@ game_sdk_t *game_sdk = new game_sdk_t();
             // installEmulatorScorePatch() ĐÃ DỜI RA installEmulatorScorePatchEarly(), gọi ngay từ
             // +load (tự retry tới khi UnityFramework sẵn sàng) - không còn gọi ở đây nữa, xem đầu
             // hàm +load.
+
+            // CheatDetectTiming - hook PASSTHROUGH (chỉ log, không sửa) để biết chính xác lúc nào
+            // các cơ chế anti-cheat khác được gọi (xem CheatDetectTiming.h). RỦI RO ĐÃ BIẾT: 2 lần
+            // hook trampoline trước (AntiReportSpoof/PacketCapture) đều crash-loop dù passthrough -
+            // TEST TỪNG DÒNG installXxxTiming() MỘT, không bật hết cùng lúc. Đang bật dòng ĐẦU TIÊN
+            // (installProcessAHTiming) để test trước - nếu qua 1 trận không crash, bật tiếp dòng kế.
+            DeltaVFS_debugLog("Menu +load: gọi CheatDetectTiming::installProcessAHTiming()");
+            CheatDetectTiming::installProcessAHTiming();
+            // CheatDetectTiming::installGenerateLibMapAndMemTiming();
+            // CheatDetectTiming::installSecPlayerLoginTiming();
+            // CheatDetectTiming::installProcessffantihackGGPTiming();
+            // CheatDetectTiming::installSkinModMD5CheckTiming();
+            // CheatDetectTiming::installHackerDetectedUITiming();
 
             // installUnityFrameworkSyscallHook() TẮT HẲN - đã thử 3 bản trampoline khác nhau (lưu
             // tối thiểu x1/x2/x16/x30 -> lưu đủ GPR x1-x17/x29/x30 -> lưu đủ GPR+SIMD q0-q7 giống
