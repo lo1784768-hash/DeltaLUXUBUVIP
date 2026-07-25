@@ -35,7 +35,6 @@
 namespace EmulatorCheckSpoof {
 
 static void *g_klass = NULL;
-static bool g_classLookupFailed = false;
 static void *g_staticData = NULL;
 static int g_retryTick = 0;
 static bool g_everWritten = false;
@@ -43,24 +42,25 @@ static bool g_everWritten = false;
 #define EMU_OFF_CHECKED  0x35F
 #define EMU_OFF_ISEMU    0x360
 
+// KHÁC FFAntiObserve.h: KHÔNG có "g_classLookupFailed" bỏ cuộc vĩnh viễn sau 1 lần NULL - hàm này
+// giờ được gọi từ installEarly() (timer 50ms bắt đầu NGAY lúc +load, xem bên dưới), rất có thể
+// IL2CPP/Assembly-CSharp CHƯA nạp xong ở những tick đầu tiên (khác FFAntiObserve, luôn gọi từ vòng
+// lặp SAU mốc 3 giây, lúc IL2CPP chắc chắn đã sẵn sàng) - phải tự retry CẢ bước tìm class, không
+// chỉ bước lấy static_field_data.
 inline void Tick() {
-    if (g_classLookupFailed) return;
+    ++g_retryTick;
     if (!g_staticData) {
         if (!g_klass) {
+            if (g_retryTick % 10 != 0) return;  // ~500ms/lan thu tim class, tranh spam log/CPU
             g_klass = Il2CppResolve::GetClass("Assembly-CSharp.dll", "COW", "GameFacade");
-            if (!g_klass) {
-                DeltaVFS_debugLog("EmulatorCheckSpoof: khong tim thay class COW.GameFacade - tat");
-                g_classLookupFailed = true;
-                return;
-            }
+            if (!g_klass) return;  // chua san sang - thu lai tick sau, KHONG bo cuoc
             DeltaVFS_debugLogf("EmulatorCheckSpoof: tim thay class COW.GameFacade %p, cho static constructor chay...", g_klass);
         }
-        if (++g_retryTick % 60 != 0) return;
         if (!Il2CppResolve::p_il2cpp_class_get_static_field_data) return;
         g_staticData = Il2CppResolve::p_il2cpp_class_get_static_field_data(g_klass);
         if (!g_staticData) return;
-        DeltaVFS_debugLogf("EmulatorCheckSpoof: static field data san sang tai %p (sau %d lan thu)",
-                            g_staticData, g_retryTick / 60);
+        DeltaVFS_debugLogf("EmulatorCheckSpoof: static field data san sang tai %p (tick #%d)",
+                            g_staticData, g_retryTick);
     }
 
     uint8_t *checkedField = (uint8_t *)g_staticData + EMU_OFF_CHECKED;
@@ -77,5 +77,27 @@ inline void Tick() {
 }
 
 inline bool IsReady() { return g_staticData != NULL; }
+
+// installEarly() - BẮT ĐẦU POLLING NGAY TỪ +load, KHÔNG chờ 3 giây như vòng lặp updateMenu bình
+// thường. Lý do: test thật xác nhận Tick() gọi từ vòng lặp mỗi frame (chỉ bắt đầu SAU mốc "3s
+// dispatch_after") vẫn KHÔNG xoá được icon máy tính - rất có thể quá trình đăng nhập/xác thực với
+// server (nơi SendLoginTime(isEmulator) gửi kết quả ĐI) đã chạy xong TRƯỚC mốc 3 giây đó, ngay
+// những giây đầu app mở - sửa cache ở client sau khi đã gửi lên server rồi thì không rút lại được.
+// Dùng dispatch_source_timer trên background queue, kiểm tra mỗi 50ms - đủ nhanh để bắt kịp
+// GameFacade static constructor chạy xong CÀNG SỚM CÀNG TỐT, độc lập với mọi delay của UI setup.
+inline void installEarly() {
+    static dispatch_source_t timer;
+    dispatch_queue_t queue = dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
+    timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, queue);
+    dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, 0),
+                               50 * NSEC_PER_MSEC, 10 * NSEC_PER_MSEC);
+    dispatch_source_set_event_handler(timer, ^{
+        Tick();
+        // Sau khi ghi thành công LẦN ĐẦU, vẫn giữ timer chạy tiếp (rẻ, chỉ so 2 byte) đề phòng
+        // reset - KHÔNG huỷ timer, khác với các lookup "1 lần rồi thôi" khác trong project.
+    });
+    dispatch_resume(timer);
+    DeltaVFS_debugLog("EmulatorCheckSpoof: installEarly() - bat dau polling moi 50ms tu +load, khong cho 3s");
+}
 
 } // namespace EmulatorCheckSpoof

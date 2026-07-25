@@ -423,6 +423,12 @@ game_sdk_t *game_sdk = new game_sdk_t();
     // nor NSURLProtocol registration depend on game_sdk/UIApplication being ready.
     installDNSBlockHook();
 
+    // EmulatorCheckSpoof::installEarly() - CÙNG LÝ DO như installDNSBlockHook() ở trên: quá trình
+    // đăng nhập/xác thực (nơi GameFacade.SendLoginTime(isEmulator) gửi kết quả IsEmulator() lên
+    // server) có thể chạy rất sớm, trước cả mốc "3s dispatch_after" bên dưới. Gọi ngay từ đây,
+    // KHÔNG chờ 3 giây - xem EmulatorCheckSpoof.h.
+    EmulatorCheckSpoof::installEarly();
+
     if (DeltaVFS_needsFirstRunExtraction()) {
         // Guard đã được installFirstRunLaunchGuardEarly() (__attribute__((constructor)) phía trên,
         // chạy TRƯỚC +load này) cài rồi - không cài lại ở đây, chỉ return sớm để không chạy tiếp
