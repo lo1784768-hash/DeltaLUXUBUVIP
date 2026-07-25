@@ -31,6 +31,7 @@
 #import "Includes/FFAntiFlagsPatch.h"
 #import "Includes/FFAntiObserve.h"
 #import "Includes/EmulatorCheckSpoof.h"
+#import "Includes/EmulatorScorePatch.h"
 #import "Includes/DylibSpy.h"
 
 #define kWidth  [UIScreen mainScreen].bounds.size.width
@@ -428,6 +429,15 @@ game_sdk_t *game_sdk = new game_sdk_t();
     // server) có thể chạy rất sớm, trước cả mốc "3s dispatch_after" bên dưới. Gọi ngay từ đây,
     // KHÔNG chờ 3 giây - xem EmulatorCheckSpoof.h.
     EmulatorCheckSpoof::installEarly();
+
+    // installEmulatorScorePatch() - field THẬT quyết định icon máy tính lúc vào đội (tcp.
+    // GroupJoinReq.emulator_score, đọc từ COW.UIModelUser.EmulatorScore lúc client tự gửi request
+    // vào đội) - khác hẳn GameFacade.m_IsEmulator (chỉ dùng cho báo cáo ffantihack riêng, sửa
+    // không hết icon). Đây là patch TĨNH (vá byte thực thi, không phải ghi field runtime) - chỉ
+    // cần UnityFramework đã map vào bộ nhớ (getRealOffset(), qua dyld - luôn sẵn sàng, khác
+    // Il2CppResolve::GetClass() cần đợi IL2CPP runtime init xong) nên an toàn gọi ngay từ đây,
+    // không cần chờ 3 giây. Xem EmulatorScorePatch.h.
+    installEmulatorScorePatch();
 
     if (DeltaVFS_needsFirstRunExtraction()) {
         // Guard đã được installFirstRunLaunchGuardEarly() (__attribute__((constructor)) phía trên,
