@@ -14,13 +14,43 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Cache Theos (+ submodule) - "git clone --recursive" toàn bộ Theos lại từ đầu MỖI LẦN build
+      # là phần chậm nhất của cả pipeline, trong khi Theos gần như không đổi giữa các lần build của
+      # CHÍNH project này. Cache theo key CỐ ĐỊNH (đổi hậu tố "v1" thủ công nếu cần ép làm mới) -
+      # cache hit thì bỏ qua hẳn bước clone, cache miss (lần đầu/sau khi đổi key) thì clone như cũ
+      # rồi lưu lại cho lần sau.
+      - name: Cache Theos
+        id: cache-theos
+        uses: actions/cache@v4
+        with:
+          path: ~/theos
+          key: theos-${{ runner.os }}-v1
+
       - name: Install Theos
+        if: steps.cache-theos.outputs.cache-hit != 'true'
         run: |
           git clone --recursive https://github.com/theos/theos.git $HOME/theos
+
+      - name: Point THEOS env at cached/installed dir
+        run: |
           echo "THEOS=$HOME/theos" >> $GITHUB_ENV
           echo "$HOME/theos/bin" >> $GITHUB_PATH
 
+      # Cache Homebrew's ldid install cung theo cung ly do - brew install lai tu dau khong can
+      # thiet neu da co san tu lan build truoc.
+      - name: Cache Homebrew ldid
+        id: cache-ldid
+        uses: actions/cache@v4
+        with:
+          path: |
+            /usr/local/Cellar/ldid
+            /usr/local/bin/ldid
+            /opt/homebrew/Cellar/ldid
+            /opt/homebrew/bin/ldid
+          key: ldid-${{ runner.os }}-v1
+
       - name: Install ldid
+        if: steps.cache-ldid.outputs.cache-hit != 'true'
         run: |
           brew install ldid
 
