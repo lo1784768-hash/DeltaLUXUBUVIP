@@ -506,13 +506,14 @@ game_sdk_t *game_sdk = new game_sdk_t();
             // +load (tự retry tới khi UnityFramework sẵn sàng) - không còn gọi ở đây nữa, xem đầu
             // hàm +load.
 
-            // CheatDetectTiming - hook PASSTHROUGH (chỉ log, không sửa) để biết chính xác lúc nào
-            // các cơ chế anti-cheat khác được gọi (xem CheatDetectTiming.h). RỦI RO ĐÃ BIẾT: 2 lần
-            // hook trampoline trước (AntiReportSpoof/PacketCapture) đều crash-loop dù passthrough -
-            // TEST TỪNG DÒNG installXxxTiming() MỘT, không bật hết cùng lúc. Đang bật dòng ĐẦU TIÊN
-            // (installProcessAHTiming) để test trước - nếu qua 1 trận không crash, bật tiếp dòng kế.
-            DeltaVFS_debugLog("Menu +load: gọi CheatDetectTiming::installProcessAHTiming()");
-            CheatDetectTiming::installProcessAHTiming();
+            // CheatDetectTiming TẮT HẲN - user quyết định KHÔNG chấp nhận rủi ro hook trampoline
+            // nữa (dù passthrough) sau khi đối chiếu FAKEMENU (tool modding khác): họ CŨNG không
+            // hook bất kỳ hàm nào trong UnityFramework (macro MSHookFunction comment tắt hết,
+            // Dobby vendor sẵn nhưng không nơi nào thực sự gọi) - toàn bộ kỹ thuật của họ là gọi
+            // thẳng/đọc thẳng bộ nhớ, không chặn lúc GAME tự gọi hàm. Quay về hướng đọc field tĩnh
+            // an toàn (FFAntiObserve.h, EmulatorCheckSpoof.h) thay vì hook thêm hàm nào nữa.
+            // DeltaVFS_debugLog("Menu +load: gọi CheatDetectTiming::installProcessAHTiming()");
+            // CheatDetectTiming::installProcessAHTiming();
             // CheatDetectTiming::installGenerateLibMapAndMemTiming();
             // CheatDetectTiming::installSecPlayerLoginTiming();
             // CheatDetectTiming::installProcessffantihackGGPTiming();
