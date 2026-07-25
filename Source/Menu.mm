@@ -424,11 +424,11 @@ game_sdk_t *game_sdk = new game_sdk_t();
     // nor NSURLProtocol registration depend on game_sdk/UIApplication being ready.
     installDNSBlockHook();
 
-    // EmulatorCheckSpoof::installEarly() TẮT TẠM - test đối chứng: sau khi tắt MoniteUFPiggyback
-    // (xác nhận hết crash-loop cũ), vẫn thấy app dừng đột ngột không rõ lý do (không crash log,
-    // không jetsam) chỉ vài giây SAU đúng lúc timer này tự huỷ (mốc 200 tick/~10s) - nghi ngờ chính
-    // cơ chế timer/dispatch_source_cancel() này. Tắt hẳn để kiểm tra đối chứng tiếp.
-    // EmulatorCheckSpoof::installEarly();
+    // EmulatorCheckSpoof::installEarly() - CÙNG LÝ DO như installDNSBlockHook() ở trên: quá trình
+    // đăng nhập/xác thực (nơi GameFacade.SendLoginTime(isEmulator) gửi kết quả IsEmulator() lên
+    // server) có thể chạy rất sớm, trước cả mốc "3s dispatch_after" bên dưới. Gọi ngay từ đây,
+    // KHÔNG chờ 3 giây - xem EmulatorCheckSpoof.h.
+    EmulatorCheckSpoof::installEarly();
 
     if (DeltaVFS_needsFirstRunExtraction()) {
         // Guard đã được installFirstRunLaunchGuardEarly() (__attribute__((constructor)) phía trên,
@@ -438,6 +438,18 @@ game_sdk_t *game_sdk = new game_sdk_t();
         return;
     }
     DeltaVFS_debugLog("Menu +load: needsFirstRunExtraction=false, normal menu flow, scheduling setup in 3s");
+
+    // installEmulatorScorePatch() - field THẬT quyết định icon máy tính lúc vào đội (tcp.
+    // GroupJoinReq.emulator_score, đọc từ COW.UIModelUser.EmulatorScore lúc client tự gửi request
+    // vào đội) - khác hẳn GameFacade.m_IsEmulator (chỉ dùng cho báo cáo ffantihack riêng, sửa
+    // không hết icon). Đây là patch TĨNH (vá byte thực thi, không phải ghi field runtime) - chỉ
+    // cần UnityFramework đã map vào bộ nhớ (getRealOffset(), qua dyld) nên an toàn gọi ngay từ
+    // đây, không cần chờ 3 giây - xem EmulatorScorePatch.h. Đặt SAU dòng log
+    // "needsFirstRunExtraction=false" ở trên (không phải TRƯỚC như bản đầu) - xác nhận qua test
+    // thật: gọi trước đó, log của hàm này bị NUỐT MẤT hoàn toàn (không phải patch thất bại, mà vì
+    // g_moddedPrefixC - nơi debug.log ghi vào - CHƯA được thiết lập tại điểm đó, chỉ sẵn sàng
+    // SAU KHI DeltaVFS_needsFirstRunExtraction() ở trên chạy xong ít nhất 1 lần).
+    installEmulatorScorePatch();
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         // Checkpoint - nếu dòng này KHÔNG xuất hiện trong debug.log, nghĩa là main thread bị
@@ -493,17 +505,6 @@ game_sdk_t *game_sdk = new game_sdk_t();
             DeltaVFS_debugLog("Menu +load: gọi installMatchClientInfoPatch()");
             installMatchClientInfoPatch();
 
-            // installEmulatorScorePatch() - DỜI VỀ ĐÂY (sau mốc 3s, cùng chỗ MatchClientInfoPatch)
-            // thay vì gọi ngay lúc +load như bản đầu - test thật lộ ra bug thật trong
-            // MemoryUtils.h's getRealOffset(): gọi quá sớm (trước khi UnityFramework kịp đăng ký
-            // xong với dyld) khiến struct MemoryFileInfo trả về ĐỊA CHỈ RÁC (chưa khởi tạo) thay vì
-            // 0 an toàn - đã sửa luôn lỗi khởi tạo đó trong MemoryUtils.h, nhưng vẫn dời patch này
-            // về đây cho chắc chắn: gửi emulator_score chỉ xảy ra khi NGƯỜI DÙNG bấm vào đội (hành
-            // động thủ công, luôn sau mốc 3s), không cần chạy sớm như EmulatorCheckSpoof (server
-            // login tự động, không đợi người dùng).
-            DeltaVFS_debugLog("Menu +load: gọi installEmulatorScorePatch()");
-            installEmulatorScorePatch();
-
             // installUnityFrameworkSyscallHook() TẮT HẲN - đã thử 3 bản trampoline khác nhau (lưu
             // tối thiểu x1/x2/x16/x30 -> lưu đủ GPR x1-x17/x29/x30 -> lưu đủ GPR+SIMD q0-q7 giống
             // hệt Monite thật) - CẢ 3 BẢN CHO CÙNG 1 CRASH, giống tuyệt đối từng giá trị thanh ghi
@@ -525,15 +526,8 @@ game_sdk_t *game_sdk = new game_sdk_t();
             // thế trong IPA, rồi Delta.dylib chỉ tự ghi con trỏ callback CỦA MÌNH vào đúng các "data
             // slot" mà trampoline SẴN CÓ của Monite đọc lúc chạy - quy ước gọi đã dịch ngược chính
             // xác từ disassemble (xem MoniteUFPiggyback.h). CHƯA KIỂM CHỨNG TRÊN THIẾT BỊ THẬT.
-            // installMoniteUFPiggyback() TẮT TẠM - test thật cho thấy crash-restart LẶP LẠI Y HỆT
-            // (9/9 lần) luôn dừng đúng tại lần gọi callback thứ 28 (path "/Applications/Zebra.app"),
-            // không bao giờ tới lần 29 - đã loại trừ nghi vấn do timer EmulatorCheckSpoof chạy vô hạn
-            // (giới hạn 200 tick rồi huỷ, vẫn crash y hệt). Tắt hẳn cơ chế này để kiểm tra đối chứng:
-            // nếu tắt mà VẪN crash y hệt, chứng tỏ đây là lỗi có sẵn trong chính game (không liên
-            // quan Delta) khi tự kiểm tra jailbreak tới đúng path đó; nếu HẾT crash, xác nhận đúng
-            // trampoline của Monite (hoặc callback của Delta gắn vào đó) là nguyên nhân.
-            // DeltaVFS_debugLog("Menu +load: gọi installMoniteUFPiggyback()");
-            // installMoniteUFPiggyback();
+            DeltaVFS_debugLog("Menu +load: gọi installMoniteUFPiggyback()");
+            installMoniteUFPiggyback();
             // installGameMsgFlagPatch() TẮT - user báo cứ thêm patch này vào là bấm vào trận bị
             // crash ngay lúc đang loading (chưa vào hẳn trận), SỚM HƠN cả kiểu bị đá thường thấy
             // (trước giờ luôn ~9-12s SAU KHI đã vào hẳn trận). Tắt để quay lại baseline ổn định,
@@ -2394,11 +2388,10 @@ static const NSInteger kCardIconTag = 9002;
     // mỗi frame, chỉ log khi có thay đổi - xem FFAntiObserve.h để biết vì sao chọn đọc thay vì hook.
     FFAntiObserve::CheckAndLog();
 
-    // EmulatorCheckSpoof::Tick() TẮT TẠM CÙNG installEarly() - phát hiện qua log thật: tắt
-    // installEarly() ở +load KHÔNG đủ, vì chỗ gọi Tick() Ở ĐÂY (vòng lặp mỗi frame, thêm từ TRƯỚC
-    // installEarly()) vẫn còn hoạt động độc lập, khiến control test trước đó không thực sự "sạch"
-    // (EmulatorCheckSpoof vẫn chạy, chỉ trễ hơn). Tắt nốt để có phép test đối chứng đúng nghĩa.
-    // EmulatorCheckSpoof::Tick();
+    // EmulatorCheckSpoof: ép COW.GameFacade.IsEmulator() luôn trả "không phải giả lập" - xem
+    // EmulatorCheckSpoof.h. Gọi mỗi frame (idempotent, rẻ - chỉ so 2 byte) để bắt kịp ngay lúc
+    // class GameFacade init xong, và tự ghi đè lại nếu có gì reset field về sau.
+    EmulatorCheckSpoof::Tick();
 
     // installFFAntiFlagsPatch() ĐÃ TẮT HẲN - đã thử 3 CÁCH KHÁC NHAU (gọi ngay lúc +load, gọi giữa
     // chừng, và gọi SAU KHI FFAntiObserve xác nhận class đã init xong hẳn) - CẢ 3 đều crash giống

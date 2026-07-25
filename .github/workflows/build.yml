@@ -14,34 +14,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Cache Theos (+ submodule) - "git clone --recursive" toàn bộ Theos lại từ đầu MỖI LẦN build
-      # là phần chậm nhất của cả pipeline, trong khi Theos gần như không đổi giữa các lần build của
-      # CHÍNH project này. Cache theo key CỐ ĐỊNH (đổi hậu tố "v1" thủ công nếu cần ép làm mới) -
-      # cache hit thì bỏ qua hẳn bước clone, cache miss (lần đầu/sau khi đổi key) thì clone như cũ
-      # rồi lưu lại cho lần sau.
-      - name: Cache Theos
-        id: cache-theos
-        uses: actions/cache@v4
-        with:
-          path: ~/theos
-          key: theos-${{ runner.os }}-v1
-
       - name: Install Theos
-        if: steps.cache-theos.outputs.cache-hit != 'true'
         run: |
           git clone --recursive https://github.com/theos/theos.git $HOME/theos
-
-      - name: Point THEOS env at cached/installed dir
-        run: |
           echo "THEOS=$HOME/theos" >> $GITHUB_ENV
           echo "$HOME/theos/bin" >> $GITHUB_PATH
 
-      # Cache ldid ĐÃ BỎ - cache riêng /Cellar/ldid mà KHÔNG cache theo libplist (thư viện phụ
-      # thuộc thật của ldid, cài riêng qua brew) khiến bản cache khôi phục bị thiếu .dylib cần
-      # thiết -> ldid crash lúc ký (xác nhận qua log CI thật: "Library not loaded:
-      # libplist-2.0.4.dylib"). Homebrew có đồ thị phụ thuộc phức tạp, cache theo kiểu "chỉ 1 gói"
-      # không đáng tin cậy - quay lại cài mới mỗi lần (rẻ hơn nhiều so với Theos nên không đáng để
-      # cache liều).
       - name: Install ldid
         run: |
           brew install ldid
