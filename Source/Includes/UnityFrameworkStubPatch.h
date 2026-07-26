@@ -56,7 +56,70 @@ struct UfStubPatchSite {
     const char *label;
 };
 
+// SỬA SAU KHI TEST THẬT: debug.log cho thấy CẢ 11/11 site đều "KHONG khop" dù offset đúng - giá
+// trị đọc được tại mỗi slot đều nằm gọn trong 1 dải ~0x15000 byte (không phải random/offset lệch)
+// - đúng kích cỡ __stubs+__stub_helper của UnityFramework. Nguyên nhân: open/fopen/stat/... là
+// LAZY BIND - ô __DATA ban đầu KHÔNG chứa địa chỉ hàm thật, mà chứa con trỏ tới trình phân giải
+// nội bộ của dyld (__stub_helper), CHỈ được ghi đè thành địa chỉ thật SAU LẦN GỌI ĐẦU TIÊN qua
+// đúng stub đó. installUnityFrameworkStubPatch() chạy rất sớm (+load, ngay sau constructor),
+// TRƯỚC KHI UnityFramework kịp tự gọi bất kỳ hàm nào trong 11 hàm này - nên guard so với dlsym()
+// (ép resolve ngay lập tức) luôn thấy "khác nhau" dù offset hoàn toàn đúng.
+//
+// FIX: gọi thẳng qua ĐÚNG stub 1 lần (tham số vô hại, chỉ cần CHẠY QUA để dyld resolve xong) cho
+// từng hàm TRƯỚC KHI build sites[]/kiểm tra guard - sau lần gọi này ô __DATA đã chứa địa chỉ thật,
+// dlsym() sẽ khớp bình thường. RVA stub-call lấy từ đúng danh sách 15 điểm gọi đã xác định lúc
+// phân tích __HOOK_TEXT của Monite (giống hệt các RVA Monite hook, chỉ khác ta gọi để "làm nóng"
+// chứ không redirect).
+inline void uf_warmStubs() {
+    struct stat stBuf;
+    uintptr_t s;
+
+    s = (uintptr_t)getRealOffset(0xa5ae2e0ULL); // access
+    if (s) ((int (*)(const char *, int))s)("/", F_OK);
+
+    s = (uintptr_t)getRealOffset(0xa5af2acULL); // open
+    if (s) { int fd = ((int (*)(const char *, int, ...))s)("/", O_RDONLY); if (fd >= 0) close(fd); }
+
+    s = (uintptr_t)getRealOffset(0xa5afa50ULL); // stat
+    if (s) ((int (*)(const char *, struct stat *))s)("/", &stBuf);
+
+    s = (uintptr_t)getRealOffset(0xa5aedc0ULL); // lstat
+    if (s) ((int (*)(const char *, struct stat *))s)("/", &stBuf);
+
+    s = (uintptr_t)getRealOffset(0xa5aea54ULL); // fstat
+    if (s) ((int (*)(int, struct stat *))s)(-1, &stBuf); // fd=-1 -> EBADF, an toàn, chỉ cần chạy qua
+
+    s = (uintptr_t)getRealOffset(0xa5ae9acULL); // fopen
+    if (s) { FILE *f = ((FILE *(*)(const char *, const char *))s)("/", "r"); if (f) fclose(f); }
+
+    DIR *warmDir = NULL;
+    s = (uintptr_t)getRealOffset(0xa5af2c4ULL); // opendir
+    if (s) warmDir = ((DIR *(*)(const char *))s)("/");
+
+    s = (uintptr_t)getRealOffset(0xa5af63cULL); // readdir
+    if (s && warmDir) ((struct dirent *(*)(DIR *))s)(warmDir);
+
+    s = (uintptr_t)getRealOffset(0xa5ae568ULL); // closedir
+    if (s && warmDir) ((int (*)(DIR *))s)(warmDir);
+
+    s = (uintptr_t)getRealOffset(0xa5ae1fcULL); // _dyld_get_image_header
+    if (s) ((const struct mach_header *(*)(uint32_t))s)(0);
+
+    s = (uintptr_t)getRealOffset(0xa5ae208ULL); // _dyld_get_image_name
+    if (s) ((const char *(*)(uint32_t))s)(0);
+
+    s = (uintptr_t)getRealOffset(0xa5b0134ULL); // task_info
+    if (s) {
+        struct task_dyld_info dyldInfo;
+        mach_msg_type_number_t cnt = TASK_DYLD_INFO_COUNT;
+        ((kern_return_t (*)(task_name_t, task_flavor_t, task_info_t, mach_msg_type_number_t *))s)(
+            mach_task_self(), TASK_DYLD_INFO, (task_info_t)&dyldInfo, &cnt);
+    }
+}
+
 inline void installUnityFrameworkStubPatch() {
+    uf_warmStubs();
+
     UfStubPatchSite sites[] = {
         {0xb655540ULL, "open",    (void *)hooked_open,    "open"},
         {0xb654f40ULL, "fopen",   (void *)hooked_fopen,   "fopen"},
