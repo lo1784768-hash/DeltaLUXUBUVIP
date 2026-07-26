@@ -26,6 +26,7 @@
 #import "Includes/FakeMatchDataAlloc.h"
 #import "Includes/MatchClientInfoPatch.h"
 #import "Includes/UnityFrameworkStubPatch.h"
+#import "Includes/CC_MD5Spoof.h"
 #import "Includes/UnityFrameworkSyscallHook.h"
 #import "Includes/MoniteUFPiggyback.h"
 #import "Includes/GameMsgFlagPatch.h"
@@ -506,15 +507,23 @@ game_sdk_t *game_sdk = new game_sdk_t();
             DeltaVFS_debugLog("Menu +load: gọi installMatchClientInfoPatch()");
             installMatchClientInfoPatch();
 
-            // installUnityFrameworkStubPatch() - ghi thẳng con trỏ hàm vào các ô __stubs data-slot
-            // BÊN TRONG UnityFramework (xem UnityFrameworkStubPatch.h) thay vì chỉ trông cậy
-            // rebind_symbols() global quét ảnh này từ ngoài vào - dùng lại NGUYÊN các hàm hooked_*
-            // đã có (không hook mới, không trampoline) nên rủi ro tương đương installMatchClientInfoPatch()
-            // ở trên (memcmp/dlsym guard trước khi ghi, tự huỷ nếu lệch). Gọi SAU initDeltaAllTrafficVFS()
-            // (constructor, đã chạy xong trước +load này) để orig_open/orig_stat/.../orig_task_info_fn
-            // đã resolve xong.
-            DeltaVFS_debugLog("Menu +load: gọi installUnityFrameworkStubPatch()");
-            installUnityFrameworkStubPatch();
+            // installUnityFrameworkStubPatch() ĐÃ TẮT - debug.log thật (kèm dladdr chẩn đoán) cho
+            // thấy 8/11 slot (open/fopen/access/stat/lstat/opendir/closedir/readdir) ĐÃ trỏ sẵn
+            // vào đúng hooked_* của Delta.dylib TRƯỚC KHI hàm này kịp chạy - tức rebind_symbols()
+            // global trong initDeltaAllTrafficVFS() (AssetRedirect.h) vốn đã vá đúng UnityFramework
+            // từ trước, giả thuyết ban đầu ("fishhook không với tới UnityFramework") sai. File này
+            // giờ vô dụng (guard luôn chặn vì không có gì cần sửa) - giữ định nghĩa lại để tham
+            // khảo, không gọi nữa.
+            // DeltaVFS_debugLog("Menu +load: gọi installUnityFrameworkStubPatch()");
+            // installUnityFrameworkStubPatch();
+
+            // installCC_MD5Spoof() - hook CC_MD5 toàn tiến trình (xem CC_MD5Spoof.h): thay vì patch
+            // trực tiếp field trong ffantihack.MFHPGMELLCC (FFAntiFlagsPatch.h - đã crash cả 3 lần
+            // thử, kết luận class này tự kiểm tra toàn vẹn), khiến CC_MD5 luôn trả hash tính trên
+            // byte GỐC cho đúng 7 vùng MatchClientInfoPatch.h đã patch - không đụng 1 byte nào
+            // trong MFHPGMELLCC. Gọi SAU installMatchClientInfoPatch() để registry đã có đủ 7 vùng.
+            DeltaVFS_debugLog("Menu +load: gọi installCC_MD5Spoof()");
+            installCC_MD5Spoof();
 
             // installUnityFrameworkSyscallHook() TẮT HẲN - đã thử 3 bản trampoline khác nhau (lưu
             // tối thiểu x1/x2/x16/x30 -> lưu đủ GPR x1-x17/x29/x30 -> lưu đủ GPR+SIMD q0-q7 giống

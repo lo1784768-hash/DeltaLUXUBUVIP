@@ -55,6 +55,32 @@
 
 #define CHECKHACKER_PATCH_RVA 0x4DDCE48ULL  // "ldrb w8,[x8,#0x18d]" - noi doc gia tri that
 
+// ============================================================================
+//  REGISTRY CÁC VÙNG ĐÃ PATCH - dùng chung cho CC_MD5Spoof.h: mỗi lần
+//  CheckHackerPatch_writeBytes() ghi đè 1 vùng nhớ trong UnityFramework, byte GỐC (đọc được
+//  NGAY TRƯỚC khi ghi) được lưu lại ở đây - để hàm hash (CC_MD5) biết "trả lại đúng byte gốc"
+//  cho riêng phần trùng với các vùng này khi có ai hash qua, thay vì phải patch ngược lại field
+//  bên trong 1 class có thể bị tự kiểm tra toàn vẹn (xem CC_MD5Spoof.h để biết bối cảnh đầy đủ -
+//  FFAntiFlagsPatch.h patch trực tiếp field trong MFHPGMELLCC đã crash cả 3 lần thử).
+// ============================================================================
+#define MAX_PATCHED_REGIONS 32
+struct PatchedRegion {
+    uintptr_t addr;
+    uint8_t original[16];  // đủ cho mọi patch hiện tại (4 hoặc 8 byte) - patch to hơn sẽ bị bỏ qua
+    size_t len;
+};
+static PatchedRegion g_patchedRegions[MAX_PATCHED_REGIONS];
+static std::atomic<int> g_patchedRegionCount{0};
+
+static inline void RegisterPatchedRegion(uintptr_t addr, const uint8_t *originalBytes, size_t len) {
+    if (len > sizeof(((PatchedRegion *)0)->original)) return; // qua lon, bo qua (chua tung xay ra)
+    int idx = g_patchedRegionCount.fetch_add(1, std::memory_order_relaxed);
+    if (idx >= MAX_PATCHED_REGIONS) return;
+    g_patchedRegions[idx].addr = addr;
+    memcpy(g_patchedRegions[idx].original, originalBytes, len);
+    g_patchedRegions[idx].len = len;
+}
+
 static inline bool CheckHackerPatch_writeBytes(uintptr_t address, const uint8_t *bytes, size_t len) {
     mach_port_t task = mach_task_self();
     vm_size_t pageSize = vm_page_size ? vm_page_size : 4096;
@@ -81,6 +107,11 @@ static inline bool CheckHackerPatch_writeBytes(uintptr_t address, const uint8_t 
     }
 
     uintptr_t writeAt = (uintptr_t)remapAddr + (address - pageStart);
+
+    // Lưu lại byte GỐC (đọc qua view đã remap, TRƯỚC khi memcpy ghi đè bên dưới) vào registry
+    // dùng chung - xem comment ở RegisterPatchedRegion()/đầu file.
+    RegisterPatchedRegion(address, (const uint8_t *)writeAt, len);
+
     memcpy((void *)writeAt, bytes, len);
 
     vm_deallocate(task, remapAddr, mapSize);
