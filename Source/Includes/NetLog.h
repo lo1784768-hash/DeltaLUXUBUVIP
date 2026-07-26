@@ -65,6 +65,12 @@
 
 #import "fishhook.h"
 
+// DeltaVFS_debugLog/DeltaVFS_debugLogf định nghĩa ở AssetRedirect.h - khai báo extern (không
+// #import trực tiếp để tránh phụ thuộc vòng, NetLog.h được include TRƯỚC AssetRedirect.h trong
+// DNSBlock.h) - cùng translation unit nên vẫn resolve đúng lúc link.
+extern void DeltaVFS_debugLog(const char *msg);
+extern void DeltaVFS_debugLogf(const char *fmt, ...);
+
 #define NETLOG_MAX_LINES 100
 #define NETLOG_LINE_LEN  200
 
@@ -111,6 +117,11 @@ inline void netLogRaw(const char *layer, const char *detail) {
              tmv.tm_hour, tmv.tm_min, tmv.tm_sec, layer, detail);
     ring.head = (ring.head + 1) % NETLOG_MAX_LINES;
     ring.total.fetch_add(1, std::memory_order_relaxed);
+
+    // Ghi thêm vào debug.log - user chỉ gửi debug.log để xem lại (không chụp màn hình tab INFO),
+    // nên NET LOG/UDP LOG PHẢI có ở đây thì mới xem được, có timestamp mốc t=... trùng với các
+    // dòng log khác để đối chiếu chính xác thời điểm (vd "2s sau vào trận") với event mạng.
+    DeltaVFS_debugLogf("NetLog[%s]: %s", layer, detail);
 }
 
 inline unsigned int NetLog_count() { return g_netLogMain.total.load(std::memory_order_relaxed); }
