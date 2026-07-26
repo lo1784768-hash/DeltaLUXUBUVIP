@@ -93,21 +93,28 @@ inline bool netLogLayerIsUdp(const char *layer) {
     return layer && strncmp(layer, "UDP", 3) == 0; // khớp UDP / UDP-PEEK / UDP-BLK
 }
 
-// Ghi 1 dòng "[HH:MM:SS] [TẦNG] chi_tiết" vào đúng ring (chính hoặc UDP riêng). Trùng thì bỏ
-// qua, giữ log gọn & nhiều tín hiệu - TRỪ các tầng *-BLK (chặn thật): game hay retry đúng 1
-// URL nhiều lần, nếu gộp trùng thì chỉ lần chặn ĐẦU TIÊN hiện ra rồi dần trôi khỏi ring buffer
-// khi traffic khác đè lên, làm tưởng nhầm là "báo chặn" (Host chặn gần nhất, không gộp trùng)
-// nhưng NET LOG lại không thấy gì - nên *-BLK luôn ghi, để mỗi lần chặn thật đều thấy rõ.
+// Ghi 1 dòng "[HH:MM:SS] [TẦNG] chi_tiết" vào đúng ring (chính hoặc UDP riêng) - ring buffer vẫn
+// gộp trùng để không trôi mất tín hiệu hiếm trong tab INFO (100 dòng có hạn) - TRỪ *-BLK luôn
+// ghi, lý do cũ: game hay retry đúng 1 URL nhiều lần, gộp trùng sẽ làm mất dấu vết chặn thật.
+//
+// debug.log (DeltaVFS_debugLogf bên dưới) thì KHÔNG gộp trùng nữa - user chỉ gửi debug.log để
+// xem lại (không chụp tab INFO), cần thấy MỌI request kể cả lặp lại y hệt nhau để biết chính xác
+// tần suất/nhịp gói tin quanh 1 mốc thời gian nghi vấn (vd lúc "vào trận"), không chỉ lần đầu
+// tiên nhìn thấy 1 endpoint.
 inline void netLogRaw(const char *layer, const char *detail) {
     if (!layer || !detail) return;
     size_t layerLen = strlen(layer);
     bool isBlockEvent = layerLen >= 4 && strcmp(layer + layerLen - 4, "-BLK") == 0;
     NetLogRing &ring = netLogLayerIsUdp(layer) ? g_netLogUdp : g_netLogMain;
 
+    // Ghi debug.log TRƯỚC, không phụ thuộc gom-trùng của ring buffer (mục đích khác nhau: ring
+    // buffer chỉ phục vụ hiển thị gọn trong tab INFO, debug.log cần đầy đủ tuyệt đối).
+    DeltaVFS_debugLogf("NetLog[%s]: %s", layer, detail);
+
     std::lock_guard<std::mutex> lock(ring.mutex);
     if (!isBlockEvent) {
         std::string key = std::string(layer) + "|" + detail;
-        if (!ring.seen.insert(key).second) return; // đã có -> bỏ (chỉ áp dụng log quan sát thường)
+        if (!ring.seen.insert(key).second) return; // đã có -> bỏ khỏi RING (debug.log đã ghi ở trên rồi)
     }
 
     time_t t = time(NULL);
@@ -117,11 +124,6 @@ inline void netLogRaw(const char *layer, const char *detail) {
              tmv.tm_hour, tmv.tm_min, tmv.tm_sec, layer, detail);
     ring.head = (ring.head + 1) % NETLOG_MAX_LINES;
     ring.total.fetch_add(1, std::memory_order_relaxed);
-
-    // Ghi thêm vào debug.log - user chỉ gửi debug.log để xem lại (không chụp màn hình tab INFO),
-    // nên NET LOG/UDP LOG PHẢI có ở đây thì mới xem được, có timestamp mốc t=... trùng với các
-    // dòng log khác để đối chiếu chính xác thời điểm (vd "2s sau vào trận") với event mạng.
-    DeltaVFS_debugLogf("NetLog[%s]: %s", layer, detail);
 }
 
 inline unsigned int NetLog_count() { return g_netLogMain.total.load(std::memory_order_relaxed); }
@@ -334,7 +336,9 @@ inline int hooked_connect(int fd, const struct sockaddr *addr, socklen_t len) {
     // ClientHello (nếu có) là gói ĐẦU TIÊN client gửi sau khi kết nối TCP xong - đánh dấu fd
     // này để hook write()/send() bên dưới soi đúng gói đầu, không soi nhầm data sau đó.
     if (isTcp && (ret == 0 || errno == EINPROGRESS)) sniMarkPending(fd);
-    if (!isTcp && ret == 0 && (netLogPortInPeekRange(port) || netLogPortInHardBlockSet(port))) udpPeekMark(fd, port);
+    // Theo dõi TOÀN BỘ fd UDP (không giới hạn dải cổng nghi vấn nữa) - user yêu cầu thấy MỌI
+    // request, kể cả cổng match/gameplay thật thay đổi mỗi trận, không đoán trước được port.
+    if (!isTcp && ret == 0) udpPeekMark(fd, port);
     return ret;
 }
 
@@ -374,7 +378,9 @@ inline int hooked_connectx(int fd, const sa_endpoints_t *endpoints, sae_associd_
 
     int ret = orig_connectx(fd, endpoints, associd, flags, iov, iovcnt, len, connid);
     if (isTcp && (ret == 0 || errno == EINPROGRESS)) sniMarkPending(fd);
-    if (!isTcp && ret == 0 && (netLogPortInPeekRange(port) || netLogPortInHardBlockSet(port))) udpPeekMark(fd, port);
+    // Theo dõi TOÀN BỘ fd UDP (không giới hạn dải cổng nghi vấn nữa) - user yêu cầu thấy MỌI
+    // request, kể cả cổng match/gameplay thật thay đổi mỗi trận, không đoán trước được port.
+    if (!isTcp && ret == 0) udpPeekMark(fd, port);
     return ret;
 }
 
@@ -391,8 +397,10 @@ inline ssize_t hooked_sendto(int fd, const void *buf, size_t len, int flags,
             char ep[96];
             snprintf(ep, sizeof(ep), "%s:%d", ip, port);
             netLogRaw("UDP", ep);
-            if (netLogPortInPeekRange(port) && buf && len > 0 &&
-                netLogLongestPrintableRun(buf, len) >= NETLOG_UDP_PEEK_MIN_TEXT_RUN) {
+            // Preview MỌI gói có nội dung, không chỉ khi có đoạn chữ dài hay cổng nằm trong dải
+            // nghi vấn - user muốn thấy hết, kể cả preview toàn dấu '.' (nội dung mã hoá/nhị
+            // phân) để biết ít nhất kích cỡ/tần suất gói, không chỉ khi may mắn có chữ lộ ra.
+            if (buf && len > 0) {
                 std::string preview;
                 netLogPreviewPayload(buf, len, preview);
                 char detail[160];
@@ -539,19 +547,18 @@ inline bool sniInspectFirstWrite(int fd, const void *buf, size_t count) {
     return false;
 }
 
-// Soi payload UDP cho fd đã connect() tới 1 peer "đáng quan tâm" (udpPeekMark - dải cổng nghi
-// vấn HOẶC cổng 443/0) - MỌI gói, không phải chỉ gói đầu như TLS/HTTP, vì UDP là datagram rời
-// rạc chứ không phải 1 bắt tay liên tục. Trả true nếu gói này đang bị chặn (công tắc
-// netLogUdpPortBlockEnabled đang bật + khớp netLogUdpShouldBlock) - caller trả về count giả vờ,
-// không gọi write()/send() gốc.
+// Soi payload UDP cho fd đã connect() tới BẤT KỲ peer nào (udpPeekMark giờ đánh dấu mọi fd UDP,
+// không riêng dải cổng nghi vấn nữa) - MỌI gói, không phải chỉ gói đầu như TLS/HTTP, vì UDP là
+// datagram rời rạc chứ không phải 1 bắt tay liên tục. Trả true nếu gói này đang bị chặn (công
+// tắc netLogUdpPortBlockEnabled đang bật + khớp netLogUdpShouldBlock) - caller trả về count giả
+// vờ, không gọi write()/send() gốc.
 inline bool udpPeekInspectWrite(int fd, const void *buf, size_t count) {
     if (!buf || count == 0) return false;
     int32_t portRaw = udpPeekPort(fd);
     if (portRaw < 0) return false; // fd không nằm trong danh sách theo dõi
     uint16_t port = (uint16_t)portRaw;
-    // Preview nội dung CHỈ áp dụng cho dải cổng nghi vấn 10000-10020 (mục đích ban đầu là soi
-    // gameplay netcode) - cổng 443/0 chỉ được theo dõi để CHẶN, không cần preview nội dung.
-    if (netLogPortInPeekRange(port) && netLogLongestPrintableRun(buf, count) >= NETLOG_UDP_PEEK_MIN_TEXT_RUN) {
+    // Preview MỌI gói có nội dung - không lọc theo cổng/độ dài chữ nữa (xem lý do ở hooked_sendto).
+    {
         std::string preview;
         netLogPreviewPayload(buf, count, preview);
         char detail[160];
