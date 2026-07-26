@@ -1964,12 +1964,19 @@ game_sdk_t *game_sdk = new game_sdk_t();
          "%@\n\n"
          "── CHẶN DNS ──\n"
          "Đã chặn: %llu request\n"
-         "Host chặn gần nhất:\n%@",
+         "Host chặn gần nhất:\n%@\n\n"
+         "── UDP LOG (cổng nghi vấn 10000-10020 + 443/0) ──\n"
+         "Tổng gói đã thấy: %u\n"
+         "%@\n\n"
+         "── NET LOG (DNS/TCP/HTTP/TLS-SNI) ──\n"
+         "%@",
         verdict, hookLine, extractLine, dir,
         totalCalls, bundleCalls, hits, misses, pct, anyPath, last,
         DeltaVFS_abHotUpdatesHits(), DeltaVFS_abHotUpdatesMisses(),
         signInfo,
-        dnsBlocked, dnsHost];
+        dnsBlocked, dnsHost,
+        NetLog_udpCount(), NetLog_udpSnapshot(),
+        NetLog_snapshot()];
 
     _deltaLogView.text = text;
 }
