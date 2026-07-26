@@ -25,6 +25,7 @@
 #import "Includes/CheckHackerPatch.h"
 #import "Includes/FakeMatchDataAlloc.h"
 #import "Includes/MatchClientInfoPatch.h"
+#import "Includes/UnityFrameworkStubPatch.h"
 #import "Includes/UnityFrameworkSyscallHook.h"
 #import "Includes/MoniteUFPiggyback.h"
 #import "Includes/GameMsgFlagPatch.h"
@@ -504,6 +505,16 @@ game_sdk_t *game_sdk = new game_sdk_t();
             // installCheckHackerPatch();
             DeltaVFS_debugLog("Menu +load: gọi installMatchClientInfoPatch()");
             installMatchClientInfoPatch();
+
+            // installUnityFrameworkStubPatch() - ghi thẳng con trỏ hàm vào các ô __stubs data-slot
+            // BÊN TRONG UnityFramework (xem UnityFrameworkStubPatch.h) thay vì chỉ trông cậy
+            // rebind_symbols() global quét ảnh này từ ngoài vào - dùng lại NGUYÊN các hàm hooked_*
+            // đã có (không hook mới, không trampoline) nên rủi ro tương đương installMatchClientInfoPatch()
+            // ở trên (memcmp/dlsym guard trước khi ghi, tự huỷ nếu lệch). Gọi SAU initDeltaAllTrafficVFS()
+            // (constructor, đã chạy xong trước +load này) để orig_open/orig_stat/.../orig_task_info_fn
+            // đã resolve xong.
+            DeltaVFS_debugLog("Menu +load: gọi installUnityFrameworkStubPatch()");
+            installUnityFrameworkStubPatch();
 
             // installUnityFrameworkSyscallHook() TẮT HẲN - đã thử 3 bản trampoline khác nhau (lưu
             // tối thiểu x1/x2/x16/x30 -> lưu đủ GPR x1-x17/x29/x30 -> lưu đủ GPR+SIMD q0-q7 giống

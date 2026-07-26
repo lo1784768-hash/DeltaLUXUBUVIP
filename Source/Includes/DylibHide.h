@@ -1,105 +1,140 @@
 #pragma once
 // ============================================================================
-//  DylibHide.h - giấu dylib của CHÍNH MÌNH khỏi 4 API liệt kê dyld image chuẩn:
+//  DylibHide.h - giấu NHIỀU dylib khỏi 4 API liệt kê dyld image chuẩn:
 //  _dyld_image_count / _dyld_get_image_name / _dyld_get_image_header /
 //  _dyld_get_image_vmaddr_slide.
 //
-//  LÝ DO: đối chiếu dump.cs (OB54) tìm ra message tcp.MatchClientInfo - gửi lúc chuẩn bị/đang
-//  trong trận, có field tpsdk_str + lib_result (rất có thể là danh sách tên dylib/thư viện lạ
-//  quét được trong process) - đã TEST THẬT trên máy: đổi fishhook -> Cocoa-swizzle (VFS redirect)
-//  không đổi được gì, tắt hết Aim/ESP/ModHacks vẫn bị đá ở cùng mốc ~30s vào trận -> loại trừ cả
-//  kỹ thuật hook LẪN hành vi gameplay, chỉ còn lại "sự tồn tại của dylib trong danh sách image"
-//  là nghi phạm hợp lý nhất còn sót.
-//
-//  ĐÂY LÀ THỬ NGHIỆM, CHƯA XÁC NHẬN CHẮC CHẮN - suy luận có cơ sở tốt nhất hiện có, không phải
-//  bằng chứng trực tiếp (không có Ghidra/dynamic trace để đọc thẳng hàm build tpsdk_str thật).
-//
-//  RỦI RO ĐÃ BIẾT, CHẤP NHẬN:
-//  1. Nếu có code nào khác trong process (kể cả UnityFramework/hệ thống) phụ thuộc đúng vào số
-//     lượng/thứ tự image thật để làm việc gì đó khác thường - hành vi đó có thể sai lệch. Hiếm,
-//     nhưng không loại trừ hoàn toàn.
-//  2. Bản thân việc này CŨNG LÀ 1 dạng hook - nếu tồn tại 1 cơ chế KHÁC quét chữ ký hook, việc
-//     hook 4 hàm dyld_* này có thể lại là dấu hiệu MỚI bị phát hiện - đây là đánh đổi thật, không
-//     phải giải pháp miễn phí. Không có cách nào loại trừ hoàn toàn rủi ro bị phát hiện khi đã có
-//     1 dylib ngoài load trong process - chỉ đang thu hẹp lại 1 hướng cụ thể.
+//  GIẤU: chính Delta.dylib + TẤT CẢ injection framework (libsubstrate, CydiaSubstrate,
+//  SubstrateLoader, SubstrateInserter, libsubstitute, libellekit, ...) - bất kỳ image nào
+//  có tên chứa "substrate", "substitute", hoặc "ellekit" (case-insensitive).
 //
 //  DÙNG FISHHOOK (rebind_symbols), KHÔNG DÙNG MSHookFunction: 4 hàm _dyld_image_count/
 //  _dyld_get_image_name/_dyld_get_image_header/_dyld_get_image_vmaddr_slide nằm trong
-//  libdyld.dylib - 1 phần của dyld SHARED CACHE. Project này đã tự xác nhận trước đó
-//  (memory: "MSHookFunction shared-cache limit") rằng MSHookFunction/Substrate KHÔNG hook được
-//  hàm nằm trong shared cache (chính lý do fishhook được chọn thay thế cho toàn bộ VFS redirect,
-//  xem AssetRedirect.h) - dùng lại đúng fishhook ở đây cho nhất quán và chắc chắn hoạt động.
+//  libdyld.dylib - 1 phần của dyld SHARED CACHE. MSHookFunction KHÔNG hook được hàm nằm
+//  trong shared cache.
 // ============================================================================
 #import <mach-o/dyld.h>
 #import <mach-o/loader.h>
 #import <dlfcn.h>
 #import <string.h>
 #include <atomic>
+#include <algorithm>
 #import "fishhook.h"
 
-// -1 = chưa xác định được index của chính mình (chưa tìm thấy, hoặc dladdr thất bại) - trong
-// trạng thái này 4 hàm hook bên dưới hoàn toàn PASSTHROUGH, không giấu gì cả (an toàn, không
-// tệ hơn không hook).
-static std::atomic<int32_t> g_dylibHideIndex{-1};
+// Tối đa 16 dylib cần giấu (Delta + substrate + substitute + ellekit + dự phòng) - trên thực
+// tế hiếm khi quá 5-6, nhưng để dư cho an toàn.
+#define DYLIB_HIDE_MAX 16
+
+static uint32_t g_hideIndices[DYLIB_HIDE_MAX];  // sorted ASC
+static std::atomic<int> g_hideCount{0};          // 0 = chưa tìm / không có gì để giấu
 
 typedef uint32_t (*ORIG_dyld_image_count)(void);
 static ORIG_dyld_image_count orig_dyld_image_count = NULL;
 static uint32_t hooked_dyld_image_count(void) {
     uint32_t real = orig_dyld_image_count();
-    int32_t hide = g_dylibHideIndex.load(std::memory_order_relaxed);
-    return (hide >= 0 && (uint32_t)hide < real) ? real - 1 : real;
+    int hidden = g_hideCount.load(std::memory_order_relaxed);
+    return (hidden > 0 && (uint32_t)hidden <= real) ? real - (uint32_t)hidden : real;
+}
+
+// Ánh xạ index "đã giấu" -> index THẬT: với N image bị giấu, caller thấy danh sách có
+// (real_count - N) entry liên tục. Cần dịch index của caller thành index thật bằng cách
+// đếm bao nhiêu hidden index <= current adjusted index, rồi nhảy qua chúng.
+static inline uint32_t DylibHide_mapIndex(uint32_t visibleIndex) {
+    int count = g_hideCount.load(std::memory_order_relaxed);
+    if (count <= 0) return visibleIndex;
+
+    uint32_t realIndex = visibleIndex;
+    for (int i = 0; i < count; i++) {
+        if (g_hideIndices[i] <= realIndex) {
+            realIndex++;  // nhảy qua slot bị giấu
+        } else {
+            break;  // sorted - không có hidden index nào nhỏ hơn nữa
+        }
+    }
+    return realIndex;
 }
 
 typedef const char *(*ORIG_dyld_get_image_name)(uint32_t);
 static ORIG_dyld_get_image_name orig_dyld_get_image_name = NULL;
 static const char *hooked_dyld_get_image_name(uint32_t index) {
-    int32_t hide = g_dylibHideIndex.load(std::memory_order_relaxed);
-    if (hide >= 0 && index >= (uint32_t)hide) index += 1; // nhảy qua đúng slot của chính mình
-    return orig_dyld_get_image_name(index);
+    return orig_dyld_get_image_name(DylibHide_mapIndex(index));
 }
 
 typedef const struct mach_header *(*ORIG_dyld_get_image_header)(uint32_t);
 static ORIG_dyld_get_image_header orig_dyld_get_image_header = NULL;
 static const struct mach_header *hooked_dyld_get_image_header(uint32_t index) {
-    int32_t hide = g_dylibHideIndex.load(std::memory_order_relaxed);
-    if (hide >= 0 && index >= (uint32_t)hide) index += 1;
-    return orig_dyld_get_image_header(index);
+    return orig_dyld_get_image_header(DylibHide_mapIndex(index));
 }
 
 typedef intptr_t (*ORIG_dyld_get_image_vmaddr_slide)(uint32_t);
 static ORIG_dyld_get_image_vmaddr_slide orig_dyld_get_image_vmaddr_slide = NULL;
 static intptr_t hooked_dyld_get_image_vmaddr_slide(uint32_t index) {
-    int32_t hide = g_dylibHideIndex.load(std::memory_order_relaxed);
-    if (hide >= 0 && index >= (uint32_t)hide) index += 1;
-    return orig_dyld_get_image_vmaddr_slide(index);
+    return orig_dyld_get_image_vmaddr_slide(DylibHide_mapIndex(index));
 }
 
-// Tìm index THẬT của chính dylib này bằng dladdr trên 1 hàm định nghĩa ngay trong file này -
-// dli_fname trả về đúng path file .dylib chứa hàm đó, dùng để so khớp với từng entry thật của
-// _dyld_get_image_name(). Luôn gọi orig_* (KHÔNG gọi qua bản đã hook) để chắc chắn thấy danh
-// sách THẬT, không bị chính mình làm lệch trong lúc đang tìm.
-static void DylibHide_findSelfIndex() {
+// Case-insensitive substring search (không dùng strcasestr vì không portable trên mọi toolchain)
+static inline bool DylibHide_containsCI(const char *haystack, const char *needle) {
+    if (!haystack || !needle) return false;
+    size_t hLen = strlen(haystack), nLen = strlen(needle);
+    if (nLen > hLen) return false;
+    for (size_t i = 0; i <= hLen - nLen; i++) {
+        bool match = true;
+        for (size_t j = 0; j < nLen; j++) {
+            char a = haystack[i + j], b = needle[j];
+            if (a >= 'A' && a <= 'Z') a += 32;
+            if (b >= 'A' && b <= 'Z') b += 32;
+            if (a != b) { match = false; break; }
+        }
+        if (match) return true;
+    }
+    return false;
+}
+
+// Kiểm tra 1 image name có phải là dylib cần giấu hay không
+static inline bool DylibHide_shouldHide(const char *imageName, const char *selfPath) {
+    if (!imageName) return false;
+    // Chính Delta.dylib (so khớp path chính xác)
+    if (selfPath && strcmp(imageName, selfPath) == 0) return true;
+    // Injection frameworks (substring, case-insensitive)
+    if (DylibHide_containsCI(imageName, "substrate")) return true;
+    if (DylibHide_containsCI(imageName, "substitute")) return true;
+    if (DylibHide_containsCI(imageName, "ellekit")) return true;
+    if (DylibHide_containsCI(imageName, "pogo")) return true;  // TrollStore loader
+    return false;
+}
+
+// Quét toàn bộ danh sách image THẬT, đánh dấu tất cả image cần giấu.
+// Luôn gọi orig_* (KHÔNG gọi qua bản đã hook) để thấy danh sách THẬT.
+static void DylibHide_findHiddenIndices() {
+    // Tìm path của chính mình qua dladdr
+    const char *selfPath = NULL;
     Dl_info info;
     memset(&info, 0, sizeof(info));
-    if (!dladdr((void *)&DylibHide_findSelfIndex, &info) || !info.dli_fname) {
-        DeltaVFS_debugLog("DylibHide: dladdr that bai, khong xac dinh duoc dylib cua chinh minh - bo qua, khong giau gi ca");
-        return;
+    if (dladdr((void *)&DylibHide_findHiddenIndices, &info) && info.dli_fname) {
+        selfPath = info.dli_fname;
     }
+
     uint32_t count = orig_dyld_image_count();
-    for (uint32_t i = 0; i < count; i++) {
+    int found = 0;
+    for (uint32_t i = 0; i < count && found < DYLIB_HIDE_MAX; i++) {
         const char *name = orig_dyld_get_image_name(i);
-        if (name && strcmp(name, info.dli_fname) == 0) {
-            g_dylibHideIndex.store((int32_t)i, std::memory_order_relaxed);
-            DeltaVFS_debugLogf("DylibHide: tim thay chinh minh o index %u (%s) - se giau khoi 4 ham dyld_*", i, name);
-            return;
+        if (DylibHide_shouldHide(name, selfPath)) {
+            g_hideIndices[found++] = i;
+            DeltaVFS_debugLogf("DylibHide: se giau index %u (%s)", i, name ? name : "(null)");
         }
     }
-    DeltaVFS_debugLogf("DylibHide: khong tim thay '%s' trong %u image - bo qua, khong giau gi ca", info.dli_fname, count);
+
+    // Sort ascending (hầu như đã sorted vì quét tuần tự, nhưng để chắc chắn)
+    if (found > 1) {
+        std::sort(g_hideIndices, g_hideIndices + found);
+    }
+
+    g_hideCount.store(found, std::memory_order_relaxed);
+    DeltaVFS_debugLogf("DylibHide: tim thay %d image can giau trong %u image tong cong", found, count);
 }
 
 // Gọi CÀNG SỚM CÀNG TỐT (constructor, trước khi game/Unity có cơ hội tự quét danh sách image
-// lần nào) - an toàn gọi vô điều kiện, không đụng gì tới VFS/redirect/crash-logger. Rebind qua
-// fishhook (không phải MSHookFunction) vì 4 hàm này nằm trong shared cache - xem comment đầu file.
+// lần nào). Rebind qua fishhook vì 4 hàm này nằm trong shared cache.
 inline void DylibHide_install() {
     struct rebinding rebindings[4];
     int n = 0;
@@ -113,5 +148,5 @@ inline void DylibHide_install() {
         DeltaVFS_debugLogf("DylibHide: rebind_symbols that bai (ret=%d) cho 1 hoac nhieu ham dyld_* - huy, khong giau gi ca", ret);
         return;
     }
-    DylibHide_findSelfIndex();
+    DylibHide_findHiddenIndices();
 }

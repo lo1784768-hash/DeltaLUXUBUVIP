@@ -1,40 +1,24 @@
-// DlsymSpoof.h - hook chính dlsym() qua fishhook, dựa trên phát hiện THẬT từ Monite.dylib
-// (MoniteAnalysis, FUN_000add00 @ 0xADD00 trong Monite.dylib): Monite có 1 trampoline tay viết
-// (lưu toàn bộ thanh ghi q0-q7/x0-x7/x16 rồi gọi 1 hàm "bảng tráo đổi") can thiệp NGAY SAU khi 1
-// con trỏ hàm được resolve, tráo các hàm sau bằng bản riêng của họ nếu trùng địa chỉ GOT thật:
-// fopen, stat, access, lstat, statfs, readdir, opendir, closedir, fstat, fcntl, dlopen, VÀ ĐẶC
-// BIỆT task_info, __dyld_get_image_name (thật: "_dyld_get_image_name"), __dyld_get_image_header
-// ("_dyld_get_image_header"), CC_MD5. Danh sách này đọc y hệt "các hàm app hay dlsym() để tự
-// kiểm tra hook / để né import tĩnh" - suy luận hợp lý nhất: Monite hook chính dlsym(), không phải
-// hook trực tiếp các hàm libc đó (khớp đúng comment cũ của họ - né kiểu hook libc dễ bị PMS_HOOK
-// phát hiện, ưu tiên swizzle/kỹ thuật gián tiếp hơn).
+// DlsymSpoof.h - hook chính dlsym() qua fishhook, nhưng CHỈ trên 2 image cụ thể
+// (UnityFramework + binary chính) thay vì toàn bộ process - tránh crash-loop do hook global
+// va chạm với ObjC/Swift runtime liên tục gọi dlsym() lúc dyld còn đang init.
 //
-// LÝ DO ĐÁNG THỬ Ở PROJECT NÀY: fishhook (dùng cho open/stat/access/... trong AssetRedirect.h,
-// _dyld_get_image_name/header trong DylibHide.h) CHỈ rebind GOT/lazy-pointer của TỪNG IMAGE, không
-// đụng gì tới cách dlsym() tự tra cứu (dlsym đọc thẳng export trie của thư viện đích, HOÀN TOÀN
-// KHÔNG bị ảnh hưởng bởi việc GOT của 1 image khác đã bị rebind). Nghĩa là: nếu Free Fire tự
-// dlsym("_dyld_get_image_name") thay vì gọi thẳng qua import tĩnh, DylibHide.h HIỆN TẠI bị bỏ qua
-// hoàn toàn - đây chính là lỗ hổng mà kỹ thuật của Monite vá lại, và ta nên vá tương tự.
+// MỤC ĐÍCH: nếu Free Fire tự dlsym("_dyld_get_image_name") thay vì gọi qua import tĩnh,
+// DylibHide.h (fishhook vá GOT) bị bỏ qua hoàn toàn — dlsym đọc export trie trực tiếp.
+// Hook dlsym() trả về bản đã giấu dylib thay vì hàm thật.
 //
-// PHẠM VI: CHỈ can thiệp 2 hàm dyld introspection (_dyld_get_image_name/_dyld_get_image_header) -
-// tái dùng ĐÚNG hooked_dyld_get_image_name/header đã có trong DylibHide.h (không viết lại logic
-// giấu dylib 2 lần). CHƯA đụng tới các hàm file I/O (fopen/stat/access/...) vì project này đã có
-// hệ thống VFS riêng (AssetRedirect.h) xử lý chúng qua đường khác - thêm 1 lớp dlsym-redirect nữa
-// cho cùng hàm có thể chồng chéo, chưa có bằng chứng cần thiết. task_info/CC_MD5: CHƯA rõ Free
-// Fire có thật sự dlsym 2 hàm này hay không và cần giả mạo gì cụ thể - tạm thời CHỈ GHI LOG khi có
-// ai dlsym 2 tên này (quan sát trước, không đoán mù) thay vì tự chế dữ liệu giả không có căn cứ.
-// LƯU Ý TƯƠNG THÍCH VỚI DylibSpy.h: file đó CŨNG hook "dlsym" nhưng qua rebind_symbols_image()
-// (chỉ vá GOT của RIÊNG Monite.dylib, không đụng ảnh khác) và CHỈ khi user chủ động bấm "Bắt đầu
-// giám sát" - luôn cài SAU constructor này (nếu có). rebind_symbols_image() của DylibSpy sẽ tự
-// chụp lại "giá trị cũ" tại đúng thời điểm nó chạy - lúc đó giá trị cũ CHÍNH LÀ hooked_dlsym() ở
-// đây (vì constructor này chạy trước mọi tương tác người dùng) - nên chuỗi gọi vẫn đúng thứ tự
-// (DylibSpy log trước, rồi gọi qua hooked_dlsym này, rồi mới tới dlsym thật) - không xung đột.
+// PHẠM VI: CHỈ redirect dlsym() resolve cho _dyld_get_image_name, _dyld_get_image_header,
+// _dyld_image_count. Các symbol khác passthrough.
+//
+// LƯU Ý TƯƠNG THÍCH VỚI DylibSpy.h: file đó CŨNG hook "dlsym" nhưng qua
+// rebind_symbols_image() (chỉ vá GOT của RIÊNG Monite.dylib) và CHỈ khi user bấm "Bắt đầu
+// giám sát" - luôn cài SAU constructor này. Chuỗi gọi vẫn đúng thứ tự.
 #pragma once
 #import <Foundation/Foundation.h>
 #import <dlfcn.h>
 #import <string.h>
+#import <mach-o/dyld.h>
 #include "fishhook.h"
-#include "DylibHide.h"  // dùng lại hooked_dyld_get_image_name/header (static, cùng translation unit)
+#include "DylibHide.h"  // dùng lại hooked_dyld_get_image_name/header/count (static, cùng TU)
 
 extern void DeltaVFS_debugLog(const char *msg);
 extern void DeltaVFS_debugLogf(const char *fmt, ...);
@@ -46,20 +30,22 @@ static void *hooked_dlsym(void *handle, const char *symbol) {
     void *real = orig_dlsym_real(handle, symbol);
     if (!symbol) return real;
 
-    // Chi thay the dung khi dlsym THAT SU tra ve dung dia chi ham that (real == dia chi goc cua
-    // no trong libdyld) - so sanh voi orig_dyld_get_image_name/header (da resolve san trong
-    // DylibHide_install()) de chac chan khong thay the nham 1 symbol trung ten tinh co khac.
+    // Chỉ thay thế khi dlsym THẬT SỰ trả về đúng địa chỉ hàm thật (real == orig_* đã
+    // resolve sẵn trong DylibHide_install()) - không thay thế nhầm symbol trùng tên.
     if (strcmp(symbol, "_dyld_get_image_name") == 0 && real == (void *)orig_dyld_get_image_name) {
-        DeltaVFS_debugLog("DlsymSpoof: co ai do dlsym('_dyld_get_image_name') - tra ve ban da giau dylib thay vi ham that");
         return (void *)hooked_dyld_get_image_name;
     }
     if (strcmp(symbol, "_dyld_get_image_header") == 0 && real == (void *)orig_dyld_get_image_header) {
-        DeltaVFS_debugLog("DlsymSpoof: co ai do dlsym('_dyld_get_image_header') - tra ve ban da giau dylib thay vi ham that");
         return (void *)hooked_dyld_get_image_header;
     }
+    if (strcmp(symbol, "_dyld_image_count") == 0 && real == (void *)orig_dyld_image_count) {
+        return (void *)hooked_dyld_image_count;
+    }
+    if (strcmp(symbol, "_dyld_get_image_vmaddr_slide") == 0 && real == (void *)orig_dyld_get_image_vmaddr_slide) {
+        return (void *)hooked_dyld_get_image_vmaddr_slide;
+    }
 
-    // Quan sat thuan tuy (khong sua gi) - xem Free Fire co thuc su dlsym 2 ham nay hay khong, va
-    // luc nao, truoc khi quyet dinh can gia mao gi cu the.
+    // Quan sát thuần tuý (không sửa gì) - xem Free Fire có thực sự dlsym các hàm nhạy cảm
     if (strcmp(symbol, "task_info") == 0 || strcmp(symbol, "CC_MD5") == 0 ||
         strcmp(symbol, "ptrace") == 0 || strcmp(symbol, "csops") == 0 || strcmp(symbol, "sysctl") == 0) {
         DeltaVFS_debugLogf("DlsymSpoof: quan sat - co ai do dlsym('%s')", symbol);
@@ -68,11 +54,67 @@ static void *hooked_dlsym(void *handle, const char *symbol) {
     return real;
 }
 
+// Tìm mach_header của 1 image theo tên (substring, case-insensitive)
+static const struct mach_header *DlsymSpoof_findImage(const char *nameSubstring) {
+    if (!orig_dyld_image_count || !orig_dyld_get_image_name || !orig_dyld_get_image_header) return NULL;
+    uint32_t count = orig_dyld_image_count();
+    for (uint32_t i = 0; i < count; i++) {
+        const char *name = orig_dyld_get_image_name(i);
+        if (name && DylibHide_containsCI(name, nameSubstring)) {
+            return orig_dyld_get_image_header(i);
+        }
+    }
+    return NULL;
+}
+
 inline void installDlsymSpoof() {
+    // rebind_symbols_image() thay vì rebind_symbols() - CHỈ vá GOT của image chỉ định,
+    // không đụng framework hệ thống, tránh crash-loop.
     struct rebinding rebindings[1];
     rebindings[0].name = "dlsym";
     rebindings[0].replacement = (void *)hooked_dlsym;
     rebindings[0].replaced = (void **)&orig_dlsym_real;
-    int ret = rebind_symbols(rebindings, 1);
-    DeltaVFS_debugLogf("DlsymSpoof: rebind dlsym ret=%d", ret);
+
+    int ok = 0, fail = 0;
+
+    // Target 1: UnityFramework (game code chính)
+    const struct mach_header *uf = DlsymSpoof_findImage("UnityFramework");
+    if (uf) {
+        int ret = rebind_symbols_image((void *)uf, orig_dyld_get_image_vmaddr_slide(0), // slide sẽ đúng khi dùng header
+                                        rebindings, 1);
+        // rebind_symbols_image cần slide đúng - tìm lại
+        uint32_t count = orig_dyld_image_count();
+        for (uint32_t i = 0; i < count; i++) {
+            if (orig_dyld_get_image_header(i) == uf) {
+                ret = rebind_symbols_image((void *)uf, orig_dyld_get_image_vmaddr_slide(i),
+                                            rebindings, 1);
+                break;
+            }
+        }
+        if (ret == 0) { ok++; } else { fail++; }
+        DeltaVFS_debugLogf("DlsymSpoof: rebind dlsym trong UnityFramework ret=%d", ret);
+    } else {
+        DeltaVFS_debugLog("DlsymSpoof: khong tim thay UnityFramework - bo qua");
+    }
+
+    // Target 2: binary chính (freefireth / freefiremax)
+    const struct mach_header *main_hdr = DlsymSpoof_findImage("freefir");
+    if (!main_hdr) {
+        // Fallback: image index 0 luôn là binary chính
+        main_hdr = orig_dyld_get_image_header(0);
+    }
+    if (main_hdr && main_hdr != uf) {
+        uint32_t count = orig_dyld_image_count();
+        for (uint32_t i = 0; i < count; i++) {
+            if (orig_dyld_get_image_header(i) == main_hdr) {
+                int ret = rebind_symbols_image((void *)main_hdr, orig_dyld_get_image_vmaddr_slide(i),
+                                                rebindings, 1);
+                if (ret == 0) { ok++; } else { fail++; }
+                DeltaVFS_debugLogf("DlsymSpoof: rebind dlsym trong main binary ret=%d", ret);
+                break;
+            }
+        }
+    }
+
+    DeltaVFS_debugLogf("DlsymSpoof: xong - %d image ok, %d fail", ok, fail);
 }

@@ -1745,17 +1745,12 @@ static void initDeltaAllTrafficVFS() {
     // (kể cả từ +load của chính SDK bên thứ 3 khác chạy trước constructor này).
     DylibHide_install();
 
-    // 0b. installDlsymSpoof() TẮT - user báo app crash-loop NGAY TỪ LẦN MỞ ĐẦU TIÊN (chết ngay
-    // sau dòng log DylibHide, chưa kịp tới dòng log của chính DlsymSpoof - tức crash TRONG lúc
-    // rebind_symbols("dlsym") chạy, hoặc ngay sau đó). dlsym() bị gọi liên tục bởi RẤT NHIỀU thứ
-    // trong toàn bộ tiến trình (ObjC/Swift runtime, mọi framework hệ thống), kể cả lúc dyld CÒN
-    // ĐANG nạp/chạy constructor của các thư viện khác - hook global (rebind_symbols(), không phải
-    // rebind_symbols_image() giới hạn 1 ảnh như DylibSpy.h) vào đúng lúc này rủi ro cao hơn hẳn mọi
-    // hàm khác đã hook trong project (open/stat/csops chỉ được gọi trong ngữ cảnh hẹp hơn nhiều).
-    // Tắt để quay lại baseline dùng được - CHƯA rõ nguyên nhân chính xác, cần thử nghiệm cẩn thận
-    // hơn (vd trì hoãn cài hook, hoặc rebind_symbols_image chỉ trong UnityFramework thay vì global)
-    // trước khi bật lại.
-    // installDlsymSpoof();
+    // 0b. installDlsymSpoof() - ĐÃ SỬA: giờ dùng rebind_symbols_image() chỉ target
+    // UnityFramework + binary chính, KHÔNG còn dùng rebind_symbols() global (nguyên nhân
+    // crash-loop trước đây — dlsym() bị gọi liên tục bởi ObjC/Swift runtime lúc dyld init).
+    // Quan trọng: nếu không hook dlsym, bất kỳ code nào dlsym("_dyld_get_image_name") sẽ nhận
+    // được hàm THẬT, bypass hoàn toàn DylibHide → lộ Delta.dylib + substrate.
+    installDlsymSpoof();
 
     // 0c. orig_open/orig_openat/orig_fopen/orig_access/orig_stat/orig_lstat/orig_opendir/
     // orig_closedir/orig_readdir resolve qua dlsym NGAY TỪ ĐÂY - PHẢI xong TRƯỚC

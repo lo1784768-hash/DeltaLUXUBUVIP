@@ -120,30 +120,35 @@ inline void installMatchClientInfoPatch() {
         }
     }
 
-    // 4 field byte[] - THAY VI null (XZR swap, kieu cu), redirect dung lenh "bl <ham tinh gia tri
-    // that>" dung TRUOC lenh str sang stub tra ve byte[1] THAT (xem FakeMatchDataAlloc.h) - str
-    // phia sau GIU NGUYEN, khong dung toi. Neu redirect that bai vi bat ky ly do gi (cap phat
-    // byte[] that bai, bl khong con dung target nhu da phan tich, hoac ngoai tam voi ±128MB giua
-    // Delta.dylib va UnityFramework) - FALLBACK ve null qua str (kieu cu, da xac nhan an toan)
-    // thay vi bo qua hoan toan, de KHONG BAO GIO de lai gia tri that/nghi ngo o day.
+    // 4 field byte[] - redirect lệnh "bl <hàm tính giá trị thật>" sang stub trả về byte[]
+    // GIẢ RIÊNG BIỆT cho từng field (kích thước 48/56/64/128, nội dung random - xem
+    // FakeMatchDataAlloc.h). Nếu redirect thất bại → fallback null qua str (kỹ thuật cũ).
     FakeMatchData_ensureAllocated();
 
     struct BlRedirectSite {
         uint64_t blRva; uint64_t originalTargetRva;
         uint64_t strRva; uint8_t strOriginal[4]; uint8_t strNullPatched[4];
         const char *label;
+        void *(*stubFn)(void *, void *, void *);  // stub riêng cho từng field
+        void **fakeArrayPtr;                       // con trỏ tới mảng riêng cho field này
     };
     static const BlRedirectSite blSites[] = {
-        {0x3D82968ULL, 0x6889018ULL, 0x3D82974ULL, {0x01,0x0C,0x02,0xF8}, {0x1F,0x0C,0x02,0xF8}, "file_exception@0x20"},
-        {0x3D829C0ULL, 0x6889018ULL, 0x3D829CCULL, {0x01,0x8C,0x02,0xF8}, {0x1F,0x8C,0x02,0xF8}, "lib_result@0x28 (ten dung theo dump.cs)"},
-        {0x3D829E0ULL, 0x6889018ULL, 0x3D829ECULL, {0x80,0x8E,0x03,0xF8}, {0x9F,0x8E,0x03,0xF8}, "native_result@0x38"},
-        {0x3D82A6CULL, 0x827AB24ULL, 0x3D82A78ULL, {0x01,0x0C,0x05,0xF8}, {0x1F,0x0C,0x05,0xF8}, "gin_check_data@0x50"},
+        {0x3D82968ULL, 0x6889018ULL, 0x3D82974ULL, {0x01,0x0C,0x02,0xF8}, {0x1F,0x0C,0x02,0xF8},
+         "file_exception@0x20", DeltaFakeStub_fileException, &g_fakeByteArray_fileException},
+        {0x3D829C0ULL, 0x6889018ULL, 0x3D829CCULL, {0x01,0x8C,0x02,0xF8}, {0x1F,0x8C,0x02,0xF8},
+         "lib_result@0x28", DeltaFakeStub_libResult, &g_fakeByteArray_libResult},
+        {0x3D829E0ULL, 0x6889018ULL, 0x3D829ECULL, {0x80,0x8E,0x03,0xF8}, {0x9F,0x8E,0x03,0xF8},
+         "native_result@0x38", DeltaFakeStub_nativeResult, &g_fakeByteArray_nativeResult},
+        {0x3D82A6CULL, 0x827AB24ULL, 0x3D82A78ULL, {0x01,0x0C,0x05,0xF8}, {0x1F,0x0C,0x05,0xF8},
+         "gin_check_data@0x50", DeltaFakeStub_ginCheckData, &g_fakeByteArray_ginCheckData},
     };
 
     for (const auto &site : blSites) {
         bool redirected = false;
         uintptr_t blAddr = (uintptr_t)getRealOffset(site.blRva);
-        if (blAddr && g_fakeEmptyByteArray) {
+        void *fakeArr = site.fakeArrayPtr ? *site.fakeArrayPtr : NULL;
+        if (!fakeArr) fakeArr = g_fakeEmptyByteArray;  // fallback to any available array
+        if (blAddr && fakeArr) {
             uint32_t word = 0;
             memcpy(&word, (void *)blAddr, 4);
             if ((word >> 26) == 0b100101) {
@@ -152,7 +157,7 @@ inline void installMatchClientInfoPatch() {
                 uintptr_t decodedTarget = blAddr + (intptr_t)imm26 * 4;
                 uintptr_t expectedTarget = (uintptr_t)getRealOffset(site.originalTargetRva);
                 if (decodedTarget == expectedTarget) {
-                    uintptr_t stubAddr = (uintptr_t)&DeltaFakeEmptyByteArrayStub;
+                    uintptr_t stubAddr = (uintptr_t)site.stubFn;
                     intptr_t delta = (intptr_t)stubAddr - (intptr_t)blAddr;
                     if ((delta % 4) == 0 && delta >= -(1LL << 27) && delta < (1LL << 27)) {
                         int32_t newImm26 = (int32_t)((delta / 4) & 0x3FFFFFF);
@@ -160,7 +165,7 @@ inline void installMatchClientInfoPatch() {
                         uint8_t newBytes[4];
                         memcpy(newBytes, &newWord, 4);
                         if (CheckHackerPatch_writeBytes(blAddr, newBytes, 4)) {
-                            DeltaVFS_debugLogf("MatchClientInfoPatch: da redirect %s sang byte[1] gia tai 0x%lx (RVA 0x%llx)",
+                            DeltaVFS_debugLogf("MatchClientInfoPatch: da redirect %s sang fake byte[] rieng tai 0x%lx (RVA 0x%llx)",
                                                 site.label, (unsigned long)blAddr, (unsigned long long)site.blRva);
                             redirected = true;
                         }
@@ -173,7 +178,7 @@ inline void installMatchClientInfoPatch() {
             } else {
                 DeltaVFS_debugLogf("MatchClientInfoPatch: %s - byte goc khong phai BL (game update?), fallback null", site.label);
             }
-        } else if (!g_fakeEmptyByteArray) {
+        } else if (!fakeArr) {
             DeltaVFS_debugLogf("MatchClientInfoPatch: %s - chua co byte[] gia (cap phat that bai), fallback null", site.label);
         }
 
@@ -196,3 +201,4 @@ inline void installMatchClientInfoPatch() {
         }
     }
 }
+
