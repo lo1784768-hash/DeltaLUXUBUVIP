@@ -155,9 +155,25 @@ inline void installUnityFrameworkStubPatch() {
         uint64_t current = 0;
         memcpy(&current, (void *)slotAddr, sizeof(current));
         if (!expected || current != (uint64_t)(uintptr_t)expected) {
-            DeltaVFS_debugLogf("UnityFrameworkStubPatch: gia tri goc tai slot %s (0x%lx) la %p, dlsym mong doi %p - "
-                                "KHONG khop (game update / offset lech?) - HUY patch nay de an toan",
-                                site.label, (unsigned long)slotAddr, (void *)(uintptr_t)current, expected);
+            // CHẨN ĐOÁN THÊM: warm-up (uf_warmStubs) đã chạy được không crash (xem SỬA LẦN 2),
+            // nhưng giá trị "current" vẫn không khớp dlsym() - dùng dladdr() để biết CHÍNH XÁC
+            // con trỏ đó thuộc file/symbol nào (thay vì tiếp tục đoán mù), phòng trường hợp đây
+            // là 1 "stub island" trung gian của dyld chứ không phải giá trị lazy-chưa-resolve
+            // như giả định ban đầu - guard so tuyệt đối với dlsym() có thể sai giả thuyết.
+            Dl_info curInfo; memset(&curInfo, 0, sizeof(curInfo));
+            bool curOk = dladdr((void *)(uintptr_t)current, &curInfo);
+            Dl_info expInfo; memset(&expInfo, 0, sizeof(expInfo));
+            bool expOk = dladdr(expected, &expInfo);
+            DeltaVFS_debugLogf("UnityFrameworkStubPatch: gia tri goc tai slot %s (0x%lx) la %p [%s / %s], "
+                                "dlsym mong doi %p [%s / %s] - KHONG khop (game update / offset lech?) - "
+                                "HUY patch nay de an toan",
+                                site.label, (unsigned long)slotAddr,
+                                (void *)(uintptr_t)current,
+                                curOk && curInfo.dli_fname ? curInfo.dli_fname : "?",
+                                curOk && curInfo.dli_sname ? curInfo.dli_sname : "?",
+                                expected,
+                                expOk && expInfo.dli_fname ? expInfo.dli_fname : "?",
+                                expOk && expInfo.dli_sname ? expInfo.dli_sname : "?");
             fail++;
             continue;
         }
