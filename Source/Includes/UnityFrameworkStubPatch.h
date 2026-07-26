@@ -67,48 +67,56 @@ struct UfStubPatchSite {
 //
 // FIX: gọi thẳng qua ĐÚNG stub 1 lần (tham số vô hại, chỉ cần CHẠY QUA để dyld resolve xong) cho
 // từng hàm TRƯỚC KHI build sites[]/kiểm tra guard - sau lần gọi này ô __DATA đã chứa địa chỉ thật,
-// dlsym() sẽ khớp bình thường. RVA stub-call lấy từ đúng danh sách 15 điểm gọi đã xác định lúc
-// phân tích __HOOK_TEXT của Monite (giống hệt các RVA Monite hook, chỉ khác ta gọi để "làm nóng"
-// chứ không redirect).
+// dlsym() sẽ khớp bình thường.
+//
+// SỬA LẦN 2 (sau khi bản đầu CRASH-LOOP THẬT trên máy - CrashLogger bắt được pc lệch ĐÚNG BẰNG
+// NHAU so với Base ở cả 4 lần crash, luôn = RVA của stub "access" dùng ở đây): RVA lấy từ danh
+// sách "target" trong lúc phân tích __HOOK_TEXT của Monite - nhưng "target" đó thực ra là ĐỊA CHỈ
+// CỦA LỆNH THỨ 2 (ldr) trong chuỗi 3 lệnh "adrp x16,#page; ldr x16,[x16,#imm]; br x16", KHÔNG
+// PHẢI địa chỉ lệnh đầu (adrp) - xác nhận qua chính disassembly lúc phân tích (phải lùi target-4
+// mới thấy "adrp" hợp lệ). Gọi thẳng vào "target" bỏ qua lệnh adrp, x16 còn rác từ trước đó, lệnh
+// ldr kế tiếp đọc từ [rác + imm] -> bad access ngay lập tức, đúng khớp crash quan sát được. Toàn
+// bộ 11 hằng số RVA bên dưới đã lùi lại 4 byte (target - 4) để trỏ đúng vào lệnh adrp - điểm gọi
+// vào thật sự hợp lệ.
 inline void uf_warmStubs() {
     struct stat stBuf;
     uintptr_t s;
 
-    s = (uintptr_t)getRealOffset(0xa5ae2e0ULL); // access
+    s = (uintptr_t)getRealOffset(0xa5ae2dcULL); // access (target-4)
     if (s) ((int (*)(const char *, int))s)("/", F_OK);
 
-    s = (uintptr_t)getRealOffset(0xa5af2acULL); // open
+    s = (uintptr_t)getRealOffset(0xa5af2a8ULL); // open (target-4)
     if (s) { int fd = ((int (*)(const char *, int, ...))s)("/", O_RDONLY); if (fd >= 0) close(fd); }
 
-    s = (uintptr_t)getRealOffset(0xa5afa50ULL); // stat
+    s = (uintptr_t)getRealOffset(0xa5afa4cULL); // stat (target-4)
     if (s) ((int (*)(const char *, struct stat *))s)("/", &stBuf);
 
-    s = (uintptr_t)getRealOffset(0xa5aedc0ULL); // lstat
+    s = (uintptr_t)getRealOffset(0xa5aedbcULL); // lstat (target-4)
     if (s) ((int (*)(const char *, struct stat *))s)("/", &stBuf);
 
-    s = (uintptr_t)getRealOffset(0xa5aea54ULL); // fstat
+    s = (uintptr_t)getRealOffset(0xa5aea50ULL); // fstat (target-4)
     if (s) ((int (*)(int, struct stat *))s)(-1, &stBuf); // fd=-1 -> EBADF, an toàn, chỉ cần chạy qua
 
-    s = (uintptr_t)getRealOffset(0xa5ae9acULL); // fopen
+    s = (uintptr_t)getRealOffset(0xa5ae9a8ULL); // fopen (target-4)
     if (s) { FILE *f = ((FILE *(*)(const char *, const char *))s)("/", "r"); if (f) fclose(f); }
 
     DIR *warmDir = NULL;
-    s = (uintptr_t)getRealOffset(0xa5af2c4ULL); // opendir
+    s = (uintptr_t)getRealOffset(0xa5af2c0ULL); // opendir (target-4)
     if (s) warmDir = ((DIR *(*)(const char *))s)("/");
 
-    s = (uintptr_t)getRealOffset(0xa5af63cULL); // readdir
+    s = (uintptr_t)getRealOffset(0xa5af638ULL); // readdir (target-4)
     if (s && warmDir) ((struct dirent *(*)(DIR *))s)(warmDir);
 
-    s = (uintptr_t)getRealOffset(0xa5ae568ULL); // closedir
+    s = (uintptr_t)getRealOffset(0xa5ae564ULL); // closedir (target-4)
     if (s && warmDir) ((int (*)(DIR *))s)(warmDir);
 
-    s = (uintptr_t)getRealOffset(0xa5ae1fcULL); // _dyld_get_image_header
+    s = (uintptr_t)getRealOffset(0xa5ae1f8ULL); // _dyld_get_image_header (target-4)
     if (s) ((const struct mach_header *(*)(uint32_t))s)(0);
 
-    s = (uintptr_t)getRealOffset(0xa5ae208ULL); // _dyld_get_image_name
+    s = (uintptr_t)getRealOffset(0xa5ae204ULL); // _dyld_get_image_name (target-4)
     if (s) ((const char *(*)(uint32_t))s)(0);
 
-    s = (uintptr_t)getRealOffset(0xa5b0134ULL); // task_info
+    s = (uintptr_t)getRealOffset(0xa5b0130ULL); // task_info (target-4)
     if (s) {
         struct task_dyld_info dyldInfo;
         mach_msg_type_number_t cnt = TASK_DYLD_INFO_COUNT;
