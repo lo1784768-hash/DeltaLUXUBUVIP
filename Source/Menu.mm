@@ -25,6 +25,7 @@
 #import "Includes/CheckHackerPatch.h"
 #import "Includes/FakeMatchDataAlloc.h"
 #import "Includes/MatchClientInfoPatch.h"
+#import "Includes/GenerateLibMapAndMemPatch.h"
 #import "Includes/UnityFrameworkStubPatch.h"
 #import "Includes/CC_MD5Spoof.h"
 #import "Includes/UnityFrameworkSyscallHook.h"
@@ -524,6 +525,20 @@ game_sdk_t *game_sdk = new game_sdk_t();
             // trong MFHPGMELLCC. Gọi SAU installMatchClientInfoPatch() để registry đã có đủ 7 vùng.
             DeltaVFS_debugLog("Menu +load: gọi installCC_MD5Spoof()");
             installCC_MD5Spoof();
+
+            // installGenerateLibMapAndMemPatch() - vô hiệu hoá COW.UIModelLogin.GenerateLibMapAndMem()
+            // (RVA 0x43F81F4): hàm quét bản đồ thư viện native + vùng nhớ đang load, chạy trên 1
+            // thread riêng NGAY SAU KHI LOGIN XONG, báo cáo qua URL riêng cho anti-cheat (m_ffantiUrl -
+            // server cấp động, không hardcode nên không chặn được bằng DNSBlock). Ứng viên hàng đầu
+            // cho icon "máy tính giả lập" lúc ghép đội (đúng thời điểm login xong/vào lobby, khác vụ
+            // bị đá giữa trận). Byte gốc đã disassemble trực tiếp từ UnityFramework THẬT (trích từ
+            // com.dts.freefireth_1.126.1_und3fined.ipa bản stock) - xem GenerateLibMapAndMemPatch.h.
+            // CHƯA KIỂM CHỨNG TRÊN THIẾT BỊ THẬT - vá kiểu "return ngay ở đầu hàm" khác nguyên nhân
+            // crash của installCheckHackerPatch() (ép 1 CONFIG FLAG được đọc ở nhiều nơi khác về
+            // false), ở đây chỉ tắt 1 hành động one-shot fire-and-forget trên thread riêng - rủi ro
+            // thấp hơn nhưng vẫn cần test kỹ, đặc biệt ngay lúc logo hiện (kiểu crash sớm nếu có).
+            DeltaVFS_debugLog("Menu +load: gọi installGenerateLibMapAndMemPatch()");
+            installGenerateLibMapAndMemPatch();
 
             // installUnityFrameworkSyscallHook() TẮT HẲN - đã thử 3 bản trampoline khác nhau (lưu
             // tối thiểu x1/x2/x16/x30 -> lưu đủ GPR x1-x17/x29/x30 -> lưu đủ GPR+SIMD q0-q7 giống
