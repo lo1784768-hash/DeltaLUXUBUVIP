@@ -1,5 +1,5 @@
-// EmulatorScorePatch.h - vá thẳng COW.UIModelUser.set_EmulatorScore(uint) (RVA 0x473C078) để LUÔN
-// lưu 0 vào field EmulatorScore, bất kể giá trị thật được truyền vào là gì.
+// EmulatorScorePatch.h - ép COW.UIModelUser.set_EmulatorScore(uint) LUÔN lưu 0 vào field
+// EmulatorScore, bất kể giá trị thật được truyền vào là gì.
 //
 // BỐI CẢNH: user báo dấu hiệu THẬT - icon hình máy tính hiện cạnh tên lúc vào đội (TRƯỚC lúc vào
 // trận), chỉ xảy ra với Delta, không xảy ra với Monite/bản App Store gốc. Đã thử ép
@@ -16,103 +16,80 @@
 // server trả điểm về và lúc client tự gửi lại điểm đó đi khi vào đội (không cần biết SERVER tính
 // điểm ban đầu bằng cách nào).
 //
-// Disassemble trực tiếp set_EmulatorScore() (UnityFramework, RVA 0x473C078) xác nhận đây là
-// setter auto-generated ĐƠN GIẢN NHẤT có thể: "str w1,[x0,#0xb4]; ret" (8 byte, không tính toán gì
-// khác) - w1 là tham số uint value truyền vào, x0 là con trỏ instance UIModelUser, offset 0xb4
-// khớp CHÍNH XÁC với backing field <EmulatorScore>k__BackingField trong dump.cs.
+// ===== LỊCH SỬ 2 BẢN VÁ BYTE TRỰC TIẾP (V1/V2) - CẢ 2 ĐÃ THẤT BẠI, GIỮ LẠI ĐỂ THAM KHẢO =====
+// Disassemble set_EmulatorScore() (UnityFramework THẬT, RVA 0x473C078) xác nhận đây là setter
+// auto-generated đơn giản nhất có thể: "str w1,[x0,#0xb4]; ret" (8 byte). V1/V2 đổi thanh ghi
+// nguồn "str" từ w1 (giá trị thật) thành WZR (luôn = 0) - cùng kích thước 4 byte, cùng kỹ thuật
+// XZR-swap ổn định trong MatchClientInfoPatch.h. V1 gọi 1 lần tại +load (thất bại do timing -
+// UnityFramework chưa map). V2 sửa timing bằng poll 50ms (TryPatchOnce()/Tick()/installEarly() ở
+// dưới, giữ lại làm tham khảo) - test thật trên máy: KHÔNG AN TOÀN, dù áp dụng SỚM (poll tự động
+// ngay +load) HAY MUỘN (bấm nút tay sau khi game chạy được 1 lúc) - CẢ 2 CÁCH ĐỀU CRASH đều đặn
+// (bản sớm: crash ~5.5s sau launch, rất đều; bản muộn: 10/10 lần bấm nút đều crash sau đó,
+// 0.3s-43s). Vì SỚM cũng crash y hệt MUỘN, loại được giả thuyết "race condition do vá lúc code
+// đang chạy" - nghi ngờ thật sự: chỉ cần SỬA ĐỔI BYTE THỰC THI của chính hàm này (dù chỉ 1 bit) đã
+// tự nó bị phát hiện/gây crash, không phụ thuộc thời điểm - giống cơ chế nghi ngờ ở
+// ffantihack.MFHPGMELLCC (ghi field cũng crash 3/3 lần dù giá trị ghi hợp lý, xem
+// FFAntiFlagsPatch.h).
 //
-// Kỹ thuật: đổi thanh ghi nguồn của "str" từ w1 (giá trị thật) thành WZR (thanh ghi 0 phần cứng
-// ARM64, luôn = 0) - "str wzr,[x0,#0xb4]" - CÙNG KÍCH THƯỚC 4 byte (chỉ đổi 5 bit thấp nhất của
-// lệnh, byte đầu tiên: 0x01 -> 0x1F), không đụng lệnh "ret"/control flow/thanh ghi nào khác. Mỗi
-// lần code khác gọi set_EmulatorScore(bất kỳ giá trị nào) từ giờ đều lưu 0 vào field, y hệt kỹ
-// thuật XZR-swap đã dùng ổn định trong MatchClientInfoPatch.h.
+// ===== V3 (HIỆN TẠI) - DOBBY HOOK, KHÔNG ĐỤNG 1 BYTE CODE NÀO CỦA set_EmulatorScore() =====
+// Theo đề xuất user "đổi qua cách mempatch xem" - KHÔNG tự ghi đè byte thực thi (vm_remap) nữa,
+// dùng DobbyHook() (trampoline chuẩn, đã tích hợp sẵn trong project qua libdobby.a - xem
+// AntiReportSpoof.h) để CHẶN THAM SỐ trước khi hàm gốc chạy, rồi gọi THẲNG hàm gốc với value=0
+// thay vì giá trị thật - hàm gốc (2 lệnh str+ret) vẫn tự thực thi y hệt logic thật của nó, không
+// bị bỏ qua/thay thế gì cả, chỉ khác đầu vào. Nếu cơ chế phát hiện ở V1/V2 thực sự dựa trên so
+// sánh/hash byte code của hàm thì cách này né được - vì code hàm không đổi 1 bit.
 //
-// ĐÃ TEST TRÊN THIẾT BỊ THẬT (bản gọi 1 LẦN DUY NHẤT tại +load): debug.log cho thấy
-// "EmulatorScorePatch: khong tim thay UnityFramework, bo qua" - tức installEmulatorScorePatch()
-// chạy quá sớm, TRƯỚC KHI dyld map xong UnityFramework vào bộ nhớ (+load của Delta.dylib có thể
-// chạy trước khi UnityFramework.framework kịp load, khác EmulatorCheckSpoof.h - hàm đó KHÔNG gặp
-// vấn đề này vì tự có sẵn vòng lặp retry). getRealOffset() trả 0 tức thời -> patch bị bỏ qua vĩnh
-// viễn (gọi 1 lần rồi thôi, không tự thử lại) - ĐÂY LÀ LÝ DO patch chưa từng thực sự chạy được,
-// không phải do RVA/byte gốc sai. Chuyển sang cơ chế poll như EmulatorCheckSpoof::installEarly()
-// (timer 50ms trên main queue, bắt đầu ngay từ +load) - vì đây là patch TĨNH chỉ cần thành công 1
-// LẦN (không như EmulatorCheckSpoof phải ghi lại mỗi tick), timer tự huỷ ngay sau khi patch xong
-// (thành công hay thất bại do lý do KHÁC timing, vd byte gốc lệch do game update).
-//
-// ĐÃ TEST LẦN 2 - KẾT LUẬN: KHÔNG AN TOÀN khi áp dụng SAU khi UnityFramework đã chạy được 1 lúc
-// (không phải ngay lúc +load nữa). Chuyển tạm sang nút bấm thủ công trong tab "Khác" để user tự cô
-// lập thời điểm - đối chiếu debug.log của TOÀN BỘ 10 lần user bấm nút này (nhiều lần mở app khác
-// nhau): CẢ 10/10 LẦN app crash sau đó (0.3s-43s, nhiều lần dưới 4s, có cả trường hợp KHÔNG ở
-// trong trận nên loại trừ được nhầm lẫn với vụ bị đá giữa trận đã biết). Đủ bằng chứng để coi patch
-// này KHÔNG AN TOÀN ở dạng hiện tại - đã gỡ nút bấm khỏi UI (xem Menu.mm,
-// buildKhacMainListInFrame), KHÔNG dùng lại cho tới khi có hướng vá khác.
-//
-// Nghi ngờ nguyên nhân: patch này an toàn 100% khi chạy ở +load (lúc đó CHẮC CHẮN chưa có code nào
-// gọi set_EmulatorScore() cả - hàm chưa từng được thực thi). Áp dụng muộn (qua nút bấm, sau khi
-// game đã chạy được một lúc) có rủi ro RACE CONDITION: 1 luồng khác trong game có thể đang THỰC THI
-// đúng đoạn lệnh bị vá tại đúng thời điểm CheckHackerPatch_writeBytes() ghi đè nó (kỹ thuật
-// vm_remap không đảm bảo an toàn nếu code đang được CPU khác chạy đúng lúc bị ghi) - khác hẳn nhóm
-// nguyên nhân "hiểu sai ý nghĩa hàm/side-effect" đã nêu ở các patch khác trong project (xem
-// GenerateLibMapAndMemPatch.h, FFAntiRecordConditionPatch.h) - ở đây kỹ thuật vá tự nó đúng, chỉ
-// KHÔNG AN TOÀN nếu áp dụng vào code đang chạy.
+// RỦI RO ĐÃ BIẾT, CHƯA LOẠI TRỪ ĐƯỢC: DobbyHook() từng dùng cho 1 hàm KHÁC
+// (COW.UIModelCustomRoom.GetMatchClientInfo(), xem AntiReportSpoof.h) và CŨNG bị crash trên máy
+// thật (crash log rơi vào nội bộ Firebase Crashlytics, 2/3 lần, kể cả không vào trận) - crash
+// signature đó KHÁC HẲN kiểu crash V1/V2 gặp phải (không phải watchdog/SIGKILL im lặng, mà bị
+// chính Crashlytics bắt được) - chưa rõ nguyên nhân đó (nếu là do bản chất DobbyHook/trampoline
+// trong game này) có lặp lại với hàm set_EmulatorScore() hay không, vì đây là class/hàm khác hẳn.
+// CHƯA kiểm chứng trên thiết bị thật.
 #pragma once
 #import <Foundation/Foundation.h>
 #include "MemoryUtils.h"
 #include "AssetRedirect.h"
-#import "CheckHackerPatch.h"  // dùng lại CheckHackerPatch_writeBytes()
+#import "Il2CppResolve.h"
+
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wmodule-import-in-extern-c"
+#import "Dobby/dobby.h"
+#pragma clang diagnostic pop
 
 namespace EmulatorScorePatch {
 
-static dispatch_source_t g_timer = NULL;
-static int g_retryTick = 0;
+typedef void (*ORIG_set_EmulatorScore)(void *thisPtr, uint32_t value);
+static ORIG_set_EmulatorScore orig_set_EmulatorScore = NULL;
 
-// Trả true nếu ĐÃ XỬ LÝ XONG (patch thành công, hoặc thất bại vì lý do KHÔNG PHẢI timing - vd byte
-// gốc lệch/ghi thất bại) - false nếu CHỈ là UnityFramework chưa map xong, cần tick sau thử lại.
-inline bool TryPatchOnce() {
-    static const uint64_t kRva = 0x473C078ULL;
-    static const uint8_t kOriginal[4] = {0x01, 0xB4, 0x00, 0xB9};  // str w1, [x0, #0xb4]
-    static const uint8_t kPatched[4]  = {0x1F, 0xB4, 0x00, 0xB9};  // str wzr, [x0, #0xb4]
+static void hooked_set_EmulatorScore(void *thisPtr, uint32_t value) {
+    // Gọi THẲNG hàm gốc - chỉ đổi value thành 0, hàm gốc chạy đúng logic thật của nó (dù chỉ có
+    // str+ret), không có bước nào bị bỏ qua/giả lập.
+    orig_set_EmulatorScore(thisPtr, 0);
+}
 
-    uintptr_t target = (uintptr_t)getRealOffset(kRva);
-    if (!target) return false;  // UnityFramework chua map - thu lai tick sau
-
-    if (memcmp((void *)target, kOriginal, 4) != 0) {
-        const uint8_t *actual = (const uint8_t *)target;
-        DeltaVFS_debugLogf("EmulatorScorePatch: byte goc tai 0x%lx KHONG khop du lieu ob54 da phan tich "
-                            "(ky vong %02X %02X %02X %02X, thuc te %02X %02X %02X %02X) - HUY patch nay de an toan",
-                            (unsigned long)target,
-                            kOriginal[0], kOriginal[1], kOriginal[2], kOriginal[3],
-                            actual[0], actual[1], actual[2], actual[3]);
-        return true;
-    }
-    if (CheckHackerPatch_writeBytes(target, kPatched, 4)) {
-        DeltaVFS_debugLogf("EmulatorScorePatch: da ep UIModelUser.set_EmulatorScore luon luu 0 tai 0x%lx (RVA 0x%llx, tick #%d)",
-                            (unsigned long)target, (unsigned long long)kRva, g_retryTick);
+// Gọi SAU khi IL2CPP domain chắc chắn sẵn sàng (giống AntiReportSpoof.h - cùng chỗ/cùng lúc với
+// game_sdk->init() trong Menu.mm +load, KHÔNG phải constructor sớm hay ngay +load như V1/V2, vì
+// Il2CppResolve::GetMethod() cần domain đã init xong mới tra được theo tên).
+inline void install() {
+    void *target = Il2CppResolve::GetMethod("Assembly-CSharp.dll", "COW", "UIModelUser", "set_EmulatorScore", 1);
+    if (target) {
+        DeltaVFS_debugLog("EmulatorScorePatch: tra theo ten OK (COW.UIModelUser.set_EmulatorScore)");
     } else {
-        DeltaVFS_debugLogf("EmulatorScorePatch: ghi patch that bai tai 0x%lx", (unsigned long)target);
+        target = (void *)getRealOffset(0x473C078ULL);
+        DeltaVFS_debugLog("EmulatorScorePatch: Il2CppResolve that bai, dung RVA cu 0x473C078");
     }
-    return true;
-}
-
-inline void Tick() {
-    ++g_retryTick;
-    if (TryPatchOnce()) {
-        dispatch_source_cancel(g_timer);
+    if (!target) {
+        DeltaVFS_debugLog("EmulatorScorePatch: khong tim thay set_EmulatorScore, bo qua");
+        return;
     }
-}
 
-// installEarly() - bắt đầu poll NGAY TỪ +load, cùng kỹ thuật với EmulatorCheckSpoof::installEarly()
-// (timer trên main queue, 50ms/lần) - khác EmulatorCheckSpoof ở chỗ timer TỰ HUỶ sau khi patch
-// xong (patch tĩnh 1 lần là đủ, không cần ghi lại liên tục).
-inline void installEarly() {
-    dispatch_queue_t queue = dispatch_get_main_queue();
-    g_timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, queue);
-    dispatch_source_set_timer(g_timer, dispatch_time(DISPATCH_TIME_NOW, 0),
-                               50 * NSEC_PER_MSEC, 10 * NSEC_PER_MSEC);
-    dispatch_source_set_event_handler(g_timer, ^{
-        Tick();
-    });
-    dispatch_resume(g_timer);
-    DeltaVFS_debugLog("EmulatorScorePatch: installEarly() - bat dau polling moi 50ms tu +load, khong cho 3s");
+    int ret = DobbyHook(target, (dobby_dummy_func_t)hooked_set_EmulatorScore, (dobby_dummy_func_t *)&orig_set_EmulatorScore);
+    if (ret != 0 || !orig_set_EmulatorScore) {
+        DeltaVFS_debugLogf("EmulatorScorePatch: DobbyHook that bai (ret=%d) - huy, khong sua gi ca", ret);
+    } else {
+        DeltaVFS_debugLog("EmulatorScorePatch: DobbyHook cai thanh cong (set_EmulatorScore -> luon ep value=0)");
+    }
 }
 
 } // namespace EmulatorScorePatch

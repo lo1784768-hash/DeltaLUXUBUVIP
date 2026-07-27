@@ -443,15 +443,12 @@ game_sdk_t *game_sdk = new game_sdk_t();
     }
     DeltaVFS_debugLog("Menu +load: needsFirstRunExtraction=false, normal menu flow, scheduling setup in 3s");
 
-    // EmulatorScorePatch::installEarly() / FFAntiRecordConditionPatch::installEarly() ĐÃ TẮT auto-
-    // gọi ở đây - user báo VẪN crash-loop sau khi gỡ DNSBlock 3 domain (thủ phạm trước đó), nghi
-    // ngờ đúng: "patch quá sớm" (poll 50ms bắt đầu ngay từ +load, áp dụng trước cả khi
-    // UnityFramework/game chạy tới trạng thái ổn định) - không loại trừ được vì 2 patch này chạy
-    // AUTO nên không cô lập được thời điểm/nguyên nhân chính xác qua debug.log. Theo yêu cầu user:
-    // chuyển sang 2 NÚT BẤM THỦ CÔNG trong tab "Khác" (xem buildKhacMainListInFrame,
-    // btnApplyEmulatorScorePatch:/btnApplyFFAntiRecordConditionPatch:) - user tự bấm SAU KHI game
-    // đã chạy ổn định (vào menu/lobby), cô lập được chính xác patch nào (nếu có) gây crash và thời
-    // điểm an toàn để áp dụng.
+    // EmulatorScorePatch/FFAntiRecordConditionPatch KHÔNG auto-gọi ở đây nữa - chuyển sang nút bấm
+    // thủ công trong tab "Khác" (xem buildKhacMainListInFrame,
+    // btnApplyEmulatorScorePatchV3:/btnApplyFFAntiRecordConditionPatch:), user tự bấm SAU KHI game
+    // đã chạy ổn định. Đối chiếu debug.log 10 lần bấm EmulatorScorePatch bản V1/V2 (ghi byte code
+    // trực tiếp) xác nhận KHÔNG AN TOÀN dù áp dụng sớm hay muộn - đã chuyển sang V3 (Dobby hook,
+    // không đụng byte code) - xem EmulatorScorePatch.h.
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         // Checkpoint - nếu dòng này KHÔNG xuất hiện trong debug.log, nghĩa là main thread bị
@@ -1304,6 +1301,10 @@ game_sdk_t *game_sdk = new game_sdk_t();
     // HƠN NHIỀU: trường hợp "sạch" (không ở trong trận) duy nhất sống tới 39s sau khi bấm (không
     // giống crash tức thời), các trường hợp chết nhanh khác đều đã ở TRONG TRẬN (traffic port
     // 10011 - đúng vụ bị đá giữa trận có sẵn, không phải do nút này).
+    //
+    // EmulatorScorePatch V3 (Dobby hook, xem EmulatorScorePatch.h) - THÊM LẠI nút với kỹ thuật
+    // HOÀN TOÀN KHÁC V1/V2 (không còn ghi đè byte code, chặn tham số qua trampoline chuẩn) - đặt
+    // tên nút rõ "V3" để không nhầm với bản cũ đã gỡ.
     UILabel *testHeader = [[UILabel alloc] initWithFrame:CGRectMake(btnX + 4, btnY, btnW - 8, 12)];
     testHeader.font = [UIFont systemFontOfSize:9 weight:UIFontWeightBold];
     testHeader.textColor = COLOR_TEXT_DIM;
@@ -1314,6 +1315,11 @@ game_sdk_t *game_sdk = new game_sdk_t();
     UIButton *btnFFAntiCond = [self createButtonWithTitle:@"Áp dụng FFAntiRecordConditionPatch" frame:CGRectMake(btnX, btnY, btnW, cardH)];
     [btnFFAntiCond addTarget:self action:@selector(btnApplyFFAntiRecordConditionPatch:) forControlEvents:UIControlEventTouchUpInside];
     [scroll addSubview:btnFFAntiCond];
+    btnY += cardH + btnGap;
+
+    UIButton *btnEmuScoreV3 = [self createButtonWithTitle:@"Áp dụng EmulatorScorePatch (V3 - Dobby)" frame:CGRectMake(btnX, btnY, btnW, cardH)];
+    [btnEmuScoreV3 addTarget:self action:@selector(btnApplyEmulatorScorePatchV3:) forControlEvents:UIControlEventTouchUpInside];
+    [scroll addSubview:btnEmuScoreV3];
     btnY += cardH + btnGap;
 
     // Tính năng THẬT đã có sẵn - "Không giật" khớp đúng vị trí đầu tiên như tab Khác thật của
@@ -1713,12 +1719,11 @@ game_sdk_t *game_sdk = new game_sdk_t();
     });
 }
 
-// Nút thử nghiệm THỦ CÔNG - xem comment ở buildKhacMainListInFrame. Gọi thẳng TryPatchOnce() (bỏ
-// qua vòng poll 50ms - lúc bấm nút này chắc chắn UnityFramework đã map xong từ lâu), chạy ngay
-// trên main thread (giống mọi patch tĩnh khác trong Menu +load trước đây).
-- (void)btnApplyEmulatorScorePatch:(UIButton *)sender {
-    bool done = EmulatorScorePatch::TryPatchOnce();
-    [self showToast:done ? @"EmulatorScorePatch: đã xử lý xong (xem debug.log)" : @"EmulatorScorePatch: UnityFramework chưa sẵn sàng, thử lại sau"];
+// Nút thử nghiệm THỦ CÔNG - xem comment ở buildKhacMainListInFrame và EmulatorScorePatch.h (V3 -
+// Dobby hook, thay hẳn kỹ thuật ghi byte code V1/V2 đã xác nhận không an toàn).
+- (void)btnApplyEmulatorScorePatchV3:(UIButton *)sender {
+    EmulatorScorePatch::install();
+    [self showToast:@"EmulatorScorePatch V3: đã thử cài Dobby hook (xem debug.log)"];
 }
 
 - (void)btnApplyFFAntiRecordConditionPatch:(UIButton *)sender {
