@@ -526,19 +526,19 @@ game_sdk_t *game_sdk = new game_sdk_t();
             DeltaVFS_debugLog("Menu +load: gọi installCC_MD5Spoof()");
             installCC_MD5Spoof();
 
-            // installGenerateLibMapAndMemPatch() - vô hiệu hoá COW.UIModelLogin.GenerateLibMapAndMem()
-            // (RVA 0x43F81F4): hàm quét bản đồ thư viện native + vùng nhớ đang load, chạy trên 1
-            // thread riêng NGAY SAU KHI LOGIN XONG, báo cáo qua URL riêng cho anti-cheat (m_ffantiUrl -
-            // server cấp động, không hardcode nên không chặn được bằng DNSBlock). Ứng viên hàng đầu
-            // cho icon "máy tính giả lập" lúc ghép đội (đúng thời điểm login xong/vào lobby, khác vụ
-            // bị đá giữa trận). Byte gốc đã disassemble trực tiếp từ UnityFramework THẬT (trích từ
-            // com.dts.freefireth_1.126.1_und3fined.ipa bản stock) - xem GenerateLibMapAndMemPatch.h.
-            // CHƯA KIỂM CHỨNG TRÊN THIẾT BỊ THẬT - vá kiểu "return ngay ở đầu hàm" khác nguyên nhân
-            // crash của installCheckHackerPatch() (ép 1 CONFIG FLAG được đọc ở nhiều nơi khác về
-            // false), ở đây chỉ tắt 1 hành động one-shot fire-and-forget trên thread riêng - rủi ro
-            // thấp hơn nhưng vẫn cần test kỹ, đặc biệt ngay lúc logo hiện (kiểu crash sớm nếu có).
-            DeltaVFS_debugLog("Menu +load: gọi installGenerateLibMapAndMemPatch()");
-            installGenerateLibMapAndMemPatch();
+            // installGenerateLibMapAndMemPatch() ĐÃ TẮT - test thật (debug.log) cho thấy app crash-
+            // loop lặp lại 3 lần liên tiếp (sống 68s/16s/8s, KHÔNG cố định), đúng lúc có traffic
+            // Firebase Installations/FCM/app-measurement - tức đúng thời điểm chuẩn bị login, khớp
+            // với lúc GenerateLibMapAndMem(loginRes) thực sự được gọi lần đầu. CrashLogger (đã cài OK,
+            // bắt EXC_BAD_ACCESS/BAD_INSTRUCTION/ARITHMETIC) KHÔNG bắt được gì cả 3 lần - dấu hiệu đây
+            // là watchdog/jetsam SIGKILL (không thể bắt trong-process) chứ không phải lỗi truy cập bộ
+            // nhớ thường - nghi ngờ có code khác CHỜ (Thread.Join()/semaphore) 1 tín hiệu vốn được set
+            // BÊN TRONG GenerateLibMapAndMem(), patch RET-ngay khiến tín hiệu đó không bao giờ đến =
+            // treo main thread = bị kill. Giữ định nghĩa trong GenerateLibMapAndMemPatch.h để tham
+            // khảo, KHÔNG gọi nữa cho tới khi có cách patch an toàn hơn (vd giữ nguyên phần
+            // set-signal/return sớm hơn trong thân hàm thay vì chặn ngay từ đầu).
+            // DeltaVFS_debugLog("Menu +load: gọi installGenerateLibMapAndMemPatch()");
+            // installGenerateLibMapAndMemPatch();
 
             // installUnityFrameworkSyscallHook() TẮT HẲN - đã thử 3 bản trampoline khác nhau (lưu
             // tối thiểu x1/x2/x16/x30 -> lưu đủ GPR x1-x17/x29/x30 -> lưu đủ GPR+SIMD q0-q7 giống

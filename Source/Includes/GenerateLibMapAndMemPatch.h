@@ -15,17 +15,22 @@
 // tương đương hàm không làm gì cả, không có rủi ro kiểu trampoline/relocation. Vì hàm trả về
 // void, caller không đọc x0 nên không cần set giá trị trả về.
 //
-// An toàn cho GenerateLibMapAndMemThread/WaitGenerateLibMapAndMemThread (KHÔNG đụng tới): thread
-// vẫn spawn/join bình thường, chỉ là thân GenerateLibMapAndMem() chạy xong ngay lập tức - không
-// có nguy cơ treo join.
-//
 // Byte gốc đã disassemble trực tiếp từ UnityFramework THẬT (trích ra từ
 // com.dts.freefireth_1.126.1_und3fined.ipa, bản stock chưa qua Esign/chỉnh sửa gì) bằng
 // lief+capstone, KHÔNG suy đoán từ dump.cs - xem comment RVA để đối chiếu nếu game update.
 //
-// CHƯA kiểm chứng trên thiết bị thật - đây là 1 giả thuyết đang thử, chấp nhận rủi ro icon có
-// thể không hết (xem EmulatorCheckSpoof.h - từng nghi verdict do server tự quyết định qua kênh
-// khác nữa, không chỉ riêng report này).
+// ĐÃ TEST TRÊN THIẾT BỊ THẬT - SAI, GÂY CRASH-LOOP: dự đoán ban đầu ở đoạn trên (thread vẫn
+// spawn/join bình thường, không có nguy cơ treo join) KHÔNG ĐÚNG. debug.log thật cho thấy app
+// crash-loop lặp lại (sống 68s/16s/8s, không cố định) đúng lúc chuẩn bị login (traffic Firebase
+// Installations/FCM/app-measurement) - khớp thời điểm GenerateLibMapAndMem(loginRes) thực sự được
+// gọi lần đầu. CrashLogger (bắt EXC_BAD_ACCESS/BAD_INSTRUCTION/ARITHMETIC) KHÔNG bắt được gì cả 3
+// lần - dấu hiệu watchdog/jetsam SIGKILL, không phải lỗi truy cập bộ nhớ thường. Nghi ngờ thật sự:
+// có code khác CHỜ (Thread.Join()/semaphore/WaitHandle) 1 tín hiệu vốn được SET BÊN TRONG thân
+// GenerateLibMapAndMem() (không chỉ đơn thuần "thread tự kết thúc" như suy đoán ban đầu) - RET
+// ngay từ đầu khiến tín hiệu đó không bao giờ đến, treo main thread, bị OS kill. KHÔNG gọi
+// installGenerateLibMapAndMemPatch() nữa (xem Menu.mm) cho tới khi có cách patch an toàn hơn - vd
+// disassemble đầy đủ thân hàm để tìm đúng điểm set-signal rồi giữ nguyên đoạn đó, chỉ chặn phần
+// build+gửi report.
 #pragma once
 #import <Foundation/Foundation.h>
 #include <mach/mach.h>
