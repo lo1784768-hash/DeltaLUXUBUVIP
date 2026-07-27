@@ -233,7 +233,14 @@ inline void DeltaVFS_debugLog(const char *msg) {
     // never noticed), not a same-process ordering bug - decides which theory to chase next.
     // No trailing \n here - DeltaVFS_debugLogSnapshot() adds one per line when rendering, and
     // the file write below appends its own, so embedding one here would double up blank lines.
-    int n = snprintf(buf, sizeof(buf), "[t=%.0f pid=%d] %s", (double)time(NULL), (int)getpid(), msg);
+    // gettimeofday() thay vì time(NULL) - độ phân giải MILI-GIÂY thay vì giây, cần để tách được
+    // thứ tự thật giữa hàng chục dòng log chen nhau trong CÙNG 1 giây (vd nhiều gói UDP-PEEK +
+    // HTTP + CONN-BLK xảy ra cùng lúc "vào trận" - trước đây chỉ có t=... theo giây, không đủ để
+    // biết gói nào xảy ra NGAY TRƯỚC/SAU 1 field như IBJJDBEJMLD đổi giá trị).
+    struct timeval tvNow;
+    gettimeofday(&tvNow, NULL);
+    double tMs = (double)tvNow.tv_sec + (double)tvNow.tv_usec / 1000000.0;
+    int n = snprintf(buf, sizeof(buf), "[t=%.3f pid=%d] %s", tMs, (int)getpid(), msg);
     if (n <= 0) return;
     size_t writeLen = ((size_t)n < sizeof(buf)) ? (size_t)n : sizeof(buf) - 1;
 
