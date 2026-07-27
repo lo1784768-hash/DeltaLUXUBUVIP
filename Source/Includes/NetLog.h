@@ -305,6 +305,44 @@ inline bool sniTakePending(int fd) {
     return true;
 }
 
+// ===== TCP PEEK - soi CẢ HAI CHIỀU (gửi/nhận) trên MỌI gói của 1 kết nối TCP đã connect() xong,
+// không chỉ gói ĐẦU TIÊN như sniPendingFds (dùng để bắt SNI/HTTP header, xong việc thì bỏ) =====
+// Vì sao cần: nghi ngờ message FFANTI (EProtocol.Proto FFANTI=29 trong dump.cs, cùng nhóm với
+// MATCHMAKING/GROUP/MAIL...) đi qua kết nối TCP lobby ĐÃ MỞ SẴN từ lúc đăng nhập (connect() chỉ
+// gọi 1 lần, rất lâu trước lúc vào trận) - trước đây NetLog KHÔNG có cách nào thấy traffic
+// CHIỀU NHẬN (chưa hook read()/recv() chút nào) lẫn traffic gửi/nhận SAU gói đầu tiên trên 1 fd
+// TCP đã tồn tại từ trước, nên toàn bộ traffic thật của FFANTI (nếu đúng đi qua đây) là vô hình.
+static std::mutex g_tcpPeekMutex;
+static std::unordered_map<int, uint16_t> g_tcpPeekFds;
+static std::atomic<int> g_tcpPeekCount{0};
+
+inline void tcpPeekMark(int fd, uint16_t port) {
+    std::lock_guard<std::mutex> lock(g_tcpPeekMutex);
+    if (g_tcpPeekFds.size() > 256) { g_tcpPeekFds.clear(); g_tcpPeekCount.store(0, std::memory_order_relaxed); }
+    if (g_tcpPeekFds.emplace(fd, port).second) g_tcpPeekCount.fetch_add(1, std::memory_order_relaxed);
+}
+
+inline int32_t tcpPeekPort(int fd) {
+    if (g_tcpPeekCount.load(std::memory_order_relaxed) == 0) return -1; // hot-path bail, không lock
+    std::lock_guard<std::mutex> lock(g_tcpPeekMutex);
+    auto it = g_tcpPeekFds.find(fd);
+    return it == g_tcpPeekFds.end() ? -1 : (int32_t)it->second;
+}
+
+// Log preview 1 chiều (SEND/RECV) cho fd TCP đang theo dõi - dùng chung cho write()/send()
+// (chiều gửi, gọi SAU sniInspectFirstWrite để không log trùng gói đầu) và read()/recv() (chiều
+// nhận, hoàn toàn MỚI - trước đây không có).
+inline void tcpPeekLog(const char *direction, int fd, const void *buf, size_t count) {
+    if (!buf || count == 0) return;
+    int32_t port = tcpPeekPort(fd);
+    if (port < 0) return;
+    std::string preview;
+    netLogPreviewPayload(buf, count, preview);
+    char detail[180];
+    snprintf(detail, sizeof(detail), "%s fd=%d port=%d len=%zu | %s", direction, fd, (int)port, count, preview.c_str());
+    netLogRaw("TCP-PEEK", detail);
+}
+
 // ===== HOOK connect() - bắt cả TCP lẫn UDP, kể cả connect thẳng vào IP không qua DNS =====
 static int (*orig_connect)(int, const struct sockaddr *, socklen_t);
 
@@ -335,7 +373,12 @@ inline int hooked_connect(int fd, const struct sockaddr *addr, socklen_t len) {
     int ret = orig_connect(fd, addr, len);
     // ClientHello (nếu có) là gói ĐẦU TIÊN client gửi sau khi kết nối TCP xong - đánh dấu fd
     // này để hook write()/send() bên dưới soi đúng gói đầu, không soi nhầm data sau đó.
-    if (isTcp && (ret == 0 || errno == EINPROGRESS)) sniMarkPending(fd);
+    if (isTcp && (ret == 0 || errno == EINPROGRESS)) {
+        sniMarkPending(fd);
+        // Theo dõi CẢ kết nối TCP này lâu dài (không chỉ gói đầu như sniMarkPending) - để soi
+        // được traffic 2 chiều SAU bắt tay TLS, vd nghi ngờ FFANTI (protocol=29) đi qua đây.
+        tcpPeekMark(fd, port);
+    }
     // Theo dõi TOÀN BỘ fd UDP (không giới hạn dải cổng nghi vấn nữa) - user yêu cầu thấy MỌI
     // request, kể cả cổng match/gameplay thật thay đổi mỗi trận, không đoán trước được port.
     if (!isTcp && ret == 0) udpPeekMark(fd, port);
@@ -377,7 +420,12 @@ inline int hooked_connectx(int fd, const sa_endpoints_t *endpoints, sae_associd_
     }
 
     int ret = orig_connectx(fd, endpoints, associd, flags, iov, iovcnt, len, connid);
-    if (isTcp && (ret == 0 || errno == EINPROGRESS)) sniMarkPending(fd);
+    if (isTcp && (ret == 0 || errno == EINPROGRESS)) {
+        sniMarkPending(fd);
+        // Theo dõi CẢ kết nối TCP này lâu dài (không chỉ gói đầu như sniMarkPending) - để soi
+        // được traffic 2 chiều SAU bắt tay TLS, vd nghi ngờ FFANTI (protocol=29) đi qua đây.
+        tcpPeekMark(fd, port);
+    }
     // Theo dõi TOÀN BỘ fd UDP (không giới hạn dải cổng nghi vấn nữa) - user yêu cầu thấy MỌI
     // request, kể cả cổng match/gameplay thật thay đổi mỗi trận, không đoán trước được port.
     if (!isTcp && ret == 0) udpPeekMark(fd, port);
@@ -578,6 +626,7 @@ static ssize_t (*orig_write)(int, const void *, size_t);
 inline ssize_t hooked_write(int fd, const void *buf, size_t count) {
     if (sniInspectFirstWrite(fd, buf, count)) { errno = ECONNRESET; return -1; }
     if (udpPeekInspectWrite(fd, buf, count)) return (ssize_t)count;
+    tcpPeekLog("SEND", fd, buf, count); // no-op nếu fd không phải TCP đang theo dõi
     return orig_write(fd, buf, count);
 }
 
@@ -585,7 +634,68 @@ static ssize_t (*orig_send)(int, const void *, size_t, int);
 inline ssize_t hooked_send(int fd, const void *buf, size_t count, int flags) {
     if (sniInspectFirstWrite(fd, buf, count)) { errno = ECONNRESET; return -1; }
     if (udpPeekInspectWrite(fd, buf, count)) return (ssize_t)count;
+    tcpPeekLog("SEND", fd, buf, count); // no-op nếu fd không phải TCP đang theo dõi
     return orig_send(fd, buf, count, flags);
+}
+
+// ===== HOOK read()/recv()/recvfrom() - CHIỀU NHẬN, hoàn toàn MỚI (trước đây NetLog chỉ soi
+// được chiều gửi) =====
+// Vì sao cần: mọi hook trước đó (write/send/sendto) chỉ thấy được data CLIENT GỬI LÊN - hoàn
+// toàn không thấy gì SERVER GỬI XUỐNG (packet netcode nhận về, hay message FFANTI/OnRecvMsg nếu
+// server chủ động đẩy xuống qua kết nối lobby TCP đã mở sẵn). Gọi orig_* TRƯỚC (lấy dữ liệu
+// thật đã nhận), rồi mới soi/log - không đổi hành vi gì, chỉ quan sát thêm.
+static ssize_t (*orig_read)(int, void *, size_t);
+inline ssize_t hooked_read(int fd, void *buf, size_t count) {
+    ssize_t ret = orig_read(fd, buf, count);
+    if (ret > 0) {
+        tcpPeekLog("RECV", fd, buf, (size_t)ret);
+        if (udpPeekPort(fd) >= 0) {
+            std::string preview;
+            netLogPreviewPayload(buf, (size_t)ret, preview);
+            char detail[180];
+            snprintf(detail, sizeof(detail), "RECV port=%d len=%zd | %s", (int)udpPeekPort(fd), ret, preview.c_str());
+            netLogRaw("UDP-PEEK", detail);
+        }
+    }
+    return ret;
+}
+
+static ssize_t (*orig_recv)(int, void *, size_t, int);
+inline ssize_t hooked_recv(int fd, void *buf, size_t len, int flags) {
+    ssize_t ret = orig_recv(fd, buf, len, flags);
+    if (ret > 0) {
+        tcpPeekLog("RECV", fd, buf, (size_t)ret);
+        if (udpPeekPort(fd) >= 0) {
+            std::string preview;
+            netLogPreviewPayload(buf, (size_t)ret, preview);
+            char detail[180];
+            snprintf(detail, sizeof(detail), "RECV port=%d len=%zd | %s", (int)udpPeekPort(fd), ret, preview.c_str());
+            netLogRaw("UDP-PEEK", detail);
+        }
+    }
+    return ret;
+}
+
+// recvfrom() - UDP connectionless nhận về (đối xứng với hooked_sendto ở trên) - fd chưa chắc đã
+// connect() (game có thể dùng 1 fd UDP không-connect để nhận từ nhiều peer), nên log theo đúng
+// địa chỉ NGUỒN lấy được từ tham số src, không phụ thuộc bảng theo dõi udpPeekMark.
+static ssize_t (*orig_recvfrom)(int, void *, size_t, int, struct sockaddr *, socklen_t *);
+inline ssize_t hooked_recvfrom(int fd, void *buf, size_t len, int flags, struct sockaddr *src, socklen_t *srclen) {
+    ssize_t ret = orig_recvfrom(fd, buf, len, flags, src, srclen);
+    if (ret > 0 && buf) {
+        char ip[INET6_ADDRSTRLEN] = {0};
+        uint16_t port = 0;
+        std::string preview;
+        netLogPreviewPayload(buf, (size_t)ret, preview);
+        char detail[200];
+        if (src && netLogSplitSockaddr(src, ip, sizeof(ip), &port)) {
+            snprintf(detail, sizeof(detail), "RECV %s:%d len=%zd | %s", ip, port, ret, preview.c_str());
+        } else {
+            snprintf(detail, sizeof(detail), "RECV len=%zd | %s", ret, preview.c_str());
+        }
+        netLogRaw("UDP-PEEK", detail);
+    }
+    return ret;
 }
 
 // Cài hook tầng socket. Gọi 1 lần lúc khởi động (từ +[DeltaMenu load]).
@@ -596,6 +706,9 @@ inline void installNetLogHook() {
     orig_sendto   = (ssize_t (*)(int, const void *, size_t, int, const struct sockaddr *, socklen_t))dlsym((void *)RTLD_DEFAULT, "sendto");
     orig_write    = (ssize_t (*)(int, const void *, size_t))dlsym((void *)RTLD_DEFAULT, "write");
     orig_send     = (ssize_t (*)(int, const void *, size_t, int))dlsym((void *)RTLD_DEFAULT, "send");
+    orig_read     = (ssize_t (*)(int, void *, size_t))dlsym((void *)RTLD_DEFAULT, "read");
+    orig_recv     = (ssize_t (*)(int, void *, size_t, int))dlsym((void *)RTLD_DEFAULT, "recv");
+    orig_recvfrom = (ssize_t (*)(int, void *, size_t, int, struct sockaddr *, socklen_t *))dlsym((void *)RTLD_DEFAULT, "recvfrom");
 
     struct rebinding netRebindings[] = {
         {"connect",  (void *)hooked_connect,  (void **)&orig_connect},
@@ -603,6 +716,9 @@ inline void installNetLogHook() {
         {"sendto",   (void *)hooked_sendto,   (void **)&orig_sendto},
         {"write",    (void *)hooked_write,    (void **)&orig_write},
         {"send",     (void *)hooked_send,     (void **)&orig_send},
+        {"read",     (void *)hooked_read,     (void **)&orig_read},
+        {"recv",     (void *)hooked_recv,     (void **)&orig_recv},
+        {"recvfrom", (void *)hooked_recvfrom, (void **)&orig_recvfrom},
     };
     rebind_symbols(netRebindings, sizeof(netRebindings) / sizeof(netRebindings[0]));
 }
