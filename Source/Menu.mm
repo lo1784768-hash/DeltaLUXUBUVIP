@@ -32,6 +32,7 @@
 #import "Includes/MoniteUFPiggyback.h"
 #import "Includes/GameMsgFlagPatch.h"
 #import "Includes/FFAntiFlagsPatch.h"
+#import "Includes/FFAntiRecordConditionPatch.h"
 #import "Includes/FFAntiObserve.h"
 #import "Includes/EmulatorCheckSpoof.h"
 #import "Includes/EmulatorScorePatch.h"
@@ -456,6 +457,15 @@ game_sdk_t *game_sdk = new game_sdk_t();
     // thiết lập tại điểm đó, chỉ sẵn sàng SAU KHI DeltaVFS_needsFirstRunExtraction() ở trên chạy
     // xong ít nhất 1 lần).
     EmulatorScorePatch::installEarly();
+
+    // FFAntiRecordConditionPatch::installEarly() - vô hiệu hoá ffantihack.MFHPGMELLCC.
+    // EBCGNOGCKNA() (hàm "ghi nhận điều kiện hacker" chính thống của class chứa IBJJDBEJMLD/...)
+    // - hướng MỚI cho vụ bị đá giữa trận, đi qua HÀM GHI thay vì ghi field trực tiếp như
+    // FFAntiFlagsPatch.h (đã tắt, crash 3/3 lần). Dùng luôn kỹ thuật poll 50ms như
+    // EmulatorScorePatch ở trên (rút kinh nghiệm timing) - xem FFAntiRecordConditionPatch.h.
+    // CHƯA kiểm chứng trên thiết bị thật - class này có lịch sử crash với kỹ thuật khác, cần test
+    // cẩn thận.
+    FFAntiRecordConditionPatch::installEarly();
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         // Checkpoint - nếu dòng này KHÔNG xuất hiện trong debug.log, nghĩa là main thread bị
