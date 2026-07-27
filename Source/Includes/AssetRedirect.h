@@ -1844,4 +1844,12 @@ static void initDeltaAllTrafficVFS() {
         rebindRet, g_deltaHooksOK.load(std::memory_order_relaxed),
         g_deltaActive.load(std::memory_order_relaxed),
         g_deltaZipFound.load(std::memory_order_relaxed), needsFirstRun);
+
+    // Ghi luôn kết quả DeltaVFS_signatureSummary() vào debug.log - trước đây hàm này CHỈ hiện
+    // trong tab INFO (Menu.mm refreshDeltaLog), không bao giờ vào debug.log, nên chưa từng xem
+    // được kết quả thật ("Delta.zip trong chữ ký: CÓ/KHÔNG") - đây là câu trả lời trực tiếp cho
+    // câu hỏi "IPA có được ký lại ĐÚNG, bao gồm cả Delta.zip trong _CodeSignature/CodeResources,
+    // hay không" - khác với chuyện "app có chạy được hay không" (chạy được chỉ cần chữ ký hợp lệ
+    // CHUNG, không cần Delta.zip nằm trong đó).
+    DeltaVFS_debugLogf("initDeltaAllTrafficVFS: %s", [DeltaVFS_signatureSummary() UTF8String]);
 }
