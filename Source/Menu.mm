@@ -539,17 +539,21 @@ game_sdk_t *game_sdk = new game_sdk_t();
             DeltaVFS_debugLog("Menu +load: gọi installCC_MD5Spoof()");
             installCC_MD5Spoof();
 
-            // installGenerateLibMapAndMemPatch() ĐÃ TẮT - test thật (debug.log) cho thấy app crash-
-            // loop lặp lại 3 lần liên tiếp (sống 68s/16s/8s, KHÔNG cố định), đúng lúc có traffic
-            // Firebase Installations/FCM/app-measurement - tức đúng thời điểm chuẩn bị login, khớp
-            // với lúc GenerateLibMapAndMem(loginRes) thực sự được gọi lần đầu. CrashLogger (đã cài OK,
-            // bắt EXC_BAD_ACCESS/BAD_INSTRUCTION/ARITHMETIC) KHÔNG bắt được gì cả 3 lần - dấu hiệu đây
-            // là watchdog/jetsam SIGKILL (không thể bắt trong-process) chứ không phải lỗi truy cập bộ
-            // nhớ thường - nghi ngờ có code khác CHỜ (Thread.Join()/semaphore) 1 tín hiệu vốn được set
-            // BÊN TRONG GenerateLibMapAndMem(), patch RET-ngay khiến tín hiệu đó không bao giờ đến =
-            // treo main thread = bị kill. Giữ định nghĩa trong GenerateLibMapAndMemPatch.h để tham
-            // khảo, KHÔNG gọi nữa cho tới khi có cách patch an toàn hơn (vd giữ nguyên phần
-            // set-signal/return sớm hơn trong thân hàm thay vì chặn ngay từ đầu).
+            // installGenerateLibMapAndMemPatch() ĐÃ TẮT - test thật LẦN 1 (debug.log) cho thấy app
+            // crash-loop 3 lần liên tiếp (sống 68s/16s/8s, KHÔNG cố định), đúng lúc có traffic
+            // Firebase Installations/FCM/app-measurement (chuẩn bị login) - lúc đó NGHI patch này là
+            // thủ phạm (CrashLogger không bắt được gì cả 3 lần - nghi watchdog/jetsam SIGKILL do treo
+            // chờ tín hiệu bên trong thân hàm bị RET sớm).
+            //
+            // SỬA LẠI CHẨN ĐOÁN: sau đó phát hiện DNSBlock chặn thêm unity3d.com/crashlytics.com/
+            // appsflyersdk.com (thêm CÙNG THỜI ĐIỂM với patch này) mới thật sự là thủ phạm - test LẦN
+            // 2 (đã tắt patch này, CHỈ còn DNSBlock 3 domain) VẪN crash-loop y hệt kiểu cũ (4 lần, đều
+            // ngay sau đúng 2 dòng "HTTP-BLK appsflyersdk.com") - đã gỡ 3 domain đó khỏi DNSBlock.h
+            // (xem comment ở kJunkDNSDomains). Tức bằng chứng buộc tội patch này ở lần 1 KHÔNG còn
+            // chắc chắn nữa (bị nhiễu bởi thủ phạm thật). Vẫn giữ TẮT ở đây (chưa re-test độc lập với
+            // baseline đã sạch DNSBlock) - nếu muốn thử lại, bật lại CHỈ MỘT MÌNH patch này (không đổi
+            // gì khác cùng lúc) để cô lập biến số, đúng tinh thần bisect đã dùng cho
+            // installCheckHackerPatch() trước đây.
             // DeltaVFS_debugLog("Menu +load: gọi installGenerateLibMapAndMemPatch()");
             // installGenerateLibMapAndMemPatch();
 

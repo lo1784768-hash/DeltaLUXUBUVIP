@@ -38,15 +38,19 @@ inline void dnsNoteBlocked(const char *host) {
 // 1. Danh sách đen các Domain chặn DNS & HTTP - CHỈ CÒN gin.freefiremobile.com theo yêu cầu, đã
 // xoá hết danh sách ad-network/Garena-anti-cheat cũ (xem git history commit thêm lại DNSBlock.h
 // nếu cần khôi phục danh sách đầy đủ).
-// unity3d.com/crashlytics.com/appsflyersdk.com: SDK analytics/ads/crash-report/attribution của
-// bên thứ 3 (Unity Ads/Cloud Diagnostics, Firebase Crashlytics, AppsFlyer) - không phải kênh
-// FFANTI/anti-cheat, chặn chỉ để giảm nhiễu mạng, không liên quan gì đến vụ đá/icon giả lập
-// (xem debug.log analysis: appsflyersdk.com không trùng thời điểm flip IBJJDBEJMLD).
+//
+// unity3d.com/crashlytics.com/appsflyersdk.com ĐÃ THÊM RỒI GỠ LẠI: debug.log thật cho thấy CẢ 4
+// lần test sau khi thêm 3 domain này đều crash-loop, LUÔN NGAY SAU 2 dòng "HTTP-BLK
+// jkcl20-cdn-settings.appsflyersdk.com"/"jkcl20-skadsdk.appsflyersdk.com" (lệch nhau chỉ 5.4-7.9s
+// giữa các lần, rất đều đặn) - kể cả sau khi đã tắt hẳn GenerateLibMapAndMemPatch (từng bị nghi là
+// thủ phạm crash-loop TRƯỚC đó) thì vẫn crash y hệt kiểu cũ, đúng ngay sau 2 dòng chặn này. Kết
+// luận: SDK AppsFlyer (có thể cả Unity Cloud Diagnostics) khi bị chặn DNS NGAY LẬP TỨC (khác hẳn
+// timeout mạng bình thường) rơi vào nhánh xử lý lỗi không được hãng test kỹ, dẫn tới crash native
+// vài giây sau - session dài TRƯỚC KHI có 3 domain này (chưa chặn gì cả) từng chạy trót lọt cả 1
+// trận không crash. KHÔNG thêm lại 3 domain này nữa trừ khi tìm được cách chặn "êm" hơn (vd trả về
+// 1 response rỗng hợp lệ thay vì lỗi DNS cứng ngay lập tức).
 static const char *kJunkDNSDomains[] = {
     "gin.freefiremobile.com",
-    "unity3d.com",
-    "crashlytics.com",
-    "appsflyersdk.com",
 };
 
 // Suffix-matching trie dựa trên nhãn tên miền, duyệt từ TLD vào trong (đảo ngược nhãn)
