@@ -1144,7 +1144,74 @@ inline bool ar_pathIsBundleRoot(const char *path) {
 static DIR *g_esignTrackedDirs[AR_ESIGN_DIR_TRACK_MAX] = {NULL};
 static std::mutex g_esignTrackedDirsMutex;
 
-inline const char* redirectAllTrafficPath(const char *path) {
+// THỬ NGHIỆM (yêu cầu user: "bắt buộc đọc trong folder đó => mất icon giả lập máy tính") - copy
+// nguyên bản file GỐC (đang đọc thẳng từ .app, KHÔNG thuộc bộ mod Delta.zip) vào đúng vị trí
+// tương ứng trong Documents/<hash>/ rồi từ lần sau file đó sẽ luôn được phục vụ từ folder này y
+// hệt 1 file "PRESENT" thật sự - mục tiêu là dần dần MỌI file game đọc đều đi qua folder đó, không
+// còn file nào đọc thẳng từ .app nữa. CHƯA CHẮC xoá được icon (EmulatorCheckSpoof.h từng chỉ ra cờ
+// này nhiều khả năng do server quyết định, không phải client tính) - đây là 1 giả thuyết được user
+// CHỦ Ý yêu cầu thử, chấp nhận rủi ro có thể không có tác dụng.
+// Dùng orig_open để đọc bản gốc (path này khớp g_bundlePrefixC - nếu dùng open() thường và hàm
+// open có tự rebind tới hooked_open trong chính dylib này thì sẽ gọi lại redirectAllTrafficPath()
+// một lần nữa cho đúng path đó = nguy cơ đệ quy vô hạn). Ghi ra temp_folder rồi rename() sang
+// destPath - cùng kỹ thuật an toàn với ar_extractZipEntry (crash giữa chừng chỉ để lại rác trong
+// temp_folder/, không lẫn vào nội dung đang phục vụ).
+static bool ar_copyOriginalIntoModdedFolder(const char *bundlePath, const char *destPath) {
+    if (!orig_open || !bundlePath || !destPath) return false;
+
+    int srcFd = orig_open(bundlePath, O_RDONLY);
+    if (srcFd < 0) return false;
+
+    char parent[2048];
+    snprintf(parent, sizeof(parent), "%s", destPath);
+    char *slash = strrchr(parent, '/');
+    if (slash) { *slash = '\0'; ar_mkpath(parent); }
+
+    char tmpPath[2200];
+    snprintf(tmpPath, sizeof(tmpPath), "%s.delta_copy_%d_%lu", g_moddedTempFolderC, (int)getpid(),
+              g_arTmpCounter.fetch_add(1, std::memory_order_relaxed));
+
+    int dstFd = open(tmpPath, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (dstFd < 0) {
+        DeltaVFS_debugLogf("ar_copyOriginalIntoModdedFolder: open(write tmp) FAILED errno=%d dest=%s", errno, destPath);
+        close(srcFd);
+        return false;
+    }
+
+    // thread_local (không phải static thường) - hooked_open/hooked_fopen có thể bị gọi đồng thời
+    // từ nhiều thread Unity worker khác nhau, dùng chung 1 buffer static sẽ ghi đè lẫn nhau giữa
+    // các lượt copy chạy song song = hỏng dữ liệu file đích.
+    static thread_local unsigned char copyBuf[16384];
+    bool ok = true;
+    ssize_t n;
+    while ((n = read(srcFd, copyBuf, sizeof(copyBuf))) > 0) {
+        if (write(dstFd, copyBuf, (size_t)n) != n) { ok = false; break; }
+    }
+    if (n < 0) ok = false;
+    close(srcFd);
+    close(dstFd);
+
+    if (!ok) {
+        DeltaVFS_debugLogf("ar_copyOriginalIntoModdedFolder: copy FAILED dest=%s", destPath);
+        unlink(tmpPath);
+        return false;
+    }
+
+    if (rename(tmpPath, destPath) != 0) {
+        DeltaVFS_debugLogf("ar_copyOriginalIntoModdedFolder: rename FAILED errno=%d dest=%s", errno, destPath);
+        unlink(tmpPath);
+        return false;
+    }
+
+    ar_fixExtractedFileMtime(destPath);
+    return true;
+}
+
+// forceCopyOriginal: mặc định false (giữ nguyên hành vi cũ cho mọi caller hiện có). Chỉ truyền
+// true từ những nơi THỰC SỰ mở nội dung file (hooked_open/hooked_openat/hooked_fopen) - KHÔNG bao
+// giờ truyền true từ hooked_access/hooked_stat/hooked_lstat (chỉ kiểm tra tồn tại/metadata, copy
+// nguyên file ở đó vừa lãng phí I/O vừa tốn dung lượng Documents/<hash>/ một cách không cần thiết).
+inline const char* redirectAllTrafficPath(const char *path, bool forceCopyOriginal = false) {
     if (!path) return path;
 
     // CHẶN TUYỆT ĐỐI marker Esign - kiểm tra TRƯỚC TIÊN, không đếm vào thống kê DeltaVFS bình
@@ -1244,6 +1311,20 @@ inline const char* redirectAllTrafficPath(const char *path) {
     // được đúng những file nào đang bị bỏ sót (không thuộc bộ mod), rồi trả về path gốc để game đọc
     // thẳng bundle như chưa hề bị redirect.
     deltaMissRingPush(relative);
+
+    // THỬ NGHIỆM: caller yêu cầu ép đọc qua Documents/<hash>/ (xem comment ở
+    // ar_copyOriginalIntoModdedFolder) - copy bản gốc vào đúng chỗ rồi coi như 1 hit bình thường.
+    // Copy thất bại thì rơi về hành vi cũ (đọc thẳng bundle) - KHÔNG chặn game lại vì lý do này.
+    if (forceCopyOriginal) {
+        if (ar_copyOriginalIntoModdedFolder(cmpPath, redirectedBuffer)) {
+            g_deltaHitCount.fetch_add(1, std::memory_order_relaxed);
+            strncpy(g_deltaLastHitPath, relative, sizeof(g_deltaLastHitPath) - 1);
+            g_deltaLastHitPath[sizeof(g_deltaLastHitPath) - 1] = '\0';
+            deltaHitRingPush(relative);
+            return redirectedBuffer;
+        }
+    }
+
     return path;
 }
 
@@ -1317,7 +1398,9 @@ inline int hooked_open(const char *path, int oflag, ...) {
         errno = EROFS;
         return -1;
     }
-    const char *redirected = redirectAllTrafficPath(path);
+    // forceCopyOriginal chỉ bật khi đây là 1 lượt ĐỌC nội dung thật (không phải open để ghi/tạo
+    // file mới - ép copy source cho 1 open ghi vừa vô nghĩa vừa có thể ghi đè nhầm file đang tạo).
+    const char *redirected = redirectAllTrafficPath(path, !ar_isWriteIntentOpenFlags(oflag));
     return orig_open(redirected, oflag, mode);
 }
 
@@ -1341,7 +1424,9 @@ inline int hooked_openat(int dirfd, const char *path, int oflag, ...) {
         errno = EROFS;
         return -1;
     }
-    const char *redirected = (path && path[0] == '/') ? redirectAllTrafficPath(path) : path;
+    const char *redirected = (path && path[0] == '/')
+        ? redirectAllTrafficPath(path, !ar_isWriteIntentOpenFlags(oflag))
+        : path;
     return orig_openat(dirfd, redirected, oflag, mode);
 }
 
@@ -1351,7 +1436,7 @@ inline FILE *hooked_fopen(const char *filename, const char *mode) {
         errno = EROFS;
         return NULL;
     }
-    const char *redirected = redirectAllTrafficPath(filename);
+    const char *redirected = redirectAllTrafficPath(filename, !ar_isWriteIntentFopenMode(mode));
     return orig_fopen(redirected, mode);
 }
 
