@@ -38,8 +38,15 @@ inline void dnsNoteBlocked(const char *host) {
 // 1. Danh sách đen các Domain chặn DNS & HTTP - CHỈ CÒN gin.freefiremobile.com theo yêu cầu, đã
 // xoá hết danh sách ad-network/Garena-anti-cheat cũ (xem git history commit thêm lại DNSBlock.h
 // nếu cần khôi phục danh sách đầy đủ).
+// unity3d.com/crashlytics.com/appsflyersdk.com: SDK analytics/ads/crash-report/attribution của
+// bên thứ 3 (Unity Ads/Cloud Diagnostics, Firebase Crashlytics, AppsFlyer) - không phải kênh
+// FFANTI/anti-cheat, chặn chỉ để giảm nhiễu mạng, không liên quan gì đến vụ đá/icon giả lập
+// (xem debug.log analysis: appsflyersdk.com không trùng thời điểm flip IBJJDBEJMLD).
 static const char *kJunkDNSDomains[] = {
     "gin.freefiremobile.com",
+    "unity3d.com",
+    "crashlytics.com",
+    "appsflyersdk.com",
 };
 
 // Suffix-matching trie dựa trên nhãn tên miền, duyệt từ TLD vào trong (đảo ngược nhãn)
