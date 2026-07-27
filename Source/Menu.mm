@@ -442,17 +442,20 @@ game_sdk_t *game_sdk = new game_sdk_t();
     }
     DeltaVFS_debugLog("Menu +load: needsFirstRunExtraction=false, normal menu flow, scheduling setup in 3s");
 
-    // installEmulatorScorePatch() - field THẬT quyết định icon máy tính lúc vào đội (tcp.
+    // EmulatorScorePatch::installEarly() - field THẬT quyết định icon máy tính lúc vào đội (tcp.
     // GroupJoinReq.emulator_score, đọc từ COW.UIModelUser.EmulatorScore lúc client tự gửi request
     // vào đội) - khác hẳn GameFacade.m_IsEmulator (chỉ dùng cho báo cáo ffantihack riêng, sửa
-    // không hết icon). Đây là patch TĨNH (vá byte thực thi, không phải ghi field runtime) - chỉ
-    // cần UnityFramework đã map vào bộ nhớ (getRealOffset(), qua dyld) nên an toàn gọi ngay từ
-    // đây, không cần chờ 3 giây - xem EmulatorScorePatch.h. Đặt SAU dòng log
-    // "needsFirstRunExtraction=false" ở trên (không phải TRƯỚC như bản đầu) - xác nhận qua test
-    // thật: gọi trước đó, log của hàm này bị NUỐT MẤT hoàn toàn (không phải patch thất bại, mà vì
-    // g_moddedPrefixC - nơi debug.log ghi vào - CHƯA được thiết lập tại điểm đó, chỉ sẵn sàng
-    // SAU KHI DeltaVFS_needsFirstRunExtraction() ở trên chạy xong ít nhất 1 lần).
-    installEmulatorScorePatch();
+    // không hết icon). Bản gọi 1 LẦN DUY NHẤT trước đây (installEmulatorScorePatch() gọi thẳng) đã
+    // test thật và THẤT BẠI - debug.log cho thấy "khong tim thay UnityFramework, bo qua": +load
+    // chạy sớm hơn cả lúc dyld map xong UnityFramework, patch bị bỏ qua vĩnh viễn (không tự thử
+    // lại). Chuyển sang installEarly() - poll 50ms/lần trên main queue giống hệt
+    // EmulatorCheckSpoof::installEarly(), tự huỷ ngay sau khi patch thành công - xem
+    // EmulatorScorePatch.h. Đặt SAU dòng log "needsFirstRunExtraction=false" ở trên (không phải
+    // TRƯỚC như bản đầu) - xác nhận qua test thật: gọi trước đó, log của hàm này bị NUỐT MẤT hoàn
+    // toàn (không phải patch thất bại, mà vì g_moddedPrefixC - nơi debug.log ghi vào - CHƯA được
+    // thiết lập tại điểm đó, chỉ sẵn sàng SAU KHI DeltaVFS_needsFirstRunExtraction() ở trên chạy
+    // xong ít nhất 1 lần).
+    EmulatorScorePatch::installEarly();
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         // Checkpoint - nếu dòng này KHÔNG xuất hiện trong debug.log, nghĩa là main thread bị
