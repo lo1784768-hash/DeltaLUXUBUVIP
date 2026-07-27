@@ -1283,24 +1283,33 @@ game_sdk_t *game_sdk = new game_sdk_t();
     [self addLocalizedRefresher:^{ weakWarn.text = LOC(@"unsafe_warning"); }];
     btnY += 32 + btnGap;
 
-    // ===== 2 nút bấm THỦ CÔNG cho EmulatorScorePatch/FFAntiRecordConditionPatch - trước đây tự
-    // chạy ở +load (poll 50ms), user báo VẪN crash-loop sau khi đã loại DNSBlock (thủ phạm trước
-    // đó) và nghi ngờ đúng: chạy tự động quá sớm khiến không cô lập được patch nào (nếu có) là thủ
-    // phạm thật. Để user tự bấm SAU KHI game đã vào menu/lobby ổn định - xem
-    // btnApplyEmulatorScorePatch:/btnApplyFFAntiRecordConditionPatch: bên dưới. Đây là patch TĨNH 1
-    // LẦN (ghi đè byte thực thi) - bấm xong không "tắt" lại được, chỉ để test xem BẤM XONG game có
-    // crash ngay không (cô lập nguyên nhân), không phải toggle bật/tắt.
+    // ===== Nút bấm THỦ CÔNG cho FFAntiRecordConditionPatch - trước đây tự chạy ở +load (poll
+    // 50ms), user báo crash-loop, để user tự bấm SAU KHI game đã vào menu/lobby ổn định - xem
+    // btnApplyFFAntiRecordConditionPatch: bên dưới. Đây là patch TĨNH 1 LẦN (ghi đè byte thực thi)
+    // - bấm xong không "tắt" lại được, chỉ để test xem BẤM XONG game có crash ngay không (cô lập
+    // nguyên nhân), không phải toggle bật/tắt.
+    //
+    // Nút "Áp dụng EmulatorScorePatch" ĐÃ GỠ BỎ HẲN (không chỉ tắt auto-call như trước) - đối
+    // chiếu LẠI toàn bộ 10 lần user đã bấm nút này qua debug.log (không chỉ vài lần lẻ tẻ như lần
+    // soát đầu): CẢ 10/10 LẦN đều crash sau đó (0.3s-43s, trung bình nhanh, nhiều lần dưới 4s ở
+    // NGOÀI trận đấu - loại trừ được khả năng đó là vụ bị đá giữa trận đã biết). Bằng chứng đủ rõ
+    // để kết luận: patch này KHÔNG AN TOÀN khi áp dụng muộn (khác lúc chạy tại +load, lúc đó chắc
+    // chắn CHƯA có code nào gọi tới set_EmulatorScore() cả nên an toàn tuyệt đối). Nghi ngờ: bấm
+    // muộn có rủi ro 1 luồng khác trong game đang THỰC THI đúng đoạn code bị vá cùng lúc
+    // (CheckHackerPatch_writeBytes dùng vm_remap, không đảm bảo an toàn nếu code đang chạy đúng
+    // lúc bị ghi đè) - khác nguyên nhân "hiểu sai ý nghĩa hàm" đã nêu trước đó. KHÔNG dùng lại kỹ
+    // thuật này cho tới khi tìm được cách vá an toàn hơn (xem EmulatorScorePatch.h).
+    //
+    // FFAntiRecordConditionPatch GIỮ LẠI nút - đối chiếu tương tự cho thấy bằng chứng buộc tội YẾU
+    // HƠN NHIỀU: trường hợp "sạch" (không ở trong trận) duy nhất sống tới 39s sau khi bấm (không
+    // giống crash tức thời), các trường hợp chết nhanh khác đều đã ở TRONG TRẬN (traffic port
+    // 10011 - đúng vụ bị đá giữa trận có sẵn, không phải do nút này).
     UILabel *testHeader = [[UILabel alloc] initWithFrame:CGRectMake(btnX + 4, btnY, btnW - 8, 12)];
     testHeader.font = [UIFont systemFontOfSize:9 weight:UIFontWeightBold];
     testHeader.textColor = COLOR_TEXT_DIM;
     testHeader.text = @"THỬ NGHIỆM - BẤM THỦ CÔNG (xem debug.log sau khi bấm)";
     [scroll addSubview:testHeader];
     btnY += 12 + 6;
-
-    UIButton *btnEmuScore = [self createButtonWithTitle:@"Áp dụng EmulatorScorePatch" frame:CGRectMake(btnX, btnY, btnW, cardH)];
-    [btnEmuScore addTarget:self action:@selector(btnApplyEmulatorScorePatch:) forControlEvents:UIControlEventTouchUpInside];
-    [scroll addSubview:btnEmuScore];
-    btnY += cardH + btnGap;
 
     UIButton *btnFFAntiCond = [self createButtonWithTitle:@"Áp dụng FFAntiRecordConditionPatch" frame:CGRectMake(btnX, btnY, btnW, cardH)];
     [btnFFAntiCond addTarget:self action:@selector(btnApplyFFAntiRecordConditionPatch:) forControlEvents:UIControlEventTouchUpInside];

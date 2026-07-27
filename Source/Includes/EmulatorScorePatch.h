@@ -37,6 +37,23 @@
 // (timer 50ms trên main queue, bắt đầu ngay từ +load) - vì đây là patch TĨNH chỉ cần thành công 1
 // LẦN (không như EmulatorCheckSpoof phải ghi lại mỗi tick), timer tự huỷ ngay sau khi patch xong
 // (thành công hay thất bại do lý do KHÁC timing, vd byte gốc lệch do game update).
+//
+// ĐÃ TEST LẦN 2 - KẾT LUẬN: KHÔNG AN TOÀN khi áp dụng SAU khi UnityFramework đã chạy được 1 lúc
+// (không phải ngay lúc +load nữa). Chuyển tạm sang nút bấm thủ công trong tab "Khác" để user tự cô
+// lập thời điểm - đối chiếu debug.log của TOÀN BỘ 10 lần user bấm nút này (nhiều lần mở app khác
+// nhau): CẢ 10/10 LẦN app crash sau đó (0.3s-43s, nhiều lần dưới 4s, có cả trường hợp KHÔNG ở
+// trong trận nên loại trừ được nhầm lẫn với vụ bị đá giữa trận đã biết). Đủ bằng chứng để coi patch
+// này KHÔNG AN TOÀN ở dạng hiện tại - đã gỡ nút bấm khỏi UI (xem Menu.mm,
+// buildKhacMainListInFrame), KHÔNG dùng lại cho tới khi có hướng vá khác.
+//
+// Nghi ngờ nguyên nhân: patch này an toàn 100% khi chạy ở +load (lúc đó CHẮC CHẮN chưa có code nào
+// gọi set_EmulatorScore() cả - hàm chưa từng được thực thi). Áp dụng muộn (qua nút bấm, sau khi
+// game đã chạy được một lúc) có rủi ro RACE CONDITION: 1 luồng khác trong game có thể đang THỰC THI
+// đúng đoạn lệnh bị vá tại đúng thời điểm CheckHackerPatch_writeBytes() ghi đè nó (kỹ thuật
+// vm_remap không đảm bảo an toàn nếu code đang được CPU khác chạy đúng lúc bị ghi) - khác hẳn nhóm
+// nguyên nhân "hiểu sai ý nghĩa hàm/side-effect" đã nêu ở các patch khác trong project (xem
+// GenerateLibMapAndMemPatch.h, FFAntiRecordConditionPatch.h) - ở đây kỹ thuật vá tự nó đúng, chỉ
+// KHÔNG AN TOÀN nếu áp dụng vào code đang chạy.
 #pragma once
 #import <Foundation/Foundation.h>
 #include "MemoryUtils.h"
