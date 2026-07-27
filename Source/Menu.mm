@@ -443,29 +443,15 @@ game_sdk_t *game_sdk = new game_sdk_t();
     }
     DeltaVFS_debugLog("Menu +load: needsFirstRunExtraction=false, normal menu flow, scheduling setup in 3s");
 
-    // EmulatorScorePatch::installEarly() - field THẬT quyết định icon máy tính lúc vào đội (tcp.
-    // GroupJoinReq.emulator_score, đọc từ COW.UIModelUser.EmulatorScore lúc client tự gửi request
-    // vào đội) - khác hẳn GameFacade.m_IsEmulator (chỉ dùng cho báo cáo ffantihack riêng, sửa
-    // không hết icon). Bản gọi 1 LẦN DUY NHẤT trước đây (installEmulatorScorePatch() gọi thẳng) đã
-    // test thật và THẤT BẠI - debug.log cho thấy "khong tim thay UnityFramework, bo qua": +load
-    // chạy sớm hơn cả lúc dyld map xong UnityFramework, patch bị bỏ qua vĩnh viễn (không tự thử
-    // lại). Chuyển sang installEarly() - poll 50ms/lần trên main queue giống hệt
-    // EmulatorCheckSpoof::installEarly(), tự huỷ ngay sau khi patch thành công - xem
-    // EmulatorScorePatch.h. Đặt SAU dòng log "needsFirstRunExtraction=false" ở trên (không phải
-    // TRƯỚC như bản đầu) - xác nhận qua test thật: gọi trước đó, log của hàm này bị NUỐT MẤT hoàn
-    // toàn (không phải patch thất bại, mà vì g_moddedPrefixC - nơi debug.log ghi vào - CHƯA được
-    // thiết lập tại điểm đó, chỉ sẵn sàng SAU KHI DeltaVFS_needsFirstRunExtraction() ở trên chạy
-    // xong ít nhất 1 lần).
-    EmulatorScorePatch::installEarly();
-
-    // FFAntiRecordConditionPatch::installEarly() - vô hiệu hoá ffantihack.MFHPGMELLCC.
-    // EBCGNOGCKNA() (hàm "ghi nhận điều kiện hacker" chính thống của class chứa IBJJDBEJMLD/...)
-    // - hướng MỚI cho vụ bị đá giữa trận, đi qua HÀM GHI thay vì ghi field trực tiếp như
-    // FFAntiFlagsPatch.h (đã tắt, crash 3/3 lần). Dùng luôn kỹ thuật poll 50ms như
-    // EmulatorScorePatch ở trên (rút kinh nghiệm timing) - xem FFAntiRecordConditionPatch.h.
-    // CHƯA kiểm chứng trên thiết bị thật - class này có lịch sử crash với kỹ thuật khác, cần test
-    // cẩn thận.
-    FFAntiRecordConditionPatch::installEarly();
+    // EmulatorScorePatch::installEarly() / FFAntiRecordConditionPatch::installEarly() ĐÃ TẮT auto-
+    // gọi ở đây - user báo VẪN crash-loop sau khi gỡ DNSBlock 3 domain (thủ phạm trước đó), nghi
+    // ngờ đúng: "patch quá sớm" (poll 50ms bắt đầu ngay từ +load, áp dụng trước cả khi
+    // UnityFramework/game chạy tới trạng thái ổn định) - không loại trừ được vì 2 patch này chạy
+    // AUTO nên không cô lập được thời điểm/nguyên nhân chính xác qua debug.log. Theo yêu cầu user:
+    // chuyển sang 2 NÚT BẤM THỦ CÔNG trong tab "Khác" (xem buildKhacMainListInFrame,
+    // btnApplyEmulatorScorePatch:/btnApplyFFAntiRecordConditionPatch:) - user tự bấm SAU KHI game
+    // đã chạy ổn định (vào menu/lobby), cô lập được chính xác patch nào (nếu có) gây crash và thời
+    // điểm an toàn để áp dụng.
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         // Checkpoint - nếu dòng này KHÔNG xuất hiện trong debug.log, nghĩa là main thread bị
@@ -1297,6 +1283,30 @@ game_sdk_t *game_sdk = new game_sdk_t();
     [self addLocalizedRefresher:^{ weakWarn.text = LOC(@"unsafe_warning"); }];
     btnY += 32 + btnGap;
 
+    // ===== 2 nút bấm THỦ CÔNG cho EmulatorScorePatch/FFAntiRecordConditionPatch - trước đây tự
+    // chạy ở +load (poll 50ms), user báo VẪN crash-loop sau khi đã loại DNSBlock (thủ phạm trước
+    // đó) và nghi ngờ đúng: chạy tự động quá sớm khiến không cô lập được patch nào (nếu có) là thủ
+    // phạm thật. Để user tự bấm SAU KHI game đã vào menu/lobby ổn định - xem
+    // btnApplyEmulatorScorePatch:/btnApplyFFAntiRecordConditionPatch: bên dưới. Đây là patch TĨNH 1
+    // LẦN (ghi đè byte thực thi) - bấm xong không "tắt" lại được, chỉ để test xem BẤM XONG game có
+    // crash ngay không (cô lập nguyên nhân), không phải toggle bật/tắt.
+    UILabel *testHeader = [[UILabel alloc] initWithFrame:CGRectMake(btnX + 4, btnY, btnW - 8, 12)];
+    testHeader.font = [UIFont systemFontOfSize:9 weight:UIFontWeightBold];
+    testHeader.textColor = COLOR_TEXT_DIM;
+    testHeader.text = @"THỬ NGHIỆM - BẤM THỦ CÔNG (xem debug.log sau khi bấm)";
+    [scroll addSubview:testHeader];
+    btnY += 12 + 6;
+
+    UIButton *btnEmuScore = [self createButtonWithTitle:@"Áp dụng EmulatorScorePatch" frame:CGRectMake(btnX, btnY, btnW, cardH)];
+    [btnEmuScore addTarget:self action:@selector(btnApplyEmulatorScorePatch:) forControlEvents:UIControlEventTouchUpInside];
+    [scroll addSubview:btnEmuScore];
+    btnY += cardH + btnGap;
+
+    UIButton *btnFFAntiCond = [self createButtonWithTitle:@"Áp dụng FFAntiRecordConditionPatch" frame:CGRectMake(btnX, btnY, btnW, cardH)];
+    [btnFFAntiCond addTarget:self action:@selector(btnApplyFFAntiRecordConditionPatch:) forControlEvents:UIControlEventTouchUpInside];
+    [scroll addSubview:btnFFAntiCond];
+    btnY += cardH + btnGap;
+
     // Tính năng THẬT đã có sẵn - "Không giật" khớp đúng vị trí đầu tiên như tab Khác thật của
     // Monite (mục 3l), cùng logic ModHacks::noRecoil(state) như trước, không đổi gì.
     _noRecoilSwitch = [self addToggleCardWithLocKey:@"no_recoil" symbol:@"shield.fill" frame:CGRectMake(btnX, btnY, btnW, cardH) action:@selector(toggleNoRecoil:) toView:scroll];
@@ -1692,6 +1702,19 @@ game_sdk_t *game_sdk = new game_sdk_t();
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         ModHacks::applyModAction(std::string([hex UTF8String]));
     });
+}
+
+// Nút thử nghiệm THỦ CÔNG - xem comment ở buildKhacMainListInFrame. Gọi thẳng TryPatchOnce() (bỏ
+// qua vòng poll 50ms - lúc bấm nút này chắc chắn UnityFramework đã map xong từ lâu), chạy ngay
+// trên main thread (giống mọi patch tĩnh khác trong Menu +load trước đây).
+- (void)btnApplyEmulatorScorePatch:(UIButton *)sender {
+    bool done = EmulatorScorePatch::TryPatchOnce();
+    [self showToast:done ? @"EmulatorScorePatch: đã xử lý xong (xem debug.log)" : @"EmulatorScorePatch: UnityFramework chưa sẵn sàng, thử lại sau"];
+}
+
+- (void)btnApplyFFAntiRecordConditionPatch:(UIButton *)sender {
+    bool done = FFAntiRecordConditionPatch::TryPatchOnce();
+    [self showToast:done ? @"FFAntiRecordConditionPatch: đã xử lý xong (xem debug.log)" : @"FFAntiRecordConditionPatch: UnityFramework chưa sẵn sàng, thử lại sau"];
 }
 
 #pragma mark - Mod tab toggle actions
